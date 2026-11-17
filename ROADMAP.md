@@ -16,8 +16,8 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP | Title | Status | Owner |
 |---|---|---|---|
 | WP-0001 | Repo scaffold: layout, LICENSE, AGENTS.md, specs, ADRs, CI config | in-progress | orchestrator |
-| WP-0002 | Deterministic render core v0 (metronome/sine/sampler → PCM16 WAV) + unit tests | in-progress | orchestrator |
-| WP-0003 | Golden-file harness: golden_diff.py + run_goldens.sh + fixtures | pending | orchestrator |
+| WP-0002 | Deterministic render core v0 | **done** | orchestrator |
+| WP-0003 | Golden-file harness | **done** | orchestrator |
 | WP-0004 | Sidecar v0: FastAPI job queue, adapter base, mock backends, conformance suite green | in-progress | subagent-sidecar |
 | WP-0005 | Model manager: manifest schema (license tri-state), downloader w/ sha256 + gates, tests | pending | subagent-sidecar |
 | WP-0006 | Real adapter: Demucs (CPU path) behind manifest gate; one end-to-end separation demo | pending | orchestrator |

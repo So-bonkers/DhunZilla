@@ -1,0 +1,139 @@
+#include "engine/render.hpp"
+
+#include <cmath>
+#include <map>
+#include <vector>
+
+#include "engine/dsp.hpp"
+
+namespace op {
+namespace {
+
+constexpr double kMaxRenderSeconds = 600.0;  // sanity cap for offline v0
+
+// Voice renderers add into interleaved stereo `out` at absolute frame offset, applying track gain+pan.
+struct MixTarget {
+    std::vector<float>* out;   // interleaved L,R
+    long long total_frames;
+    float gain_l, gain_r;
+};
+
+inline void add_stereo(MixTarget& t, long long frame, float l, float r) {
+    if (frame < 0 || frame >= t.total_frames) return;
+    (*t.out)[frame * 2 + 0] += l * t.gain_l;
+    (*t.out)[frame * 2 + 1] += r * t.gain_r;
+}
+
+inline float hann_attack(long long n, long long attack_samples) {
+    if (attack_samples <= 0) return 1.0f;
+    if (n >= attack_samples) return 1.0f;
+    return 0.5f * (1.0f - dsp::cosf_(dsp::kPi() * static_cast<float>(n) / static_cast<float>(attack_samples)));
+}
+
+void render_metronome(MixTarget& t, long long start, const Note& note, const Voice& v, int sr) {
+    const long long beat_idx = static_cast<long long>(std::llround(note.t_beats));
+    const float freq = ((beat_idx % v.accent_every) == 0 ? 1000.0f : 800.0f);
+    const long long len = static_cast<long long>(0.030 * sr);          // spec: hard stop at 30 ms
+    const long long attack = static_cast<long long>(0.005 * sr);       // Hann ramp 5 ms
+    const float inv_tau = 1.0f / static_cast<float>(sr * 0.008);       // tau = 8 ms
+    const float dphi = dsp::twoPi() * freq / static_cast<float>(sr);
+    for (long long n = 0; n < len; ++n) {
+        const float env = hann_attack(n, attack) * dsp::expf_(-static_cast<float>(n) * inv_tau);
+        const float s = dsp::sinf_(dphi * static_cast<float>(n)) * env;
+        add_stereo(t, start + n, s, s);
+    }
+}
+
+void render_sine(MixTarget& t, long long start, const Note& note, const Voice& v, int sr, double spb) {
+    long long len = static_cast<long long>(std::llround(note.dur_beats * spb));
+    if (len <= 0) return;
+    const float dphi = dsp::twoPi() * v.freq_hz / static_cast<float>(sr);
+    const long long edge = static_cast<long long>((len < 2 * static_cast<long long>(0.005 * sr)) ? len / 2 : 0.005 * sr);
+    for (long long n = 0; n < len; ++n) {
+        const float env = hann_attack(n, edge) * hann_attack(len - 1 - n, edge);
+        const float s = dsp::sinf_(dphi * static_cast<float>(n)) * env;
+        add_stereo(t, start + n, s, s);
+    }
+}
+
+bool render_sampler(MixTarget& t, long long start, const Note& note, const std::string& abs_path, int sr,
+                    double spb, std::map<std::string, wav::ReadResult>& cache, std::string& err) {
+    auto it = cache.find(abs_path);
+    if (it == cache.end()) {
+        wav::ReadResult rr = wav::read_wav(abs_path);
+        if (!rr.ok) { err = "sampler: " + rr.error; return false; }
+        if (rr.sample_rate != sr) { err = "sampler: sample-rate mismatch (v0 requires project rate)"; return false; }
+        it = cache.emplace(abs_path, std::move(rr)).first;
+    }
+    const wav::ReadResult& rr = it->second;
+    long long avail = static_cast<long long>(rr.samples.size()) / rr.channels;
+    long long want = static_cast<long long>(std::llround(note.dur_beats * spb));
+    long long len = avail < want ? avail : want;
+    for (long long n = 0; n < len; ++n) {
+        float l, r;
+        if (rr.channels == 1) { l = r = rr.samples[n]; }
+        else { l = rr.samples[n * 2]; r = rr.samples[n * 2 + 1]; }
+        add_stereo(t, start + n, l, r);
+    }
+    return true;
+}
+
+std::string join_path(const std::string& dir, const std::string& rel) {
+    if (!rel.empty() && rel[0] == '/') return rel;  // absolute path passthrough
+    if (dir.empty()) return rel;
+    if (dir.back() == '/') return dir + rel;
+    return dir + "/" + rel;
+}
+
+}  // namespace
+
+long long total_samples_for(const Project& p) {
+    const double beats = p.length_bars * static_cast<double>(p.beats_per_bar);
+    return static_cast<long long>(std::ceil(beats * static_cast<double>(p.sample_rate) * 60.0 / p.bpm));
+}
+
+bool render_project(const Project& p, const std::string& base_dir, wav::StereoBuffer& out, std::string& err) {
+    const int sr = p.sample_rate;
+    const long long total = total_samples_for(p);
+    if (total <= 0) { err = "render_error: zero-length render"; return false; }
+    if (static_cast<double>(total) / static_cast<double>(sr) > kMaxRenderSeconds) {
+        err = "render_error: project exceeds 600s offline cap"; return false;
+    }
+
+    out.sample_rate = sr;
+    out.interleaved.assign(static_cast<size_t>(total) * 2u, 0.0f);
+    const double spb = static_cast<double>(sr) * 60.0 / p.bpm;  // samples per beat
+
+    std::map<std::string, wav::ReadResult> sampler_cache;
+
+    for (size_t ti = 0; ti < p.tracks.size(); ++ti) {
+        const Track& tr = p.tracks[ti];
+        MixTarget t;
+        t.out = &out.interleaved;
+        t.total_frames = total;
+        const float g = dsp::db_to_lin(tr.gain_db);
+        float l, r;
+        dsp::equal_power_pan(tr.pan, l, r);
+        t.gain_l = g * l;
+        t.gain_r = g * r;
+
+        for (const Pattern& pat : p.patterns) {
+            if (static_cast<size_t>(pat.track) != ti) continue;
+            for (const Note& note : pat.notes) {
+                const long long start = static_cast<long long>(std::llround(note.t_beats * spb));
+                if (start >= total) continue;  // beyond render window
+                switch (tr.voice.kind) {
+                    case VoiceKind::Metronome: render_metronome(t, start, note, tr.voice, sr); break;
+                    case VoiceKind::Sine:      render_sine(t, start, note, tr.voice, sr, spb); break;
+                    case VoiceKind::Sampler:
+                        if (!render_sampler(t, start, note, join_path(base_dir, tr.voice.path), sr, spb, sampler_cache, err))
+                            return false;
+                        break;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+}  // namespace op
