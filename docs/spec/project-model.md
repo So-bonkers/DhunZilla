@@ -1,0 +1,57 @@
+# Spec: Project Model (`.opj` v0) & Render CLI
+
+The project file is JSON (v0; SQLite/zip packaging deferred). Field names are stable API.
+
+```jsonc
+{
+  "format_version": 0,
+  "bpm": 120.0,                    // tempo at bar 0; tempo points come later (WP-001x)
+  "sample_rate": 48000,            // engine rate for v0 renders
+  "seed": 42,                      // master RNG seed (determinism)
+  "length_bars": 4,                // render length = bars * beats_per_bar * (sr*60/bpm) samples
+  "beats_per_bar": 4,
+  "tracks": [
+    {
+      "name": "Metronome",
+      "gain_db": -6.0,             // summed with mixer gain at render time
+      "pan": 0.0,                  // -1..1, equal-power panning (wrapper in dsp.hpp)
+      "voice": { "kind": "metronome", "accent_every": 4 }   // click: 1000 Hz bar / 800 Hz beat, 30 ms exp decay
+    },
+    {
+      "name": "Bassline",
+      "gain_db": 0.0, "pan": 0.0,
+      "voice": { "kind": "sine", "freq_hz": 55.0 }          // test voice; synth params grow later
+    },
+    {
+      "name": "Drums",
+      "gain_db": -2.0, "pan": 0.0,
+      "voice": { "kind": "sampler", "path": "kits/kick.wav" } // nearest-neighbour playback, no resample v0 (48k assets only)
+    }
+  ],
+  "patterns": [
+    { "track": 0,                      // index into tracks
+      "notes": [                        // times in beats (float), from bar 0
+        { "t": 0.0, "dur": 0.25 }, { "t": 1.0, "dur": 0.25 }
+      ]}
+  ]
+}
+```
+
+## Render semantics (normative)
+1. `total_samples = ceil(length_bars * beats_per_bar * sample_rate * 60 / bpm)` — computed once from the sample counter; **no wall-clock anywhere**.
+2. Events scheduled by exact sample position: `sample = round(t_beats * sample_rate * 60 / bpm)`.
+3. Voice rendering order = track index ascending; sum per block (block size 512), then apply per-track gain_db → pan → accumulate to stereo.
+4. Output clamp: none (float); WAV writer converts float→int16 with saturating round-to-nearest-even.
+5. RNG: a single seeded PCG/xoshiro instance per render, created from `seed`; voices needing noise draw from it in track order. Same seed ⇒ bit-identical output on x86_64 and aarch64 (no fast-math; `-ffp-contract=off`; libm only via `engine/dsp.hpp`).
+6. Metronome click spec: sine at 1000 Hz (downbeat) / 800 Hz, Hann-ramped 5 ms attack, exponential decay τ=8 ms, hard stop at 30 ms.
+
+## CLI (`opd`)
+```
+opd render <project.opj> -o <out.wav> [--seed N]   # --seed overrides project seed; deterministic
+opd gen-testproject <out.opj>                      # canonical fixture generator (fixed seed)
+opd info <file.wav|project.opj>                    # duration/sample-rate/format dump
+```
+Exit codes: 0 ok; 2 bad usage; 3 file not found; 4 parse error; 5 render error. Errors to stderr, machine-parsable single line `error: <code_name>: detail`.
+
+## WAV writer
+Canonical PCM16 stereo, little-endian, 48 kHz (v0), header exactly 44 bytes, no metadata chunks — bit-exactness includes the header.

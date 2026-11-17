@@ -1,0 +1,22 @@
+# build artifacts
+build/
+out/
+*.o
+*.so
+__pycache__/
+.pytest_cache__/
+.mypy_cache__/
+.ruff_cache__/
+.venv/
+.uv/
+
+# render output & model weights (weights NEVER committed; fixtures under tests/fixtures ARE tracked)
+separated/
+*.tmp.wav
+ai-sidecar/models/cache/
+
+# editor/os noise
+.vscode/
+.idea/
+.DS_Store
+*.swp
