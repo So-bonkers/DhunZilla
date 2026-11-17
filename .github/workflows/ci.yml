@@ -1,0 +1,70 @@
+# Six-target CI matrix (plan §6b). NOTE: config authored pre-push; runner labels for
+# windows-11-arm are GitHub preview-tier — verify on first push and adjust per docs note.
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04        # linux-x64
+            name: linux-x64
+          - os: ubuntu-24.04-arm    # linux-arm64 (native ARM runner)
+            name: linux-arm64
+          - os: macos-14            # macOS arm64 (Apple Silicon)
+            name: macos-arm64
+          - os: macos-13            # macOS x64
+            name: macos-x64
+          - os: windows-latest      # windows x64 (MSVC)
+            name: windows-x64
+          - os: windows-11-arm      # windows arm64 (preview runner; verify label on first push)
+            name: windows-arm64
+    name: core ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@latest
+      - name: Build (determinism flags enforced by CMakeLists; ADR-0004)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+      - name: Unit tests
+        run: ./build/op_tests
+        shell: bash
+      # The cross-arch determinism test IS this step: the same committed golden WAV must
+      # match renders from every architecture. If libm drifts across platforms this fails loudly.
+      - name: Golden renders (bit-exact vs committed fixtures)
+        run: bash harness/run_goldens.sh
+      - name: Negative control — corrupt fixture must FAIL the harness
+        run: |
+          tmp=$(mktemp -d); mkdir -p "$tmp/goldens"
+          cp tests/fixtures/goldens/demo.opj "$tmp/goldens/"
+          # golden with one byte flipped in payload
+          python3 - <<'PY'
+          data = bytearray(open("tests/fixtures/goldens/demo.wav","rb").read())
+          data[1000] ^= 0xFF
+          open("/tmp/corrupt_demo.wav","wb").write(bytes(data))
+          PY
+          cp /tmp/corrupt_demo.wav "$tmp/goldens/demo.wav"
+          if python3 harness/golden_diff.py tests/fixtures/goldens/demo.wav "$tmp/goldens/demo.wav"; then
+            echo "NEGATIVE CONTROL FAILED: harness accepted a corrupted golden"; exit 1
+          fi
+          echo "negative control OK (harness rejected corrupt golden)"
+
+  sidecar:
+    name: ai-sidecar
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.12" }
+      - name: Sync + test
+        run: |
+          cd ai-sidecar
+          uv sync --all-extras 2>/dev/null || uv sync
+          uv run pytest -q
+          uv run ruff check .
