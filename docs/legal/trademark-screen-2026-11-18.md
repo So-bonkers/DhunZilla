@@ -74,3 +74,27 @@ No `openpattern` package on npm or PyPI, and no matching app in the iOS App Stor
 ---
 *Prepared by an AI agent as desk research. Not a legal opinion. A trademark attorney's clearance
 search is the only way to rely on this for a filing or a launch decision.*
+
+## Candidate shortlist (same-day follow-up, 2026-11-18)
+
+Screened for domain (RDAP), GitHub/npm/PyPI handles and an obvious web collision. **This is not a
+trademark clearance** — each finalist still needs a proper register search.
+
+| Candidate | Meaning | Namespace | Collisions found | Verdict |
+|---|---|---|---|---|
+| **Loopfold** | loop + fold (folding loops into a song) | `.io` free; GitHub/npm free; `.com` parked | Only an arXiv ML paper named LoopFold | **Best pick** |
+| **Beatfold** | beat + fold | `.io` free; GitHub/npm free; `.com` parked | None found | Strong alternate |
+| **Loopweft** | weaving loops; "weft" = the cross-thread that makes a pattern | `.io` free; GitHub/npm free | A knitting shop uses "LOOP&WEFT" (different field) | Good, more obscure |
+| **Motifold** | motif + fold | `.io` free; GitHub/npm free | None found | Abstract; weaker recall |
+| ~~OpenLoop Studio~~ | user suggestion | `.com/.io/.studio` taken; GitHub + npm taken | OpenLoop Health (telehealth), OpenLoop Systems (software), generic control-systems term | Rejected — more crowded than OpenPattern; "Studio" adds no distinctiveness |
+| ~~FreeLoop Desktop~~ | user suggestion | `.com/.io` taken | FreeLoop routing concept (ACM paper), FreeLoop Android app; "Free" is descriptive/laudatory, "Desktop" generic | Rejected — describes a feature, not a brand |
+| ~~Beatweave~~ | beat + weave | `.io/.dev` free | **Liquid Rhythm BeatWeaver** (Steam, a beat-generation tool) — direct audio-software collision; plus a Kotlin library | Rejected |
+| ~~Songloom~~ | weaving songs | `.io` free | songloom.co.uk — personalised-song gift business (music-adjacent) | Rejected |
+| ~~Motifloom~~ | motif + loom | `.io` free | motifloom.com — live book-mapping product | Rejected |
+| ~~Waveloom~~ | wave + loom | — | waveloom.ai — AI content company | Rejected |
+| ~~Neume~~ | medieval music notation | — | Neume — AI song generator app (neume.io) | Rejected |
+
+**Naming rule learned:** "Open/Free + generic noun" is the most crowded and least registrable pattern
+in software; single dictionary words are all taken. Coined two-word compounds with a music/weaving
+root (fold, weft, loom) are the workable seam. Every candidate's `.com` is already registered
+(parked) — plan for `.io`/`.dev` and a later purchase, or accept the `.com` is not coming cheap.
