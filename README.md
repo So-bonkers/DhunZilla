@@ -58,6 +58,15 @@ OP_TRANSCRIBE_PYTHON=/path/to/onnx-venv/bin/python ./harness/roundtrip_eval.sh
 # EVENT F1=1.00 (tol 0.08s, thr 0.8) PASS
 ```
 
+Separate any audio into stems and wire them back into the project **with provenance** — then ship
+it all as one file (`mocksep` backend runs this CI-safe with zero ML deps):
+
+```bash
+./harness/stem_into_project.sh my.song.opj some.wav     # or OP_DEMUCS_PYTHON=... for real demucs
+# attached 4 stem(s) from demucs@htdemucs-demucs4.1.0 to my.song.opj
+./build/opd pack my.song.opj -o my.song.opd             # song + kit + AI stems, one shareable file
+```
+
 Setup for the transcription runtime lives in
 [`ai-sidecar/backends/basicpitch/impl.py`](ai-sidecar/backends/basicpitch/impl.py) (why ONNX and
 not TensorFlow: [ADR-0005](docs/adr/0005-transcription-onnx-runtime.md)). Stem splitting with
