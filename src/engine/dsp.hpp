@@ -1,5 +1,6 @@
 // engine/dsp.hpp — the ONLY place engine code may touch libm (AGENTS.md determinism rule).
-// All wrappers operate on float32. No intrinsics, no fast-math. See ADR-0004.
+// Wrappers operate on float32, except the *_d double variants used by paths whose spec mandates
+// double accumulation (resampler, WP-0138). No intrinsics, no fast-math. See ADR-0004.
 #pragma once
 #include <cmath>
 
@@ -7,6 +8,7 @@ namespace op::dsp {
 
 inline float kPi() { return 3.14159265358979323846f; }
 inline float twoPi() { return 2.0f * kPi(); }
+inline double kPi_d() { return 3.14159265358979323846; }
 
 // Linear gain from dBFS. 0 dB -> 1.0, -6.0206 dB ~= 0.5.
 inline float db_to_lin(float db) { return std::pow(10.0f, db * (1.0f / 20.0f)); }
@@ -23,6 +25,8 @@ inline void equal_power_pan(float pan, float& left, float& right) {
 
 inline float sinf_(float x) { return std::sin(x); }
 inline float cosf_(float x) { return std::cos(x); }
+inline double sind_(double x) { return std::sin(x); }  // double variants: resampler accumulation (WP-0138)
+inline double cosd_(double x) { return std::cos(x); }
 inline float powf_(float x, float y) { return std::pow(x, y); }  // MIDI pitch conversion (synth voice)
 inline float expf_(float x) { return std::exp(x); }
 inline float sqrtf_(float x) { return std::sqrt(x); }

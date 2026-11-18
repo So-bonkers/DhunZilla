@@ -15,6 +15,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0138 | Sampler resamples any WAV rate at load — deterministic windowed-sinc (Blackman, 16 zero-crossings, double accumulation), 8k–192k in-rate policy with exit-5 error, native-rate path bit-identical, golden `resampled.opj` + 44.1 kHz kit generator | **done** | subagent+orchestrator |
 | WP-0141 | GUI-free Document layer (`src/doc/`, new `dzdoc` target) — open/save with byte-exact dirty flag, undo/redo over `op::History`, slider gestures with exactly one undo entry each, revision counter, derived track rows; unit-tested | **done** | subagent |
 | WP-0140 | Glue scripts resolve relative project/audio paths against the caller's cwd (midi + stem fixed; prompt already correct) + relative-path tests; stray `ai-sidecar/ai/transcribed.mid` explained (pre-WP-0133 `cd`) | **done** | orchestrator |
 | WP-0139 | CI hardening — `-Werror` on our targets (`DZ_WERROR`, ON by default) + ASAN/UBSAN build (`DZ_SANITIZE`, fake-stack off so the suite runs in ~6 s) + `sanitizers` CI job (unit tests, CLI contracts, goldens) | **done** | subagent+orchestrator |

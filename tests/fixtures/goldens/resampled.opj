@@ -1,0 +1,42 @@
+{
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 1.0,
+  "patterns": [
+    {
+      "notes": [
+        {
+          "dur": 1.0,
+          "t": 0.0
+        },
+        {
+          "dur": 1.0,
+          "t": 1.0
+        },
+        {
+          "dur": 1.0,
+          "t": 2.0
+        },
+        {
+          "dur": 1.0,
+          "t": 3.0
+        }
+      ],
+      "track": 0
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 7,
+  "tracks": [
+    {
+      "gain_db": -2.0,
+      "name": "Kick44k",
+      "pan": 0.0,
+      "voice": {
+        "kind": "sampler",
+        "path": "kits/kick44k.wav"
+      }
+    }
+  ]
+}

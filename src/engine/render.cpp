@@ -2,9 +2,11 @@
 
 #include <cmath>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "engine/dsp.hpp"
+#include "engine/resample.hpp"
 
 namespace op {
 namespace {
@@ -87,7 +89,21 @@ bool render_sampler(MixTarget& t, long long start, const Note& note, const std::
     if (it == cache.end()) {
         wav::ReadResult rr = wav::read_wav(abs_path);
         if (!rr.ok) { err = "sampler: " + rr.error; return false; }
-        if (rr.sample_rate != sr) { err = "sampler: sample-rate mismatch (v0 requires project rate)"; return false; }
+        if (rr.sample_rate != sr) {
+            // WP-0138: convert once at load into the cache entry; playback then takes the exact
+            // native-rate path below. Native-rate assets are untouched (bit-identical to before).
+            if (!resample::rate_supported(rr.sample_rate)) {
+                err = "sampler: unsupported sample rate " + std::to_string(rr.sample_rate);
+                return false;
+            }
+            std::vector<float> converted;
+            if (!resample::windowsinc(rr.samples, rr.channels, rr.sample_rate, sr, converted)) {
+                err = "sampler: resample failed";  // defensive: rates/channels validated above
+                return false;
+            }
+            rr.samples.swap(converted);
+            rr.sample_rate = sr;
+        }
         it = cache.emplace(abs_path, std::move(rr)).first;
     }
     const wav::ReadResult& rr = it->second;

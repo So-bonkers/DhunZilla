@@ -16,6 +16,7 @@
 #include "engine/model.hpp"
 #include "engine/ops.hpp"
 #include "engine/render.hpp"
+#include "engine/resample.hpp"
 #include "engine/rng.hpp"
 #include "engine/wav.hpp"
 
@@ -1922,6 +1923,196 @@ static void test_document() {
     }
 }
 
+// ---------------------------------------------------------------- resampler (WP-0138)
+
+// Minimal mono PCM16 WAV writer — tests need assets at arbitrary rates; wav::write is stereo-only.
+static void write_mono_pcm16(const std::string& path, int sr, const std::vector<float>& s) {
+    auto le32 = [](std::string& b, uint32_t v) {
+        for (int i = 0; i < 4; ++i) b += static_cast<char>((v >> (8 * i)) & 0xFFu);
+    };
+    auto le16 = [](std::string& b, uint16_t v) {
+        b += static_cast<char>(v & 0xFFu); b += static_cast<char>((v >> 8) & 0xFFu);
+    };
+    const uint32_t data_bytes = static_cast<uint32_t>(s.size()) * 2u;
+    std::string h;
+    h += "RIFF"; le32(h, 36 + data_bytes); h += "WAVE";
+    h += "fmt "; le32(h, 16); le16(h, 1); le16(h, 1);  // PCM, mono
+    le32(h, static_cast<uint32_t>(sr)); le32(h, static_cast<uint32_t>(sr) * 2u); le16(h, 2); le16(h, 16);
+    h += "data"; le32(h, data_bytes);
+    for (float x : s) le16(h, static_cast<uint16_t>(op::wav::float_to_pcm16(x)));
+    write_text(path, h);
+}
+
+// One-bar 48 kHz project with a single hard-left (gain exactly 1.0), full-gain sampler note.
+static op::Project sampler_project_1bar(const std::string& wav_rel) {
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 1.0; p.beats_per_bar = 4; p.sample_rate = 48000;
+    op::Track tk; tk.name = "S"; tk.gain_db = 0.0f; tk.pan = -1.0f;
+    tk.voice.kind = op::VoiceKind::Sampler; tk.voice.path = wav_rel;
+    p.tracks.push_back(tk);
+    op::Pattern pat; pat.track = 0; pat.notes.push_back({0.0, 4.0});
+    p.patterns.push_back(pat);
+    return p;
+}
+
+static void test_resample() {
+    std::string err;
+
+    // Rate policy (spec): 8000–192000 Hz inclusive.
+    CHECK(op::resample::rate_supported(8000) && op::resample::rate_supported(44100) &&
+          op::resample::rate_supported(48000) && op::resample::rate_supported(192000),
+          "resample.rate_bounds_inclusive");
+    CHECK(!op::resample::rate_supported(7999) && !op::resample::rate_supported(192001),
+          "resample.rate_out_of_range_rejected");
+
+    // (a) Native-rate assets take the untouched path — bit-identical to the loader output.
+    std::vector<float> s(480);
+    for (size_t i = 0; i < s.size(); ++i)
+        s[i] = 0.5f * op::dsp::sinf_(0.13f * static_cast<float>(i)) +
+               0.25f * op::dsp::cosf_(0.71f * static_cast<float>(i));
+    write_mono_pcm16("/tmp/op_rs_native.wav", 48000, s);
+    {
+        const op::Project p = sampler_project_1bar("op_rs_native.wav");
+        op::wav::StereoBuffer buf;
+        CHECK(op::render_project(p, "/tmp", buf, err), "resample.native_mono_renders");
+        const op::wav::ReadResult rr = op::wav::read_wav("/tmp/op_rs_native.wav");
+        bool bitid = rr.ok && buf.frames() == 96000;
+        for (size_t n = 0; bitid && n < s.size(); ++n) {
+            if (buf.interleaved[n * 2] != rr.samples[n]) bitid = false;   // exact float equality
+            if (buf.interleaved[n * 2 + 1] != 0.0f) bitid = false;        // hard-left: right silent
+        }
+        CHECK(bitid, "resample.native_48k_bit_identical_to_loader");
+    }
+    {
+        op::wav::StereoBuffer sb;
+        sb.sample_rate = 48000;
+        sb.interleaved.resize(s.size() * 2);
+        for (size_t i = 0; i < s.size(); ++i) {
+            sb.interleaved[i * 2] = s[i];
+            sb.interleaved[i * 2 + 1] = -0.3f * op::dsp::sinf_(0.91f * static_cast<float>(i));
+        }
+        CHECK(op::wav::write_pcm16_stereo("/tmp/op_rs_native_st.wav", sb, err), "resample.native_stereo_written");
+        const op::Project p = sampler_project_1bar("op_rs_native_st.wav");
+        op::wav::StereoBuffer buf;
+        CHECK(op::render_project(p, "/tmp", buf, err), "resample.native_stereo_renders");
+        const op::wav::ReadResult rr = op::wav::read_wav("/tmp/op_rs_native_st.wav");
+        bool bitid = rr.ok && rr.channels == 2;
+        for (size_t n = 0; bitid && n < s.size(); ++n) {
+            if (buf.interleaved[n * 2] != rr.samples[n * 2]) bitid = false;
+            if (buf.interleaved[n * 2 + 1] != 0.0f) bitid = false;
+        }
+        CHECK(bitid, "resample.native_48k_stereo_bit_identical_to_loader");
+    }
+
+    // (b) −6 dBFS 1 kHz sine generated at 44100 Hz, 2 s → resampled to 48000.
+    const double amp = std::pow(10.0, -6.0 / 20.0);
+    std::vector<float> x(2 * 44100);
+    for (size_t n = 0; n < x.size(); ++n)
+        x[n] = static_cast<float>(amp * std::sin(2.0 * op::dsp::kPi_d() * 1000.0 *
+                                                  static_cast<double>(n) / 44100.0));
+    std::vector<float> y;
+    CHECK(op::resample::windowsinc(x, 1, 44100, 48000, y), "resample.b_call_ok");
+    // (d) exact length rule: ceil(88200 × 48000 / 44100) = 96000.
+    CHECK(y.size() == 96000, "resample.out_len_441_to_48_exact");
+
+    // Frequency by zero-crossing count over the middle 1.5 s, with linear-interpolated crossing
+    // times (naive integer counting has ±1/(2T) ≈ ±0.33 Hz boundary error, larger than the spec).
+    std::vector<double> tau;
+    for (long long k = 12000; k < 84000 - 1; ++k) {
+        const double a = y[k], b = y[k + 1];
+        if ((a < 0.0) != (b < 0.0)) tau.push_back(static_cast<double>(k) + a / (a - b));
+    }
+    const double fhat = (static_cast<double>(tau.size()) - 1.0) / 2.0 /
+                        ((tau.back() - tau.front()) / 48000.0);
+    std::printf("INFO resample freq_est=%.6f Hz err=%.6f Hz\n", fhat, std::fabs(fhat - 1000.0));
+    CHECK(std::fabs(fhat - 1000.0) <= 0.2, "resample.b_freq_within_0p2_hz");
+
+    // SNR vs ideal 48 kHz sine with best-fit phase (2×2 least squares on sin/cos), ignoring the
+    // first and last 64 output samples (spec).
+    double scc = 0, sss = 0, scs = 0, bc = 0, bs = 0;
+    for (long long k = 64; k < 96000 - 64; ++k) {
+        const double th = 2.0 * op::dsp::kPi_d() * 1000.0 * static_cast<double>(k) / 48000.0;
+        const double c = std::cos(th), sn = std::sin(th);
+        scc += c * c; sss += sn * sn; scs += sn * c; bc += y[k] * c; bs += y[k] * sn;
+    }
+    const double det = scc * sss - scs * scs;
+    const double alpha = (bc * sss - bs * scs) / det, beta = (bs * scc - bc * scs) / det;
+    const double proj = alpha * bc + beta * bs;   // ‖projection‖² via normal equations
+    // Two-pass residual: tot − proj loses all significant digits in double once SNR ≳ 135 dB
+    // (float32 output noise floor), so sum the squared fit errors directly.
+    double resid = 0;
+    for (long long k = 64; k < 96000 - 64; ++k) {
+        const double th = 2.0 * op::dsp::kPi_d() * 1000.0 * static_cast<double>(k) / 48000.0;
+        const double e = y[k] - (alpha * std::cos(th) + beta * std::sin(th));
+        resid += e * e;
+    }
+    const double snr_db = (resid > 0.0) ? 10.0 * std::log10(proj / resid) : 999.0;
+    std::printf("INFO resample snr_vs_ideal_sine=%.2f dB\n", snr_db);
+    CHECK(snr_db >= 70.0, "resample.b_snr_ge_70db");
+
+    // Stereo converter sanity: identical tone on both channels → exactly the mono result.
+    std::vector<float> xs(x.size() * 2);
+    for (size_t n = 0; n < x.size(); ++n) { xs[n * 2] = x[n]; xs[n * 2 + 1] = x[n]; }
+    std::vector<float> ys;
+    CHECK(op::resample::windowsinc(xs, 2, 44100, 48000, ys), "resample.stereo_call_ok");
+    bool chan_eq = ys.size() == y.size() * 2;
+    for (size_t k = 0; chan_eq && k < y.size(); ++k)
+        if (ys[k * 2] != y[k] || ys[k * 2 + 1] != y[k]) chan_eq = false;
+    CHECK(chan_eq, "resample.stereo_channels_match_mono_bitwise");
+
+    // (c) 96000 → 48000 with a 30 kHz tone (above output Nyquist): aliasing must be rejected.
+    // The tone is Hann-ramped in/out over 50 ms so the full-output RMS measures the filter's
+    // stopband rejection; an abrupt onset injects broadband click energy that partial windows
+    // at the signal edges normalize straight through, which is a measurement artifact, not aliasing.
+    std::vector<float> x96(96000);
+    {
+        const double ramp = 2400.0;  // 50 ms half-cosine fades
+        for (size_t n = 0; n < x96.size(); ++n) {
+            double e = 1.0;
+            if (static_cast<double>(n) < ramp)
+                e = 0.5 - 0.5 * std::cos(op::dsp::kPi_d() * static_cast<double>(n) / ramp);
+            else if (n + 1 >= x96.size() - static_cast<size_t>(ramp))
+                e = 0.5 - 0.5 * std::cos(op::dsp::kPi_d() *
+                                         static_cast<double>(x96.size() - 1 - n) / ramp);
+            x96[n] = static_cast<float>(amp * e * std::sin(2.0 * op::dsp::kPi_d() * 30000.0 *
+                                                            static_cast<double>(n) / 96000.0));
+        }
+    }
+    std::vector<float> y48;
+    CHECK(op::resample::windowsinc(x96, 1, 96000, 48000, y48), "resample.c_call_ok");
+    CHECK(y48.size() == 48000, "resample.out_len_96k_to_48k_exact");
+    {
+        auto rms = [](const std::vector<float>& v) {
+            double acc = 0;
+            for (float f : v) acc += static_cast<double>(f) * static_cast<double>(f);
+            return std::sqrt(acc / static_cast<double>(v.size()));
+        };
+        const double ratio_db = 20.0 * std::log10(rms(y48) / rms(x96));
+        std::printf("INFO resample alias_30k_rms=%.2f dB rel input\n", ratio_db);
+        CHECK(ratio_db <= -60.0, "resample.c_alias_rejected_le_minus60db");
+    }
+
+    // (d) exact ceil rule on non-dividing frame counts.
+    std::vector<float> xk(1000);
+    for (size_t n = 0; n < xk.size(); ++n)
+        xk[n] = static_cast<float>(std::sin(2.0 * op::dsp::kPi_d() * 440.0 * static_cast<double>(n) / 44100.0));
+    std::vector<float> yk;
+    CHECK(op::resample::windowsinc(xk, 1, 44100, 48000, yk) && yk.size() == 1089,
+          "resample.out_len_ceil_rule_1000f_441_to_48");   // ceil(1088.435…) = 1089
+    std::vector<float> xj(96001, 0.0f);
+    std::vector<float> yj;
+    CHECK(op::resample::windowsinc(xj, 1, 96000, 48000, yj) && yj.size() == 48001,
+          "resample.out_len_ceil_rule_96001f_to_48001");   // ceil(48000.5) = 48001
+
+    // (e) Unsupported rate 4000 Hz → render fails with the spec'd message (CLI exit 5).
+    std::vector<float> slow = {0.0f, 0.25f, -0.25f, 0.1f};
+    write_mono_pcm16("/tmp/op_rs_lowrate.wav", 4000, slow);
+    const op::Project pe = sampler_project_1bar("op_rs_lowrate.wav");
+    op::wav::StereoBuffer be;
+    CHECK(!op::render_project(pe, "/tmp", be, err), "resample.e_unsupported_rate_fails_render");
+    CHECK(err == "sampler: unsupported sample rate 4000", "resample.e_error_message_exact");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -1947,6 +2138,7 @@ int main() {
     test_ops();
     test_ops_property();
     test_document();
+    test_resample();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

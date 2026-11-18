@@ -198,3 +198,21 @@ Validation rules closed alongside (WP-0136): every track's `gain_db` must be fin
 `set_track_gain` / `set_track_pan` through their save→parse validation. Non-boolean `mute`/`solo`
 values are rejected with `track.mute must be a boolean` / `track.solo must be a boolean`;
 `master_gain_db` out of range or non-finite is rejected with `master_gain_db out of range [-96, 24]`.
+
+## Sampler resampling — additive (WP-0138)
+A sampler asset whose sample rate differs from the project `sample_rate` is converted once, when loaded,
+to the project rate; playback then proceeds exactly as for a native-rate asset. Assets already at the
+project rate take the existing path untouched (bit-identical to before).
+
+Converter (fixed, so renders are bit-exact on every CI arch):
+- Band-limited interpolation with a windowed sinc. Half-width N = 16 zero crossings of the *input*
+  sinc on each side; Blackman window over that span; cutoff fc = 0.97 × min(1, out_rate / in_rate)
+  (fraction of input Nyquist) — the kernel is stretched by 1/min(1, out/in) when downsampling.
+- Output sample k sits at input position t = k × in_rate / out_rate, computed as
+  (k × in_rate) / out_rate with 64-bit integers for the integer part and a double for the fraction
+  (no cumulative float drift). Output length = ceil(in_frames × out_rate / in_rate).
+- Taps outside the input are zero. Each output sample = Σ x[i]·h(t − i) normalized by Σ h(t − i) over
+  the taps actually used (keeps DC gain exactly 1 near the edges).
+- sin/cos only via `engine/dsp.hpp` wrappers; double accumulation; result stored as float.
+- Supported input rates: 8000–192000 Hz. Outside that range → render error
+  `sampler: unsupported sample rate <n>` (exit 5).
