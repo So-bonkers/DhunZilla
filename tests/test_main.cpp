@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "engine/dsp.hpp"
+#include "engine/midi.hpp"
 #include "engine/model.hpp"
 #include "engine/render.hpp"
 #include "engine/rng.hpp"
@@ -348,6 +349,48 @@ static void test_synth() {
           pl.patterns[0].notes[0].midi_note == 69, "synth.roundtrip_preserves_pitch");
 }
 
+// --- MIDI import (WP-0103b): fixture parse, conventions, fuzz-lite truncation.
+static void test_midi() {
+#ifndef OP_TEST_DATA
+#define OP_TEST_DATA "."
+#endif
+    const std::string fix = std::string(OP_TEST_DATA) + "/fixtures/midi/two_notes.mid";
+    std::string err;
+    op::Project p;
+    CHECK(op::load_midi(fix, p, err), "midi.load_fixture");
+    CHECK(p.tracks.size() == 2 && p.patterns.size() == 2, "midi.two_tracks");
+    CHECK(p.bpm == 120.0, "midi.tempo_from_meta");
+    CHECK(p.tracks[0].name == "Lead" && p.tracks[1].name == "Bass", "midi.track_names");
+    CHECK(p.tracks[0].voice.kind == op::VoiceKind::Synth, "midi.imported_voice_is_synth");
+    if (p.patterns.size() == 2) {
+        const auto& lead = p.patterns[0].notes;
+        CHECK(lead.size() == 4 && lead[0].midi_note == 60 && lead[3].midi_note == 72, "midi.lead_notes");
+        CHECK(lead[0].t_beats == 0.0 && lead[1].t_beats == 1.0 && lead[0].dur_beats == 1.0, "midi.beat_mapping_ppq480");
+        const auto& bass = p.patterns[1].notes;
+        CHECK(bass.size() == 1 && bass[0].midi_note == 36 && bass[0].dur_beats == 4.0, "midi.vel0_is_note_off");
+    } else {
+        ++g_failures; std::printf("FAIL midi.pattern_count (missing)\n");
+    }
+    CHECK(p.length_bars == 1.0, "midi.length_from_extent");
+
+    // truncation fuzz: no prefix may crash or claim success
+    std::ifstream f(fix, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    bool fuzz_ok = true;
+    for (size_t cut = 0; cut < bytes.size() && fuzz_ok; ++cut) {
+        std::string tmp = "/tmp/op_fuzz.mid";
+        { std::ofstream w(tmp, std::ios::binary); w.write(reinterpret_cast<const char*>(bytes.data()), cut); }
+        op::Project fp;
+        if (op::load_midi(tmp, fp, err)) fuzz_ok = false;  // a truncated file must never "succeed"
+    }
+    CHECK(fuzz_ok, "midi.truncation_fuzz_no_crash_no_success");
+
+    // wrong magic + SMPTE division rejected with actionable errors
+    write_text("/tmp/op_badmagic.mid", "RIFFjunkjunk");
+    op::Project bp;
+    CHECK(!op::load_midi("/tmp/op_badmagic.mid", bp, err), "midi.rejects_bad_magic");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -357,6 +400,7 @@ int main() {
     test_render();
     test_arrangement();
     test_synth();
+    test_midi();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

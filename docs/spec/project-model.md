@@ -78,3 +78,15 @@ fallback). Frequency: `f = 440 · 2^((note − 69)/12)` (12-TET, A4=440), comput
 release (`release_ms` at note end). All math deterministic per ADR-0004 (no RNG, no wall clock).
 Canonical save emits `"note"` only when present and synth keys only for synth voices — legacy
 project files round-trip byte-identically.
+
+## MIDI import (`opd midi2opj`) — WP-0103b (2026-11-18)
+
+`load_midi()` maps a Standard MIDI File to the project model: format 0/1,
+ticks-per-quarter-note division only (SMPTE → actionable error); first tempo meta sets `bpm`
+(default 120 if absent); velocity-0 Note-On counts as Note-Off; retriggering an open key closes
+the previous note at the new tick; notes left open close at the track's last event tick. One op
+track (synth voice) per MIDI track that contains notes, named from the track-name meta when
+present. Notes are sorted by `(t_beats, midi_note)` — output is independent of event interleaving.
+`length_bars = ceil(max_end_beats / beats_per_bar)`, min 1; `sample_rate` 48000, default seed 42.
+Files with zero playable notes are rejected (actionable error). Parser bounds-checks every read;
+truncation fuzz over the committed fixture must always fail cleanly, never crash or succeed.

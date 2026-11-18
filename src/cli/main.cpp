@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "engine/dsp.hpp"
+#include "engine/midi.hpp"
 #include "engine/model.hpp"
 #include "engine/render.hpp"
 #include "engine/wav.hpp"
@@ -20,6 +21,7 @@ static void usage() {
         "usage:\n"
         "  opd render <project.opj> -o <out.wav> [--seed N]\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
+        "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd info <file.wav|project.opj>\n");
 }
 
@@ -138,6 +140,24 @@ static int cmd_gen_testproject(int argc, char** argv) {
     return 0;
 }
 
+static int cmd_midi2opj(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "midi2opj needs <in.mid>"); }
+    const std::string in_mid = argv[1];
+    std::string out_opj;
+    for (int i = 2; i < argc; ++i)
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_opj = argv[++i];
+    if (out_opj.empty()) { usage(); return fail("usage", "midi2opj needs -o <out.opj>"); }
+    op::Project p;
+    std::string err;
+    if (!op::load_midi(in_mid, p, err)) return fail("parse", err);
+    if (!op::save_project(out_opj, p, err)) return fail("write", err);
+    size_t total_notes = 0;
+    for (const auto& pat : p.patterns) total_notes += pat.notes.size();
+    std::printf("midi->opj: %zu tracks, %zu notes, bpm=%.2f, length_bars=%.0f -> %s\n",
+                p.tracks.size(), total_notes, p.bpm, p.length_bars, out_opj.c_str());
+    return 0;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
@@ -166,6 +186,7 @@ int main(int argc, char** argv) {
     const std::string cmd = argv[1];
     if (cmd == "render") return cmd_render(argc - 1, argv + 1);
     if (cmd == "gen-testproject") return cmd_gen_testproject(argc - 1, argv + 1);
+    if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     usage();
     return 2;
