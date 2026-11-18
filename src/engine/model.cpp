@@ -296,11 +296,12 @@ json project_to_json(const Project& p) {
     return j;
 }
 
+std::string project_bytes(const Project& p) { return project_to_json(p).dump(2) + "\n"; }
+
 bool save_project(const std::string& path, const Project& p, std::string& err) {
-    const json j = project_to_json(p);
     std::ofstream f(path, std::ios::binary);
     if (!f) { err = "cannot write '" + path + "'"; return false; }
-    f << j.dump(2) << "\n";
+    f << project_bytes(p);
     return true;
 }
 

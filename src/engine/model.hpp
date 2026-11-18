@@ -95,6 +95,11 @@ bool track_audible(const Project& p, std::size_t i);
 
 // Load/validate per spec. Returns false + machine-parsable err string on any violation.
 bool load_project(const std::string& path, Project& out, std::string& err);
+
+// The exact bytes save_project writes for `p`: canonical JSON (stable key order) dumped with
+// indent 2 plus one trailing '\n'. Pure function of `p`; the single definition of the file format.
+std::string project_bytes(const Project& p);
+
 bool save_project(const std::string& path, const Project& in, std::string& err);  // canonical (stable key order)
 
 }  // namespace op

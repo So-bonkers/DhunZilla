@@ -1,6 +1,6 @@
 // src/doc/document.hpp — GUI-free document object for the app (WP-0141, WP-0137a). Owns a
 // Project + op::History + file path and gives a UI everything it needs from a project file:
-// open/save with a dirty flag computed from the canonical save bytes, undo/redo over the
+// open/save with a dirty flag computed from op::project_bytes, undo/redo over the
 // WP-0135 operations, continuous slider gestures that produce exactly ONE undo entry, a revision
 // counter for refresh scheduling, and derived track-list rows. No GUI, no audio, no UI toolkit —
 // unit-testable in op_tests, reusable by the CLI later. The app (WP-0137b+) calls only this class.
@@ -72,7 +72,7 @@ public:
     void cancel_gesture();  // restore the begin state, no history entry, end the gesture
     bool gesture_active() const;
 
-    // dirty() == the canonical save bytes of project() differ from the bytes at the last open/save.
+    // dirty() == the op::project_bytes of project() differ from the bytes at the last open/save.
     // (Undoing back to the saved state makes it clean again.)
     bool dirty() const;
     bool save(std::string& err);                            // writes path() via op::save_project
@@ -85,7 +85,7 @@ private:
     std::string path_;
     std::uint64_t revision_ = 0;
     History history_;
-    std::string saved_bytes_;      // canonical save bytes at the last open/save (dirty baseline)
+    std::string saved_bytes_;      // op::project_bytes at the last open/save (dirty baseline)
     bool gesture_active_ = false;
     Project gesture_base_;         // project() as of begin_gesture()
     nlohmann::json last_op_;       // last successful update_gesture operation

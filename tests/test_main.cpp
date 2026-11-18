@@ -2113,6 +2113,54 @@ static void test_resample() {
     CHECK(err == "sampler: unsupported sample rate 4000", "resample.e_error_message_exact");
 }
 
+// WP-0142: op::project_bytes is the single definition of the file format. save_project and
+// Document must write exactly these bytes — no second serializer anywhere.
+static void test_project_bytes() {
+    std::string err;
+
+    // Every golden: load → save_project to /tmp → read back binary == op::project_bytes(loaded).
+    // Some goldens are older, non-canonical formatting on disk, so the comparison is against what
+    // save_project writes now — never against the fixture file itself.
+    const char* names[] = {"arranged", "demo",     "imported", "mixer",
+                           "panorama", "pitched",  "resampled", "tempo"};
+    for (const char* name : names) {
+        const std::string fix = std::string(OP_TEST_DATA) + "/fixtures/goldens/" + name + ".opj";
+        op::Project p;
+        bool ok = op::load_project(fix, p, err);
+        const std::string tmp = std::string("/tmp/op_projbytes_") + name + ".opj";
+        if (ok) ok = op::save_project(tmp, p, err);
+        if (ok) {
+            const std::string want = op::project_bytes(p);
+            ok = !want.empty() &&
+                 slurp_bytes(tmp) == std::vector<uint8_t>(want.begin(), want.end());
+        }
+        CHECK(ok, (std::string("projbytes.") + name + "_matches_save").c_str());
+    }
+
+    // Default project: non-empty, exactly one trailing '\n', identical across calls.
+    {
+        const op::Project p;
+        const std::string b = op::project_bytes(p);
+        CHECK(!b.empty(), "projbytes.default_nonempty");
+        CHECK(b.back() == '\n', "projbytes.default_ends_with_newline");
+        CHECK(op::project_bytes(p) == b, "projbytes.stable_across_calls");
+    }
+
+    // Document agrees: save_as writes exactly op::project_bytes(doc.project()).
+    {
+        const std::string demo = std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj";
+        op::Document doc;
+        bool ok = op::Document::open(demo, doc, err);
+        if (ok) ok = doc.save_as("/tmp/op_projbytes_doc.opj", err);
+        if (ok) {
+            const std::string want = op::project_bytes(doc.project());
+            ok = slurp_bytes("/tmp/op_projbytes_doc.opj") ==
+                 std::vector<uint8_t>(want.begin(), want.end());
+        }
+        CHECK(ok, "projbytes.document_save_as_agrees");
+    }
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -2139,6 +2187,7 @@ int main() {
     test_ops_property();
     test_document();
     test_resample();
+    test_project_bytes();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
