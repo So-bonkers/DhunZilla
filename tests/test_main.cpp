@@ -725,6 +725,65 @@ static void test_midi_merge() {
     CHECK(e > 0.0, "merge.render_has_audio");
 }
 
+// --- tempo map ⇄ MIDI (WP-0115): multi-point export, single-tempo byte stability, round-trip.
+static void test_tempo_midi() {
+    std::string err;
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 8.0; p.sample_rate = 48000;
+    op::Track t; t.name = "S"; t.voice.kind = op::VoiceKind::Synth; t.voice.freq_hz = 220.0f;
+    p.tracks = {t};
+    op::Pattern pat; pat.track = 0; pat.notes.push_back({0.0, 2.0, 60}); pat.notes.push_back({18.0, 2.0, 64});
+    p.patterns = {pat};
+    p.tempo_map = {{0.0, 120.0}, {4.0, 72.0}};
+
+    // Export: two FF51 events, second at tick 4·4·480 with us-per-quarter ≈ 6e7/72.
+    CHECK(op::save_midi("/tmp/op_tm.mid", p, err), "tmid.export_ok");
+    std::ifstream f("/tmp/op_tm.mid", std::ios::binary);
+    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::vector<long long> tempo_ticks;
+    std::vector<int> tempo_bpm;
+    {   // walk track 0 body (header 14 + MTrk 8): events with running VLQ deltas
+        size_t i = 22; long long tick = 0;
+        while (i + 4 < raw.size()) {
+            long long delta = 0;
+            while (i < raw.size()) { const uint8_t b = raw[i++]; delta = (delta << 7) | (b & 0x7F); if (!(b & 0x80)) break; }
+            tick += delta;
+            if (raw[i] != 0xFF) break;  // first note ends the meta prefix we care about
+            const uint8_t mt = raw[i + 1];
+            const uint32_t len = raw[i + 2];
+            if (mt == 0x51) {
+                const uint32_t us = (raw[i + 3] << 16) | (raw[i + 4] << 8) | raw[i + 5];
+                tempo_ticks.push_back(tick);
+                tempo_bpm.push_back(static_cast<int>(std::llround(6.0e7 / static_cast<double>(us))));
+            }
+            if (mt == 0x2F) break;
+            i += 3 + len;
+        }
+    }
+    CHECK(tempo_ticks.size() == 2 && tempo_ticks[1] == 4LL * 4 * 480, "tmid.two_ff51");
+    CHECK(tempo_bpm.size() == 2 && tempo_bpm[0] == 120 && tempo_bpm[1] == 72, "tmid.tempo_values");
+
+    // Round-trip: import restores a two-point map (bar exact; bpm within µs-quantization tolerance).
+    op::Project q;
+    CHECK(op::load_midi("/tmp/op_tm.mid", q, err), "tmid.reimport_ok");
+    CHECK(q.tempo_map.size() == 2 && q.tempo_map[1].bar == 4.0 &&
+          std::fabs(q.tempo_map[1].bpm - 72.0) < 1e-3, "tmid.map_restored");
+
+    // Single-tempo byte stability: empty map and {0,bpm} export identically.
+    op::Project e = p; e.tempo_map.clear();
+    op::Project s = p; s.tempo_map = {{0.0, 120.0}};
+    CHECK(op::save_midi("/tmp/op_tm_empty.mid", e, err) && op::save_midi("/tmp/op_tm_single.mid", s, err), "tmid.singles_save");
+    std::ifstream f1("/tmp/op_tm_empty.mid", std::ios::binary), f2("/tmp/op_tm_single.mid", std::ios::binary);
+    const std::vector<uint8_t> b1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
+    const std::vector<uint8_t> b2((std::istreambuf_iterator<char>(f2)), std::istreambuf_iterator<char>());
+    CHECK(b1 == b2, "tmid.empty_and_single_point_identical");
+
+    // Legacy guard: single-tempo fixture imports with EMPTY map (imported.opj golden bytes safe).
+    const std::string fix = std::string(OP_TEST_DATA) + "/fixtures/midi/two_notes.mid";
+    op::Project leg;
+    CHECK(op::load_midi(fix, leg, err) && leg.tempo_map.empty(), "tmid.single_tempo_imports_legacy");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -739,6 +798,7 @@ int main() {
     test_bundle();
     test_velocity();
     test_midi_merge();
+    test_tempo_midi();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

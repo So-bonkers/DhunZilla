@@ -143,3 +143,15 @@ your drums, not in a separate file). Semantics:
 - **Arrangement interaction:** if the host has an arrangement, imported tracks are silent until a
   clip references them — the CLI prints that note rather than surprising the user with quiet output.
 This is a model-driven mutation (load → engine op → save); no direct state mutation from the CLI.
+
+## Tempo map ⇄ MIDI (2026-11-18, WP-0115)
+
+**Export:** `save_midi` writes one FF51 meta per `tempo_map` point at tick `bar·beats_per_bar·480`
+(monotonic-clamped). An empty map exports as the single `{bar 0, bpm}` point — byte-identical to
+pre-WP-0115 output (asserted). **Import:** all FF51 events are collected across tracks (format-1
+ticks share one timeline), sorted by tick; consecutive same-tempo/non-increasing entries collapse.
+With ≥2 distinct points the project gets a `tempo_map` (bar-0 anchored: an implicit `{0, first}`
+is prepended if the earliest event is later); **single-tempo files keep the legacy empty-map path**
+so existing imported fixtures are unchanged. Tempos outside (0,1000] bpm fail actionable — matching
+the model's validation ceiling; length comes from notes only (a late tempo point never extends it).
+Round-trip `opj → mid → opj` preserves bar positions exactly and BPM within µs quantization (<1e-3).

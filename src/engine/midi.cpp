@@ -133,15 +133,25 @@ bool save_midi(const std::string& path, const Project& p, std::string& err) {
         o.insert(o.end(), body.begin(), body.end());
     };
 
-    // Track 0: tempo + 4/4 marker.
+    // Track 0: tempo map (one FF51 per point) + 4/4 marker. An empty project map is treated as a
+    // single {bar 0, p.bpm} point → byte-identical to the pre-WP-0115 single-tempo export.
     {
         std::vector<uint8_t> body;
-        const uint32_t us_per_qn = static_cast<uint32_t>(std::llround(6.0e7 / p.bpm));
-        put_vlq(body, 0);
-        body.insert(body.end(), {0xFF, 0x51, 0x03,
-                                 static_cast<uint8_t>((us_per_qn >> 16) & 0xFF),
-                                 static_cast<uint8_t>((us_per_qn >> 8) & 0xFF),
-                                 static_cast<uint8_t>(us_per_qn & 0xFF)});
+        const std::vector<TempoPoint> pts =
+            p.tempo_map.empty() ? std::vector<TempoPoint>{{0.0, p.bpm}} : p.tempo_map;
+        long long prev_tick = 0;
+        for (const TempoPoint& tp : pts) {
+            if (!(tp.bpm > 0.0)) { err = "midi export: tempo point bpm must be > 0"; return false; }
+            long long tick = std::llround(tp.bar * static_cast<double>(p.beats_per_bar) * kExportPpq);
+            if (tick < prev_tick) tick = prev_tick;  // monotonic, never a negative delta
+            const uint32_t us_per_qn = static_cast<uint32_t>(std::llround(6.0e7 / tp.bpm));
+            put_vlq(body, static_cast<uint32_t>(tick - prev_tick));
+            body.insert(body.end(), {0xFF, 0x51, 0x03,
+                                     static_cast<uint8_t>((us_per_qn >> 16) & 0xFF),
+                                     static_cast<uint8_t>((us_per_qn >> 8) & 0xFF),
+                                     static_cast<uint8_t>(us_per_qn & 0xFF)});
+            prev_tick = tick;
+        }
         put_vlq(body, 0);
         body.insert(body.end(), {0xFF, 0x58, 0x04,
                                  static_cast<uint8_t>(std::min(255, std::max(1, p.beats_per_bar))),
@@ -223,7 +233,8 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
     p.sample_rate = 48000;
     p.beats_per_bar = 4;
     double bpm = 120.0;
-    bool tempo_seen = false;
+    // All FF51s across all tracks (format-1 ticks share one timeline); map form built after parse.
+    std::vector<std::pair<long long, double>> tempos;
     std::vector<TrackAccum> accums(ntrks);
 
     for (uint16_t trk = 0; trk < ntrks && !r.fail; ++trk) {
@@ -256,7 +267,7 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
                 if (mtype == 0x51 && mlen >= 3) {
                     const uint32_t t24 = (static_cast<uint32_t>(r.u8()) << 16) |
                                          (static_cast<uint32_t>(r.u8()) << 8) | r.u8();
-                    if (!tempo_seen && t24 > 0) { bpm = 6.0e7 / static_cast<double>(t24); tempo_seen = true; }
+                    if (t24 > 0) tempos.push_back({tick, 6.0e7 / static_cast<double>(t24)});
                 } else if (mtype == 0x03) {
                     std::string nm;
                     for (uint32_t i = 0; i < mlen && r.pos < trk_end; ++i) nm += static_cast<char>(r.u8());
@@ -348,7 +359,29 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
     }
     if (p.tracks.empty()) { err = "midi: file contains no playable note events"; return false; }
 
+    // Tempo (WP-0115): first event wins as global bpm; ≥2 distinct points become a bar-anchored
+    // map. Single-tempo files keep the legacy empty-map path → imported goldens unchanged.
+    std::sort(tempos.begin(), tempos.end(),
+              [](const std::pair<long long, double>& a, const std::pair<long long, double>& b) {
+                  return a.first < b.first;
+              });
+    if (!tempos.empty()) bpm = tempos.front().second;
     p.bpm = bpm;
+    {
+        std::vector<TempoPoint> pts;
+        for (const auto& tk_bpm : tempos) {
+            const double tb = tk_bpm.second;
+            if (!(tb > 0.0 && tb <= 1000.0)) { err = "midi: tempo out of range (0,1000] bpm"; return false; }
+            const double bar = static_cast<double>(tk_bpm.first) /
+                               (ppq * static_cast<double>(p.beats_per_bar));
+            if (!pts.empty() && (pts.back().bpm == tb || bar <= pts.back().bar)) continue;  // not a change
+            pts.push_back({bar, tb});
+        }
+        if (pts.size() >= 2) {
+            if (pts.front().bar != 0.0) pts.insert(pts.begin(), {0.0, bpm});  // model requires bar-0 anchor
+            p.tempo_map = std::move(pts);
+        }
+    }
     p.length_bars = std::max(1.0, std::ceil(max_end / static_cast<double>(p.beats_per_bar)));
     out = std::move(p);
     return true;
