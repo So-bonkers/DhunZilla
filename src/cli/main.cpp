@@ -22,6 +22,7 @@ static void usage() {
         "  opd render <project.opj> -o <out.wav> [--seed N]\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
+        "  opd opj2mid <in.opj> -o <out.mid>\n"
         "  opd info <file.wav|project.opj>\n");
 }
 
@@ -158,6 +159,21 @@ static int cmd_midi2opj(int argc, char** argv) {
     return 0;
 }
 
+static int cmd_opj2mid(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "opj2mid needs <in.opj>"); }
+    const std::string in_opj = argv[1];
+    std::string out_mid;
+    for (int i = 2; i < argc; ++i)
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_mid = argv[++i];
+    if (out_mid.empty()) { usage(); return fail("usage", "opj2mid needs -o <out.mid>"); }
+    op::Project p;
+    std::string err;
+    if (!op::load_project(in_opj, p, err)) return fail("parse", err);
+    if (!op::save_midi(out_mid, p, err)) return fail("write", err);
+    std::printf("opj->midi: %zu tracks -> %s\n", p.tracks.size(), out_mid.c_str());
+    return 0;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
@@ -187,6 +203,7 @@ int main(int argc, char** argv) {
     if (cmd == "render") return cmd_render(argc - 1, argv + 1);
     if (cmd == "gen-testproject") return cmd_gen_testproject(argc - 1, argv + 1);
     if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
+    if (cmd == "opj2mid") return cmd_opj2mid(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     usage();
     return 2;

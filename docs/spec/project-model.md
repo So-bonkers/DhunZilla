@@ -90,3 +90,13 @@ present. Notes are sorted by `(t_beats, midi_note)` — output is independent of
 `length_bars = ceil(max_end_beats / beats_per_bar)`, min 1; `sample_rate` 48000, default seed 42.
 Files with zero playable notes are rejected (actionable error). Parser bounds-checks every read;
 truncation fuzz over the committed fixture must always fail cleanly, never crash or succeed.
+
+## MIDI export (`opd opj2mid`) — WP-0104 (2026-11-18)
+
+`save_midi()` writes SMF format 1 @ 480 ppq: track 0 carries tempo meta (from project bpm)
+and a 4/4 marker; one track per op track with name meta and all its patterns' notes (gathered
+by `pattern.track`, not positional). Notes sort by tick, note-offs before note-ons at equal
+ticks. Beat→tick is `llround`; zero/negative durations clamp to 1 tick so output is always
+well-formed. Notes lacking `midi_note` map via nearest-12-TET of `voice.freq_hz` (table scan,
+`dsp::powf_` only). Byte-deterministic for a given Project; round-trip through `load_midi`
+preserves track count, bpm, and exact `(t_beats, midi_note)` content for tick-aligned input.

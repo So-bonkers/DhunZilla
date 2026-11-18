@@ -389,6 +389,41 @@ static void test_midi() {
     write_text("/tmp/op_badmagic.mid", "RIFFjunkjunk");
     op::Project bp;
     CHECK(!op::load_midi("/tmp/op_badmagic.mid", bp, err), "midi.rejects_bad_magic");
+
+    // --- export (WP-0104): byte-deterministic + exact content round-trip
+    op::Project src;
+    CHECK(op::load_midi(fix, src, err), "midi.rt_source_load");
+    CHECK(op::save_midi("/tmp/op_rt_a.mid", src, err), "midi.export_ok");
+    auto slurp = [](const char* p) {
+        std::ifstream f(p, std::ios::binary);
+        return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    CHECK(op::save_midi("/tmp/op_rt_b.mid", src, err), "midi.export2_ok");
+    CHECK(slurp("/tmp/op_rt_a.mid") == slurp("/tmp/op_rt_b.mid"), "midi.export_byte_deterministic");
+    op::Project back;
+    CHECK(op::load_midi("/tmp/op_rt_a.mid", back, err), "midi.reimport_ok");
+    auto notes_of = [](const op::Project& q) {
+        std::vector<std::pair<double, int>> v;
+        for (const auto& pat : q.patterns)
+            for (const auto& n : pat.notes) v.push_back({n.t_beats, n.midi_note});
+        return v;
+    };
+    CHECK(notes_of(src) == notes_of(back), "midi.roundtrip_notes_exact");
+    CHECK(back.bpm == src.bpm && back.tracks.size() == src.tracks.size(), "midi.roundtrip_bpm_tracks");
+
+    // legacy multi-pattern project exports all patterns per track (gather by track field)
+    op::Project lp;
+    CHECK(op::load_project(std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj", lp, err), "midi.export_legacy_load");
+    CHECK(op::save_midi("/tmp/op_legacy.mid", lp, err), "midi.export_legacy_ok");
+    {
+        size_t n_notes = 0;
+        op::Project lb;
+        if (op::load_midi("/tmp/op_legacy.mid", lb, err))
+            for (const auto& pat : lb.patterns) n_notes += pat.notes.size();
+        size_t want_notes = 0;
+        for (const auto& pat : lp.patterns) want_notes += pat.notes.size();
+        CHECK(n_notes == want_notes && n_notes > 0, "midi.export_legacy_all_patterns");
+    }
 }
 
 int main() {

@@ -15,4 +15,10 @@ namespace op {
 // Returns false + actionable err on any structural violation (never partial success).
 bool load_midi(const std::string& path, Project& out, std::string& err);
 
+// Writes *p* as SMF format 1 @ 480 ppq: track 0 = tempo (+4/4 meta), one track per op track
+// (name meta, notes sorted by (t_beats, midi_note)). Notes without `midi_note` fall back to
+// round(voice.freq_hz) in 12-TET nearest-number mapping. Beat→tick uses llround; deltas are
+// clamped non-negative so output is always well-formed. Byte-deterministic for a given Project.
+bool save_midi(const std::string& path, const Project& p, std::string& err);
+
 }  // namespace op

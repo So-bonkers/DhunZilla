@@ -9,6 +9,8 @@
 #include <map>
 #include <vector>
 
+#include "engine/dsp.hpp"
+
 namespace op {
 namespace {
 
@@ -69,6 +71,129 @@ struct TrackAccum {
 };
 
 }  // namespace
+
+// ---------------------------------------------------------------- export (SMF writer)
+
+namespace {
+
+constexpr uint16_t kExportPpq = 480;
+
+void put_be32(std::vector<uint8_t>& o, uint32_t v) {
+    for (int i = 24; i >= 0; i -= 8) o.push_back(static_cast<uint8_t>((v >> i) & 0xFF));
+}
+void put_be16(std::vector<uint8_t>& o, uint16_t v) {
+    o.push_back(static_cast<uint8_t>(v >> 8));
+    o.push_back(static_cast<uint8_t>(v & 0xFF));
+}
+void put_vlq(std::vector<uint8_t>& o, uint32_t v) {
+    int nbytes = 1;
+    while (nbytes < 4 && (v >> (7 * nbytes))) ++nbytes;
+    if (v >> 28) v = (1u << 28) - 1;  // clamp to VLQ max rather than emit garbage
+    for (int i = nbytes - 1; i > 0; --i) o.push_back(static_cast<uint8_t>(((v >> (7 * i)) & 0x7F) | 0x80));
+    o.push_back(static_cast<uint8_t>(v & 0x7F));
+}
+
+// Nearest MIDI number for a bare frequency — table scan, no log() needed (dsp::powf_ only).
+int nearest_midi(float f) {
+    if (!(f > 0.0f)) return 69;
+    int best = 69;
+    float best_d = 1e30f;
+    for (int m = 0; m < 128; ++m) {
+        const float fm = 440.0f * dsp::powf_(2.0f, static_cast<float>(m - 69) / 12.0f);
+        const float d = (fm > f) ? fm - f : f - fm;
+        if (d < best_d) { best_d = d; best = m; }
+    }
+    return best;
+}
+
+struct MidiEvent {
+    long long tick;
+    int order;  // at equal ticks: OFF(0) before ON(1) — prevents stuck-note files
+    std::vector<uint8_t> bytes;
+};
+
+}  // namespace
+
+bool save_midi(const std::string& path, const Project& p, std::string& err) {
+    if (p.tracks.empty()) { err = "midi export: project has no tracks"; return false; }
+    if (!(p.bpm > 0.0)) { err = "midi export: bpm must be > 0"; return false; }
+
+    std::vector<uint8_t> o;
+    const uint16_t ntrks = static_cast<uint16_t>(p.tracks.size() + 1);
+    o.insert(o.end(), {'M', 'T', 'h', 'd'});
+    put_be32(o, 6);
+    put_be16(o, 1);  // format 1
+    put_be16(o, ntrks);
+    put_be16(o, kExportPpq);
+
+    auto emit_track = [&](std::vector<uint8_t>& body) {
+        o.insert(o.end(), {'M', 'T', 'r', 'k'});
+        put_be32(o, static_cast<uint32_t>(body.size()));
+        o.insert(o.end(), body.begin(), body.end());
+    };
+
+    // Track 0: tempo + 4/4 marker.
+    {
+        std::vector<uint8_t> body;
+        const uint32_t us_per_qn = static_cast<uint32_t>(std::llround(6.0e7 / p.bpm));
+        put_vlq(body, 0);
+        body.insert(body.end(), {0xFF, 0x51, 0x03,
+                                 static_cast<uint8_t>((us_per_qn >> 16) & 0xFF),
+                                 static_cast<uint8_t>((us_per_qn >> 8) & 0xFF),
+                                 static_cast<uint8_t>(us_per_qn & 0xFF)});
+        put_vlq(body, 0);
+        body.insert(body.end(), {0xFF, 0x58, 0x04,
+                                 static_cast<uint8_t>(std::min(255, std::max(1, p.beats_per_bar))),
+                                 0x02, 0x24, 0x08});
+        put_vlq(body, 0);
+        body.insert(body.end(), {0xFF, 0x2F, 0x00});
+        emit_track(body);
+    }
+
+    for (size_t ti = 0; ti < p.tracks.size(); ++ti) {
+        const Track& tr = p.tracks[ti];
+        std::vector<MidiEvent> evs;
+        for (const Pattern& pat : p.patterns) {  // gather every pattern belonging to this track
+            if (pat.track != static_cast<int>(ti)) continue;
+            for (const Note& n : pat.notes) {
+                const int midi = n.midi_note >= 0 ? n.midi_note : nearest_midi(tr.voice.freq_hz);
+                long long t1 = std::llround(n.t_beats * kExportPpq);
+                long long t2 = std::llround((n.t_beats + n.dur_beats) * kExportPpq);
+                if (t1 < 0) t1 = 0;
+                if (t2 <= t1) t2 = t1 + 1;
+                evs.push_back({t1, 1, {0x90, static_cast<uint8_t>(midi), 0x5A}});
+                evs.push_back({t2, 0, {0x80, static_cast<uint8_t>(midi), 0x40}});
+            }
+        }
+        std::sort(evs.begin(), evs.end(), [](const MidiEvent& a, const MidiEvent& b) {
+            return a.tick != b.tick ? a.tick < b.tick : a.order < b.order;
+        });
+
+        std::vector<uint8_t> body;
+        const std::string name = sanitize_name(tr.name);
+        if (!name.empty()) {
+            put_vlq(body, 0);
+            body.push_back(0xFF); body.push_back(0x03);
+            put_vlq(body, static_cast<uint32_t>(name.size()));
+            body.insert(body.end(), name.begin(), name.end());
+        }
+        long long prev = 0;
+        for (const auto& e : evs) {
+            const long long delta = std::max(0LL, e.tick - prev);
+            put_vlq(body, static_cast<uint32_t>(delta));
+            body.insert(body.end(), e.bytes.begin(), e.bytes.end());
+            prev += delta;
+        }
+        put_vlq(body, 0);
+        body.insert(body.end(), {0xFF, 0x2F, 0x00});
+        emit_track(body);
+    }
+
+    std::ofstream f(path, std::ios::binary);
+    if (!f) { err = "midi export: cannot write '" + path + "'"; return false; }
+    f.write(reinterpret_cast<const char*>(o.data()), static_cast<std::streamsize>(o.size()));
+    return f.good();
+}
 
 bool load_midi(const std::string& path, Project& out, std::string& err) {
     out = Project{};
