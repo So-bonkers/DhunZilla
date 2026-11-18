@@ -61,6 +61,31 @@ jobs:
           fi
           echo "negative control OK (harness rejected corrupt golden)"
 
+  # WP-0139: commits claimed "ASAN-clean" with no job able to reproduce it. This is that job.
+  # ubuntu-24.04 (x86_64) only, per package spec. Goldens were verified bit-exact under
+  # Debug+sanitizers on the aarch64 reference rig (WP-0139 handoff), so all three suites run here;
+  # if that ever drifts, move run_goldens.sh back to the Release jobs only and note why.
+  sanitizers:
+    name: sanitizers (ASAN+UBSAN)
+    runs-on: ubuntu-24.04
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@latest
+      - name: Build (Debug + ASAN+UBSAN on our targets only; DZ_SANITIZE gate)
+        run: |
+          cmake -B build-san -DCMAKE_BUILD_TYPE=Debug -DDZ_SANITIZE=ON
+          cmake --build build-san -j
+      - name: Unit tests under sanitizers
+        run: ./build-san/op_tests
+        shell: bash
+      - name: CLI exit-code contracts under sanitizers
+        run: bash harness/test_cli_errors.sh ./build-san/opd
+      - name: Golden renders under sanitizers (bit-exact vs committed fixtures)
+        run: bash harness/run_goldens.sh ./build-san/opd
+
   sidecar:
     name: ai-sidecar
     runs-on: ubuntu-24.04

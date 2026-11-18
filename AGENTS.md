@@ -9,7 +9,8 @@ Follow these rules exactly. When in doubt, these rules beat your instincts.
    "improve" anything outside its scope. If something outside scope must change, write a
    `PROPOSE:` note in the handoff report instead.
 2. Definition of done (all required before requesting human review):
-   - CI green: build (gcc/clang), clang-format where available, unit tests, golden renders, sidecar pytest.
+   - CI green: `-Werror` build (gcc/clang), unit tests, golden renders, CLI exit-code contracts,
+     glue-script e2e, ASAN+UBSAN sanitizers job, sidecar pytest + ruff.
    - Acceptance criteria from the work package checked off **with evidence** (commands + output).
    - `docs/spec/` updated if observable behavior changed; ADR drafted if an architecture decision was made.
    - Demo artifact attached when audio output is affected: before/after WAVs or screenshots.
