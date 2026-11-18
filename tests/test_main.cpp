@@ -1122,6 +1122,90 @@ static void test_wav_fuzz() {
     CHECK(survived == 400, "wf.random_all_returned");
 }
 
+// --- .opd bundle fuzz (WP-0128): hostile central directories must fail cleanly, never OOB.
+static void test_bundle_fuzz() {
+    std::string err;
+    // Seed: real project + sample + attachment packed into a genuine .opd.
+    const std::string dir = "/tmp/op_bf_seed";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir + "/kits");
+    write_text(dir + "/song.opj", R"({"format_version":0,"bpm":120,"length_bars":2,
+        "tracks":[{"voice":{"kind":"sine","freq_hz":220}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":1.5,"note":64}]}],
+        "attachments":[{"path":"stems/a.wav","kind":"stem","producer":"x"}]})");
+    {   // 128-sample deterministic stereo WAVs: kit sample + stem asset
+        op::wav::StereoBuffer b;
+        for (int i = 0; i < 64; ++i) b.interleaved.push_back(0.1f * i);
+        CHECK(op::wav::write_pcm16_stereo(dir + "/kits/k.wav", b, err), "bf.seed_wav");
+    }
+    std::filesystem::create_directories(dir + "/stems");
+    { op::wav::StereoBuffer b; for (int i = 0; i < 64; ++i) b.interleaved.push_back(0.2f * i);
+      CHECK(op::wav::write_pcm16_stereo(dir + "/stems/a.wav", b, err), "bf.stem"); }
+    CHECK(op::pack_project(dir + "/song.opj", dir + "/seed.opd", err), "bf.seed_packed");
+    std::ifstream f(dir + "/seed.opd", std::ios::binary);
+    const std::vector<uint8_t> seed((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    CHECK(seed.size() > 200, "bf.seed_size");
+
+    auto unpack_must_survive = [&](const std::vector<uint8_t>& bytes, const char* label) {
+        const std::string p = dir + "/case.opd";
+        std::ofstream w(p, std::ios::binary);
+        w.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        w.close();
+        std::string main_opj;
+        std::vector<std::string> entries;
+        try {
+            op::list_bundle(p, entries, err);   // both readers get every case
+            op::unpack_bundle(p, dir + "/out", main_opj, err);
+        } catch (...) { CHECK(false, label); }
+    };
+
+    auto patch16 = [](std::vector<uint8_t>& v, size_t off, uint16_t x) {
+        if (off + 2 <= v.size()) { v[off] = static_cast<uint8_t>(x & 0xFF); v[off + 1] = static_cast<uint8_t>(x >> 8); }
+    };
+    auto patch32 = [](std::vector<uint8_t>& v, size_t off, uint32_t x) {
+        for (int i = 0; i < 4 && off + i < v.size(); ++i) v[off + i] = static_cast<uint8_t>((x >> (8 * i)) & 0xFFu);
+    };
+
+    // Crafted: nlen=0xFFFF on first central entry near EOF (OOB candidate), bogus cd_off,
+    // inflated n_entries, data-corruption (must be a clean CRC reject, not a crash).
+    {
+        const long eocd = static_cast<long>(seed.size()) - 22;
+        CHECK(eocd > 0 && seed[eocd] == 'P' && seed[eocd + 1] == 'K', "bf.seed_eocd_tail");
+        const uint32_t cd_off = static_cast<uint32_t>(seed[eocd + 16]) | (seed[eocd + 17] << 8) |
+                                (static_cast<uint32_t>(seed[eocd + 18]) << 16) |
+                                (static_cast<uint32_t>(seed[eocd + 19]) << 24);
+        std::vector<uint8_t> m = seed;
+        patch16(m, cd_off + 28, 0xFFFF);          // huge name length on first entry → OOB read pre-fix
+        unpack_must_survive(m, "bf.crafted_nlen");
+        m = seed; patch32(m, static_cast<size_t>(eocd) + 16, 0xFFFFFFF0u);  // cd_off past EOF
+        unpack_must_survive(m, "bf.crafted_cdoff");
+        m = seed; patch16(m, static_cast<size_t>(eocd) + 10, 300);          // more entries than exist
+        unpack_must_survive(m, "bf.crafted_ncount");
+        m = seed; if (m.size() > 100) m[50] ^= 0xFF;                        // corrupt entry data
+        unpack_must_survive(m, "bf.crafted_corrupt_data");
+    }
+
+    // Truncation sweep: every byte of the tail region + coarse steps through the body.
+    for (size_t i = 1; i < seed.size(); i += (i > seed.size() - 512) ? 1 : 37) {
+        unpack_must_survive(std::vector<uint8_t>(seed.begin(), seed.begin() + static_cast<long>(i)), "bf.trunc");
+    }
+
+    // Seeded byte mutations biased to the central directory / EOCD tail.
+    op::rng::Pcg32 prng(20261121ull);
+    for (int trial = 0; trial < 400; ++trial) {
+        std::vector<uint8_t> m = seed;
+        const int n_edits = 1 + static_cast<int>(prng.next() % 4);
+        for (int e = 0; e < n_edits; ++e) {
+            size_t pos = (prng.next() % 2 == 0 && m.size() > 2048)
+                             ? m.size() - 1 - static_cast<size_t>(prng.next() % 2048)  // tail-biased
+                             : static_cast<size_t>(prng.next() % m.size());
+            m[pos] = static_cast<char>(prng.next() % 256u);
+        }
+        unpack_must_survive(m, "bf.mutate");
+    }
+    std::filesystem::remove_all(dir + "/out");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -1141,6 +1225,7 @@ int main() {
     test_clip_gain();
     test_json_fuzz();
     test_wav_fuzz();
+    test_bundle_fuzz();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

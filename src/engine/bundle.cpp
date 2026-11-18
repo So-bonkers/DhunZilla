@@ -197,9 +197,15 @@ bool unpack_bundle(const std::string& opd_path, const std::string& out_dir,
         const uint32_t usize = get32(buf, p + 24);
         const uint16_t nlen = get16(buf, p + 28), elen = get16(buf, p + 30), clen = get16(buf, p + 32);
         const uint32_t local_off = get32(buf, p + 42);
+        // WP-0128 fuzz: name bytes must exist in-file before we construct from them (OOB read fix).
+        if (p + 46u + nlen > buf.size()) { err = "bundle: corrupt central directory entry " + std::to_string(i); return false; }
         const std::string name(reinterpret_cast<const char*>(&buf[p + 46]), nlen);
         p += 46 + nlen + elen + clen;
         if (!safe_entry_name(name)) { err = "bundle: unsafe entry name rejected: '" + name + "'"; return false; }
+        // Duplicate names would mean silent overwrite in pass 2 — reject explicitly (WP-0128).
+        for (const auto& prev : files) {
+            if (prev.name == name) { err = "bundle: duplicate entry name '" + name + "'"; return false; }
+        }
 
         // Local header must agree.
         if (local_off + 30 > buf.size() ||
@@ -256,6 +262,8 @@ bool list_bundle(const std::string& opd_path, std::vector<std::string>& entries_
             err = "bundle: corrupt central directory entry " + std::to_string(i); return false;
         }
         const uint16_t nlen = get16(buf, p + 28), elen = get16(buf, p + 30), clen = get16(buf, p + 32);
+        // WP-0128 fuzz: name bytes must exist in-file before we construct from them (OOB read fix).
+        if (p + 46u + nlen > buf.size()) { err = "bundle: corrupt central directory entry " + std::to_string(i); return false; }
         const std::string name(reinterpret_cast<const char*>(&buf[p + 46]), nlen);
         if (!safe_entry_name(name)) { err = "bundle: unsafe entry name rejected: '" + name + "'"; return false; }
         entries_out.push_back(name);
