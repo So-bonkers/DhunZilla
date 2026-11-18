@@ -1,6 +1,6 @@
 # WP-0129 — Rename product to **DhunZilla**
 
-**Status:** done (CI verification pending at commit time) · **Created:** 2026-11-18 · **Owner:** orchestrator
+**Status:** done — CI green · **Created:** 2026-11-18 · **Owner:** orchestrator
 **Decision:** product owner chose "DhunZilla" on 2026-11-18 (see
 `docs/legal/trademark-screen-2026-11-18.md`). `dhunzilla` namespace was free at decision time.
 
@@ -38,7 +38,7 @@ Replace the provisional "OpenPattern" name on all **user-facing** surfaces with 
 - [x] `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j` clean.
 - [x] `./build/op_tests` all pass; `./harness/run_goldens.sh` 6/6; `./harness/test_cli_errors.sh` pass.
 - [x] `cd ai-sidecar && uv run pytest -q` green; `uv run ruff check .` green.
-- [ ] CI green on `main` after push (Linux x64 + arm64).
+- [x] CI green on `main` after push (Linux x64 + arm64) — run 44283789875: core linux-x64, core linux-arm64, ai-sidecar all success.
 - [x] README renders with the pronunciation and the "formerly OpenPattern" line.
 
 ## Handoff report
@@ -65,6 +65,9 @@ Append below when done: what changed, evidence (commands/output), anything defer
 - `./harness/test_cli_errors.sh` → 0 failures.
 - `cd ai-sidecar && uv run --offline pytest -q` → **88 passed, 2 skipped**.
 - `uv run --offline ruff check .` → all checks passed.
+
+**CI**
+- `6603053` → https://github.com/So-bonkers/DhunZilla/actions/runs/44283789875 — all three jobs green.
 
 **Deferred / follow-ups**
 - `opd`, `opsidecar`, `ai_sidecar` identifiers unchanged → proposed **WP-0130** (mechanical CLI/package rename).
