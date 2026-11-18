@@ -215,6 +215,14 @@ static int cmd_info(int argc, char** argv) {
                     static_cast<double>(rr.samples.size() / rr.channels) / rr.sample_rate);
         return 0;
     }
+    if (path.size() > 4 && path.substr(path.size() - 4) == ".opd") {
+        std::vector<std::string> entries;
+        std::string err;
+        if (!op::list_bundle(path, entries, err)) return fail("parse", err);
+        std::printf("bundle: %s entries=%zu\n", path.c_str(), entries.size());
+        for (const auto& e : entries) std::printf("  %s\n", e.c_str());
+        return 0;
+    }
     op::Project p;
     std::string err;
     if (!op::load_project(path, p, err)) return fail("parse", err);

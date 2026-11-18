@@ -5,6 +5,7 @@
 // they use (e.g. "kits/kick.wav"). CRC32 verified on every read; any mismatch = actionable error.
 #pragma once
 #include <string>
+#include <vector>
 
 namespace op {
 
@@ -17,5 +18,9 @@ bool pack_project(const std::string& project_path, const std::string& out_opd, s
 // escape out_dir (path traversal) and any CRC mismatch — never leaves partial garbage on failure.
 bool unpack_bundle(const std::string& opd_path, const std::string& out_dir,
                    std::string& main_project_out, std::string& err);
+
+// Lists entry names in archive order (metadata-only read: central directory + name validation,
+// no CRC pass). Fails on structurally broken archives.
+bool list_bundle(const std::string& opd_path, std::vector<std::string>& entries_out, std::string& err);
 
 }  // namespace op

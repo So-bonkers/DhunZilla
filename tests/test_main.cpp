@@ -540,6 +540,12 @@ static void test_bundle() {
 
     // Deterministic bytes: packing twice yields identical files.
     CHECK(op::pack_project(dir + "/song.opj", dir + "/a.opd", err), "bundle.pack_ok");
+    // list_bundle: metadata view matches archive contents in order.
+    {
+        std::vector<std::string> entries;
+        CHECK(op::list_bundle(dir + "/a.opd", entries, err) && entries.size() == 2 &&
+              entries[0] == "song.opj" && entries[1] == "kits/kick.wav", "bundle.list_entries");
+    }
     CHECK(op::pack_project(dir + "/song.opj", dir + "/b.opd", err), "bundle.pack2_ok");
     auto slurp = [](const std::string& pth) {
         std::ifstream f(pth, std::ios::binary);

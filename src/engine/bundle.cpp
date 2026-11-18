@@ -233,4 +233,31 @@ bool unpack_bundle(const std::string& opd_path, const std::string& out_dir,
     return true;
 }
 
+bool list_bundle(const std::string& opd_path, std::vector<std::string>& entries_out, std::string& err) {
+    entries_out.clear();
+    bool ok = false;
+    const auto buf = read_file_bytes(opd_path, ok);
+    if (!ok || buf.size() < 22) { err = "bundle: cannot read '" + opd_path + "'"; return false; }
+    long eocd = -1;
+    const long lo = static_cast<long>(buf.size()) - 22;
+    for (long i = lo; i >= 0 && i > lo - 65536; --i) {
+        if (buf[i] == 'P' && buf[i + 1] == 'K' && buf[i + 2] == 0x05 && buf[i + 3] == 0x06) { eocd = i; break; }
+    }
+    if (eocd < 0) { err = "bundle: no end-of-central-directory — not an .opd"; return false; }
+    const uint16_t n_entries = get16(buf, static_cast<size_t>(eocd) + 10);
+    size_t p = get32(buf, static_cast<size_t>(eocd) + 16);
+    for (uint16_t i = 0; i < n_entries; ++i) {
+        if (p + 46 > buf.size() ||
+            !(buf[p] == 'P' && buf[p + 1] == 'K' && buf[p + 2] == 0x01 && buf[p + 3] == 0x02)) {
+            err = "bundle: corrupt central directory entry " + std::to_string(i); return false;
+        }
+        const uint16_t nlen = get16(buf, p + 28), elen = get16(buf, p + 30), clen = get16(buf, p + 32);
+        const std::string name(reinterpret_cast<const char*>(&buf[p + 46]), nlen);
+        if (!safe_entry_name(name)) { err = "bundle: unsafe entry name rejected: '" + name + "'"; return false; }
+        entries_out.push_back(name);
+        p += 46 + nlen + elen + clen;
+    }
+    return true;
+}
+
 }  // namespace op
