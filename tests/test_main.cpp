@@ -3,10 +3,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
 
+#include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
@@ -507,6 +509,98 @@ static void test_tempo_map() {
           pb.tempo_map.size() == 2 && pb.tempo_map[1].bpm == 60.0, "tempo.save_roundtrip");
 }
 
+// --- .opd bundles (WP-0110): deterministic pack, verified unpack, render equivalence, guards.
+static void test_bundle() {
+    std::string err;
+    // Source project with a sampler asset so the bundle actually has to carry files.
+    std::error_code sec;
+    std::filesystem::remove_all("/tmp/op_bd", sec);
+    std::filesystem::create_directories("/tmp/op_bd/kits", sec);
+    const std::string dir = "/tmp/op_bd";
+    {   // 0.1s 220Hz tone as fake kick (float32 stereo → engine wav writer handles conversion)
+        op::wav::StereoBuffer sb;
+        sb.sample_rate = 48000;
+        sb.interleaved.assign(4800 * 2, 0.0f);
+        for (int i = 0; i < 4800; ++i) {
+            const float s = op::dsp::sinf_(0.01f * static_cast<float>(i)) * 0.5f;
+            sb.interleaved[i * 2] = s; sb.interleaved[i * 2 + 1] = s;
+        }
+        CHECK(op::wav::write_pcm16_stereo(dir + "/kits/kick.wav", sb, err), "bundle.asset_written");
+    }
+    op::Project p;
+    p.bpm = 130.0; p.length_bars = 2.0; p.sample_rate = 48000; p.seed = 9;
+    op::Track tk; tk.name = "Kick"; tk.voice.kind = op::VoiceKind::Sampler; tk.voice.path = "kits/kick.wav";
+    op::Track tn; tn.name = "Sine"; tn.voice.kind = op::VoiceKind::Sine; tn.voice.freq_hz = 330.0f;
+    p.tracks = {tk, tn};
+    op::Pattern pk; pk.track = 0;
+    for (int i = 0; i < 8; ++i) pk.notes.push_back({static_cast<double>(i) * 0.5, 0.25, -1});
+    op::Pattern pn; pn.track = 1; pn.notes.push_back({0.0, 3.0, -1});
+    p.patterns = {pk, pn};
+    CHECK(op::save_project(dir + "/song.opj", p, err), "bundle.project_saved");
+
+    // Deterministic bytes: packing twice yields identical files.
+    CHECK(op::pack_project(dir + "/song.opj", dir + "/a.opd", err), "bundle.pack_ok");
+    CHECK(op::pack_project(dir + "/song.opj", dir + "/b.opd", err), "bundle.pack2_ok");
+    auto slurp = [](const std::string& pth) {
+        std::ifstream f(pth, std::ios::binary);
+        return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    CHECK(slurp(dir + "/a.opd") == slurp(dir + "/b.opd"), "bundle.pack_byte_deterministic");
+
+    // Unpack → load → render must equal the original render bit-for-bit (sampler path resolved).
+    const std::string out_dir = dir + "/restored";
+    std::string main_opj;
+    CHECK(op::unpack_bundle(dir + "/a.opd", out_dir, main_opj, err), "bundle.unpack_ok");
+    op::Project rp;
+    CHECK(!main_opj.empty() && op::load_project(main_opj, rp, err), "bundle.unpacked_loads");
+    op::wav::StereoBuffer b1, b2;
+    CHECK(op::render_project(p, dir, b1, err) && op::render_project(rp, out_dir, b2, err), "bundle.renders_ok");
+    CHECK(b1.interleaved == b2.interleaved, "bundle.render_bit_identical_after_roundtrip");
+
+    // Corruption: flip a byte deep inside the archive → clean CRC failure.
+    {
+        std::vector<uint8_t> raw = slurp(dir + "/a.opd");
+        CHECK(raw.size() > 64, "bundle.packed_file_nonempty");
+        if (raw.size() > 64) {
+            raw[raw.size() / 2] ^= 0x40;
+            std::ofstream w(dir + "/corrupt.opd", std::ios::binary);
+            w.write(reinterpret_cast<const char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
+            w.close();
+            std::string bad_main;
+            CHECK(!op::unpack_bundle(dir + "/corrupt.opd", dir + "/bad_out", bad_main, err), "bundle.corruption_rejected");
+        }
+    }
+
+    // Path traversal: hand-built zip with entry "../evil.txt" must be refused by name validation.
+    {   // minimal store-only zip: one empty entry named ../evil.txt (local + CD + EOCD)
+        const std::string name = "../evil.txt";
+        std::vector<uint8_t> z;
+        auto put16 = [](std::vector<uint8_t>& v, uint16_t x) { v.push_back(x & 0xFF); v.push_back(static_cast<uint8_t>(x >> 8)); };
+        auto put32 = [](std::vector<uint8_t>& v, uint32_t x) { for (int i = 0; i < 4; ++i) v.push_back(static_cast<uint8_t>(x >> (8 * i))); };
+        size_t local_off = z.size();
+        z.insert(z.end(), {'P', 'K', 0x03, 0x04});
+        put16(z, 20); put16(z, 0); put16(z, 0); put16(z, 0); put16(z, 0x21);
+        put32(z, 0); put32(z, 0); put32(z, 0);
+        put16(z, static_cast<uint16_t>(name.size())); put16(z, 0);
+        z.insert(z.end(), name.begin(), name.end());
+        size_t cd_off = z.size();
+        z.insert(z.end(), {'P', 'K', 0x01, 0x02});
+        put16(z, 20); put16(z, 20); put16(z, 0); put16(z, 0); put16(z, 0); put16(z, 0x21);
+        put32(z, 0); put32(z, 0); put32(z, 0);
+        put16(z, static_cast<uint16_t>(name.size())); put16(z, 0); put16(z, 0); put16(z, 0); put16(z, 0); put32(z, 0);
+        put32(z, static_cast<uint32_t>(local_off));
+        z.insert(z.end(), name.begin(), name.end());
+        z.insert(z.end(), {'P', 'K', 0x05, 0x06});
+        put16(z, 0); put16(z, 0); put16(z, 1); put16(z, 1);
+        put32(z, static_cast<uint32_t>(z.size() - cd_off)); put32(z, static_cast<uint32_t>(cd_off)); put16(z, 0);
+        std::ofstream w(dir + "/evil.opd", std::ios::binary);
+        w.write(reinterpret_cast<const char*>(z.data()), static_cast<std::streamsize>(z.size()));
+        w.close();
+        std::string bad_main;
+        CHECK(!op::unpack_bundle(dir + "/evil.opd", dir + "/evil_out", bad_main, err), "bundle.path_traversal_rejected");
+    }
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -518,6 +612,7 @@ int main() {
     test_synth();
     test_midi();
     test_tempo_map();
+    test_bundle();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

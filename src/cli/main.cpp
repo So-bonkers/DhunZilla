@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
@@ -23,6 +24,8 @@ static void usage() {
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd opj2mid <in.opj> -o <out.mid>\n"
+        "  opd pack <in.opj> -o <song.opd>    (project + samples in one file)\n"
+        "  opd unpack <song.opd> -d <out-dir>\n"
         "  opd info <file.wav|project.opj>\n");
 }
 
@@ -174,6 +177,32 @@ static int cmd_opj2mid(int argc, char** argv) {
     return 0;
 }
 
+static int cmd_pack(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "pack needs <in.opj>"); }
+    const std::string in_opj = argv[1];
+    std::string out;
+    for (int i = 2; i < argc; ++i)
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+    if (out.empty()) { usage(); return fail("usage", "pack needs -o <song.opd>"); }
+    std::string err;
+    if (!op::pack_project(in_opj, out, err)) return fail("bundle", err);
+    std::printf("packed %s -> %s\n", in_opj.c_str(), out.c_str());
+    return 0;
+}
+
+static int cmd_unpack(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "unpack needs <song.opd>"); }
+    const std::string in = argv[1];
+    std::string dir;
+    for (int i = 2; i < argc; ++i)
+        if (!std::strcmp(argv[i], "-d") && i + 1 < argc) dir = argv[++i];
+    if (dir.empty()) { usage(); return fail("usage", "unpack needs -d <out-dir>"); }
+    std::string main_opj, err;
+    if (!op::unpack_bundle(in, dir, main_opj, err)) return fail("bundle", err);
+    std::printf("unpacked %s -> %s (main: %s)\n", in.c_str(), dir.c_str(), main_opj.c_str());
+    return 0;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
@@ -204,6 +233,8 @@ int main(int argc, char** argv) {
     if (cmd == "gen-testproject") return cmd_gen_testproject(argc - 1, argv + 1);
     if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
     if (cmd == "opj2mid") return cmd_opj2mid(argc - 1, argv + 1);
+    if (cmd == "pack") return cmd_pack(argc - 1, argv + 1);
+    if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     usage();
     return 2;

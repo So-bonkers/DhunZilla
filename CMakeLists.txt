@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Determinism policy (ADR-0004): no FMA contraction, ever. No fast-math in any build type.
 add_compile_options(-Wall -Wextra -ffp-contract=off)
 
-add_library(opengine STATIC src/engine/model.cpp src/engine/render.cpp src/engine/wav.cpp src/engine/midi.cpp)
+add_library(opengine STATIC src/engine/model.cpp src/engine/render.cpp src/engine/wav.cpp src/engine/midi.cpp src/engine/bundle.cpp)
 target_include_directories(opengine PUBLIC src third_party)
 
 add_executable(opd src/cli/main.cpp)
