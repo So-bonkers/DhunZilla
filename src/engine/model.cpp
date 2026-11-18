@@ -4,6 +4,9 @@
 #include <fstream>
 
 namespace op {
+
+// File-local helper (defined below): shared by the parser and add_attachment.
+bool valid_attachment(const Attachment& a, std::string& err);
 namespace {
 
 using nlohmann::json;
@@ -110,6 +113,17 @@ bool parse_project(const json& j, Project& p, std::string& err) {
             err = "tempo_map must start at bar 0 — prepend {\"bar\": 0, \"bpm\": <initial>}"; return false;
         }
     }
+    if (j.contains("attachments")) {  // WP-0116: informational AI-artifact references
+        if (!j["attachments"].is_array()) { err = "attachments must be an array"; return false; }
+        for (const auto& aj : j["attachments"]) {
+            Attachment a;
+            a.path = aj.value("path", "");
+            a.kind = aj.value("kind", "");
+            a.producer = aj.value("producer", "");
+            if (!valid_attachment(a, err)) return false;
+            p.attachments.push_back(std::move(a));
+        }
+    }
     return true;
 }
 
@@ -127,6 +141,36 @@ json voice_to_json(const Voice& v) {
 }
 
 }  // namespace
+
+bool valid_attachment(const Attachment& a, std::string& err) {
+    if (a.path.empty()) { err = "attachment.path must not be empty"; return false; }
+    if (a.path[0] == '/' || a.path.find('\\') != std::string::npos) {
+        err = "attachment.path must be project-relative with '/' separators: '" + a.path + "'"; return false;
+    }
+#ifdef _WIN32
+    if (a.path.size() >= 2 && a.path[1] == ':') { err = "attachment.path must not be absolute"; return false; }
+#endif
+    size_t pos = 0;
+    while (pos < a.path.size()) {
+        const size_t slash = a.path.find('/', pos);
+        const std::string seg = a.path.substr(pos, slash == std::string::npos ? std::string::npos : slash - pos);
+        if (seg == "..") { err = "attachment.path must not escape the project dir: '" + a.path + "'"; return false; }
+        if (slash == std::string::npos) break;
+        pos = slash + 1;
+    }
+    if (a.kind != "stem" && a.kind != "transcription" && a.kind != "other") {
+        err = "attachment.kind must be stem|transcription|other, got '" + a.kind + "'"; return false;
+    }
+    return true;
+}
+
+bool add_attachment(Project& p, Attachment a, std::string& err) {
+    if (!valid_attachment(a, err)) return false;
+    for (const auto& e : p.attachments)
+        if (e.path == a.path) { err = "attachment path already present: '" + a.path + "'"; return false; }
+    p.attachments.push_back(std::move(a));
+    return true;
+}
 
 bool load_project(const std::string& path, Project& out, std::string& err) {
     out = Project{};  // full reset: loading into a dirty Project must never accumulate state
@@ -194,6 +238,17 @@ bool save_project(const std::string& path, const Project& p, std::string& err) {
         json tm = json::array();
         for (const auto& tp : p.tempo_map) tm.push_back({{"bar", tp.bar}, {"bpm", tp.bpm}});
         j["tempo_map"] = std::move(tm);
+    }
+    if (!p.attachments.empty()) {  // omitted when empty → legacy canonical bytes unchanged
+        json arr = json::array();
+        for (const auto& a : p.attachments) {
+            json aj;
+            aj["path"] = a.path;
+            aj["kind"] = a.kind;
+            if (!a.producer.empty()) aj["producer"] = a.producer;
+            arr.push_back(std::move(aj));
+        }
+        j["attachments"] = std::move(arr);
     }
 
     std::ofstream f(path, std::ios::binary);

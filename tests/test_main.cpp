@@ -784,6 +784,75 @@ static void test_tempo_midi() {
     CHECK(op::load_midi(fix, leg, err) && leg.tempo_map.empty(), "tmid.single_tempo_imports_legacy");
 }
 
+// --- attachments (WP-0116): parse/save rules, add-op validation, bundle carrying.
+static void test_attachments() {
+    std::string err;
+    // Parse + reject.
+    write_text("/tmp/op_att.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+        "patterns":[],"attachments":[{"path":"stems/drums.wav","kind":"stem","producer":"demucs"},
+                                      {"path":"hum.mid","kind":"transcription"}]})");
+    op::Project p;
+    CHECK(op::load_project("/tmp/op_att.opj", p, err) && p.attachments.size() == 2 &&
+          p.attachments[0].producer == "demucs" && p.attachments[1].producer.empty(),
+          "att.parse_two");
+    const char* bad[] = {
+        R"([{"path":"/abs/x.wav","kind":"stem"}])",
+        R"([{"path":"../escape.wav","kind":"stem"}])",
+        R"([{"path":"ok.wav","kind":"magic"}])",
+        R"([{"path":"","kind":"stem"}])"};
+    for (const char* body : bad) {
+        write_text("/tmp/op_att_bad.opj",
+                   std::string(R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"attachments":)") +
+                   body + "}");
+        op::Project pb;
+        CHECK(!op::load_project("/tmp/op_att_bad.opj", pb, err), "att.rejects_bad_input");
+    }
+
+    // add_attachment op: ok / dup / invalid-kind.
+    op::Attachment a{"stems/bass.wav", "stem", "demucs ht"};
+    CHECK(op::add_attachment(p, a, err) && p.attachments.size() == 3, "att.add_ok");
+    CHECK(!op::add_attachment(p, a, err), "att.reject_duplicate");
+    CHECK(!op::add_attachment(p, {"x.wav", "hologram", ""}, err), "att.reject_bad_kind");
+
+    // Save omits attachments when empty; preserves them otherwise (round-trip stable).
+    op::Project q = p;
+    CHECK(op::save_project("/tmp/op_att_rt.opj", q, err), "att.save_ok");
+    op::Project r;
+    bool same = op::load_project("/tmp/op_att_rt.opj", r, err) && r.attachments.size() == 3 &&
+                r.attachments[2].path == "stems/bass.wav" && r.attachments[2].producer == "demucs ht";
+    CHECK(same, "att.roundtrip");
+
+    // Bundle carries existing attachments (deduped with samplers); missing ones are skipped.
+    std::error_code sec;
+    std::filesystem::remove_all("/tmp/op_att_bd", sec);
+    std::filesystem::create_directories("/tmp/op_att_bd/stems", sec);
+    std::filesystem::create_directories("/tmp/op_att_bd/kits", sec);
+    auto copyfile = [](const char* a, const char* b) {
+        std::ifstream src(a, std::ios::binary);
+        std::ofstream dst(b, std::ios::binary);
+        dst << src.rdbuf();
+    };
+    copyfile("/tmp/op_bd/kits/kick.wav", "/tmp/op_att_bd/stems/drums.wav");  // fake stem
+    copyfile("/tmp/op_bd/kits/kick.wav", "/tmp/op_att_bd/kits/kick.wav");
+    op::Project bp;
+    bp.bpm = 120.0; bp.length_bars = 1.0; bp.sample_rate = 48000;
+    op::Track tk; tk.name = "K"; tk.voice.kind = op::VoiceKind::Sampler; tk.voice.path = "kits/kick.wav";
+    bp.tracks = {tk};
+    CHECK(op::add_attachment(bp, {"stems/drums.wav", "stem", "demucs"}, err), "att.bundle_add");
+    CHECK(op::add_attachment(bp, {"gone/missing.wav", "other", ""}, err), "att.bundle_add_missing_ref");
+    CHECK(op::save_project("/tmp/op_att_bd/song.opj", bp, err), "att.bundle_save");
+    CHECK(op::pack_project("/tmp/op_att_bd/song.opj", "/tmp/op_att_bd/s.opd", err), "att.pack_ok");
+    std::vector<std::string> entries;
+    CHECK(op::list_bundle("/tmp/op_att_bd/s.opd", entries, err), "att.list_ok");
+    bool has_stem = false, no_missing = true;
+    for (const auto& e : entries) {
+        if (e == "stems/drums.wav") has_stem = true;
+        if (e.find("missing") != std::string::npos) no_missing = false;
+    }
+    CHECK(has_stem, "att.bundle_carries_existing");
+    CHECK(no_missing, "att.bundle_skips_missing");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -799,6 +868,7 @@ int main() {
     test_velocity();
     test_midi_merge();
     test_tempo_midi();
+    test_attachments();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

@@ -112,6 +112,13 @@ bool pack_project(const std::string& project_path, const std::string& out_opd, s
         if (!safe_entry_name(rel)) { err = "bundle: sampler path escapes project dir: " + rel; return false; }
         rels.insert(rel);
     }
+    // Attachments (WP-0116): bundle those present on disk; informational refs may legitimately be
+    // absent — skip silently (unlike samplers, whose absence fails the pack).
+    for (const Attachment& a : p.attachments) {
+        if (!safe_entry_name(a.path)) continue;  // parser validated already; belt-and-braces
+        std::error_code ec;
+        if (fs::exists(proj_dir / a.path, ec)) rels.insert(a.path);
+    }
 
     std::vector<ZipEntry> entries;
     {  // main project file first, named after its own filename

@@ -24,6 +24,7 @@ static void usage() {
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
+        "  opd attach <proj.opj> --path P --kind stem|transcription|other [--producer S] [-o out]\n"
         "  opd opj2mid <in.opj> -o <out.mid>\n"
         "  opd pack <in.opj> -o <song.opd>    (project + samples in one file)\n"
         "  opd unpack <song.opd> -d <out-dir>\n"
@@ -222,6 +223,26 @@ static int cmd_import_midi(int argc, char** argv) {
     return 0;
 }
 
+static int cmd_attach(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "attach needs <proj.opj>"); }
+    const std::string proj = argv[1];
+    op::Attachment a;
+    std::string out = proj;
+    for (int i = 2; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--path") && i + 1 < argc) a.path = argv[++i];
+        else if (!std::strcmp(argv[i], "--kind") && i + 1 < argc) a.kind = argv[++i];
+        else if (!std::strcmp(argv[i], "--producer") && i + 1 < argc) a.producer = argv[++i];
+        else if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+    }
+    op::Project p;
+    std::string err;
+    if (!op::load_project(proj, p, err)) return fail("parse", err);
+    if (!op::add_attachment(p, std::move(a), err)) return fail("attach", err);
+    if (!op::save_project(out, p, err)) return fail("write", err);
+    std::printf("attach: %zu attachment(s) in %s\n", p.attachments.size(), out.c_str());
+    return 0;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
@@ -250,6 +271,12 @@ static int cmd_info(int argc, char** argv) {
                 path.c_str(), p.bpm, p.length_bars, p.tracks.size(), p.patterns.size(), total,
                 static_cast<double>(total) / p.sample_rate,
                 static_cast<unsigned long long>(p.seed));
+    if (!p.attachments.empty()) {
+        std::printf("attachments=%zu\n", p.attachments.size());
+        for (const auto& a : p.attachments)
+            std::printf("  [%s] %s%s%s\n", a.kind.c_str(), a.path.c_str(),
+                        a.producer.empty() ? "" : " <- ", a.producer.c_str());
+    }
     return 0;
 }
 
@@ -260,6 +287,7 @@ int main(int argc, char** argv) {
     if (cmd == "gen-testproject") return cmd_gen_testproject(argc - 1, argv + 1);
     if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
     if (cmd == "import-midi") return cmd_import_midi(argc - 1, argv + 1);
+    if (cmd == "attach") return cmd_attach(argc - 1, argv + 1);
     if (cmd == "opj2mid") return cmd_opj2mid(argc - 1, argv + 1);
     if (cmd == "pack") return cmd_pack(argc - 1, argv + 1);
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);
