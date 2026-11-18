@@ -37,13 +37,31 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ./build/opd gen-testproject demo.json
 ./build/opd render demo.json -o out.wav --seed 42 --stems-dir stems/
 
-# AI sidecar (uv-managed; 59 tests + conformance suite over all backends)
+# AI sidecar (uv-managed; 72 tests incl. conformance suite over every backend)
 cd ai-sidecar && uv sync && uv run pytest -q
 
 # Optional: real Demucs stem separation (torch stays outside the sidecar core)
 uv pip install --python /path/to/ml-venv demucs numpy   # one-time
 OP_DEMUCS_PYTHON=/path/to/ml-venv/bin/python uv run pytest -q   # +7 tests incl. e2e
 ```
+
+## CLI reference (`build/opd`)
+
+| Command | What it does |
+|---|---|
+| `opd render <proj.opj> -o out.wav [--seed N] [--stems-dir DIR]` | Deterministic WAV render; optional per-track stem WAVs |
+| `opd gen-testproject <out.opj>` | Generate a demo project + `kits/kick.wav` (quickstart fodder) |
+| `opd midi2opj <in.mid> -o out.opj` | Import a Standard MIDI file as a new editable project |
+| `opd import-midi <proj.opj> <in.mid> [-o out]` | Merge MIDI into an existing project as new tracks (grid semantics) |
+| `opd attach <proj.opj> --path P --kind stem\|transcription\|other [--producer S]` | Reference an AI artifact with provenance (in-place unless `-o`) |
+| `opd opj2mid <proj.opj> -o out.mid` | Export project to SMF format 1 @480 ppq (tempo map → FF51 events) |
+| `opd pack <proj.opj> -o song.opd` | One shareable file: project + samples + existing attachments (valid zip) |
+| `opd unpack <song.opd> -d DIR` | Verified extract — CRC-checked, traversal-guarded, all-or-nothing |
+| `opd info <file>` | Summary for `.wav` / `.opj` / `.opd` / `.mid` (tracks, notes, tempo map, attachments…) |
+
+Workflow glue lives in `harness/`: `make_earcheck.sh` (human review pack), `stem_into_project.sh`
+(AI stems → project, with provenance), `midi_into_project.sh` (hum → editable tracks),
+`roundtrip_eval.sh` (measured transcription fidelity), `sidecar_smoke.sh`, `run_goldens.sh`.
 
 ## The AI loop, end to end (headless today)
 

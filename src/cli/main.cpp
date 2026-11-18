@@ -20,15 +20,15 @@ namespace fs = std::filesystem;
 static void usage() {
     std::fprintf(stderr,
         "usage:\n"
-        "  opd render <project.opj> -o <out.wav> [--seed N]\n"
+        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR]\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
         "  opd attach <proj.opj> --path P --kind stem|transcription|other [--producer S] [-o out]\n"
         "  opd opj2mid <in.opj> -o <out.mid>\n"
-        "  opd pack <in.opj> -o <song.opd>    (project + samples in one file)\n"
+        "  opd pack <in.opj> -o <song.opd>    (project + samples + attachments in one file)\n"
         "  opd unpack <song.opd> -d <out-dir>\n"
-        "  opd info <file.wav|project.opj>\n");
+        "  opd info <file>   (.wav | .opj | .opd | .mid)\n");
 }
 
 static int fail(const char* code, const std::string& detail) {
