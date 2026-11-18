@@ -165,3 +165,16 @@ JSON-Lines journals applied all-or-nothing, snapshot-based `History` (undo/redo,
     unaffected — `run_goldens.sh` compares rendered WAVs).
   - No BLOCKED.
 
+
+---
+## Review (elephant) — 2026-11-18, reviewed commit 5a62282
+- Clean worktree build at 5a62282: 0 warnings; `op_tests` ALL PASS; `run_goldens.sh` 6/0; `test_cli_errors.sh` 0 failures.
+- Independent semantic checks via `opd apply` (not the agent's tests), 13 cases: set_bpm, set_length_bars,
+  track gain/pan/rename (UTF-8 name), add_track→add_pattern→add_note→add_clip chain with fractional
+  `start_bar`, move_clip + set_clip_gain, remove_note, referenced-track removal → exit 5 + file untouched,
+  journal all-or-nothing (line 2 fails → nothing written), float index `0.0` / negative index / unknown
+  key / escaping attachment path all rejected with file untouched. **12/13 pass.**
+- The 1 failure is a **pre-existing loader gap, not an ops defect**: track `gain_db`/`pan` were never
+  range-checked (`+99 dB`, `pan 5.0`, `-1e9` load and render on main). Ops correctly reuse the loader.
+  Fix assigned to WP-0136 (acceptance criterion added).
+- Verdict: **approved**.

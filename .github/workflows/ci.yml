@@ -3,7 +3,9 @@
 # Config authored pre-push — first run validates the runner labels.
 name: ci
 on:
-  push: { branches: [main] }
+  # wp-*/ship-* branches get CI *before* they reach main; ship.sh only fast-forwards main to a
+  # commit whose branch run is green (and main's branch protection requires these checks).
+  push: { branches: [main, "wp-*", "ship-*"] }
   pull_request:
 
 jobs:
@@ -32,6 +34,8 @@ jobs:
       # match renders from every architecture. If libm drifts across platforms this fails loudly.
       - name: Golden renders (bit-exact vs committed fixtures)
         run: bash harness/run_goldens.sh
+      - name: CLI exit-code contracts
+        run: bash harness/test_cli_errors.sh
       # The three glue scripts (stem/midi/prompt → editable project) have never been exercised in
       # CI; a shared bug in job_client.py would ship unnoticed (WP-0134). Mock backends only —
       # uv is here just to launch `opsidecar serve`; no ML extras, no GPU, no network.
