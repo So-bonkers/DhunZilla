@@ -45,6 +45,23 @@ uv pip install --python /path/to/ml-venv demucs numpy   # one-time
 OP_DEMUCS_PYTHON=/path/to/ml-venv/bin/python uv run pytest -q   # +7 tests incl. e2e
 ```
 
+## The AI loop, end to end (headless today)
+
+Render a synth melody → transcribe with Basic Pitch (ONNX) → import the MIDI back as an editable
+project → re-render. Measured, not vibes:
+
+```bash
+OP_TRANSCRIBE_PYTHON=/path/to/onnx-venv/bin/python ./harness/roundtrip_eval.sh
+# roundtrip: want=[60, 60, 64, 64, 67, 67]
+# roundtrip:  got=[60, 60, 64, 64, 67, 67]
+# ROUNDTRIP F1=1.00 (precision 1.00, recall 1.00) threshold 0.8 -> PASS
+```
+
+Setup for the transcription runtime lives in
+[`ai-sidecar/backends/basicpitch/impl.py`](ai-sidecar/backends/basicpitch/impl.py) (why ONNX and
+not TensorFlow: [ADR-0005](docs/adr/0005-transcription-onnx-runtime.md)). Stem splitting with
+Demucs follows the same opt-in cartridge pattern (`OP_DEMUCS_PYTHON`).
+
 ## Ground rules
 
 - Read [`AGENTS.md`](AGENTS.md) before contributing. All code is agent-written; humans are
