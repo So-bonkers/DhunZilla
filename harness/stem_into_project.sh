@@ -10,11 +10,11 @@
 #          CI-safe with zero ML deps). demucs without its runtime → exit 3 (gate convention).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+case "${1:-}" in -h|--help) sed -n '2,10p' "$0"; exit 0;; esac
 PROJ="${1:-}"
-[ -f "$PROJ" ] || { echo "usage: $0 <proj.opj> [audio.wav]"; exit 2; }
+[ -f "$PROJ" ] || { echo "usage: $0 <proj.opj> [audio.wav]   (-h for details)"; exit 2; }
 TMP="$(mktemp -d)"
-cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; wait "${SRV:-}" 2>/dev/null; rm -rf "$TMP"; }
-trap cleanup EXIT
+trap 'rm -rf "$TMP"' EXIT
 
 if [ -n "${OP_DEMUCS_PYTHON:-}" ]; then DEFAULT_BACKEND=demucs; else DEFAULT_BACKEND=mocksep; fi
 BACKEND="${OP_STEM_BACKEND:-$DEFAULT_BACKEND}"
@@ -29,54 +29,27 @@ if [ -z "$AUDIO" ]; then
 fi
 [ -f "$AUDIO" ] || { echo "FAIL: audio not found: $AUDIO"; exit 2; }
 
-cd "$ROOT/ai-sidecar"
-uv run opsidecar serve --port 0 --jobs-dir "$TMP/jobs" > "$TMP/serve.log" 2>&1 &
-SRV=$!
-PORT=""
-for _ in $(seq 1 60); do
-    PORT=$(grep -o 'SIDECAR_PORT=[0-9]*' "$TMP/serve.log" | head -1 | cut -d= -f2 || true)
-    [ -n "$PORT" ] && break
-    sleep 0.5
-done
-[ -n "$PORT" ] || { echo "FAIL: sidecar never announced a port"; tail -20 "$TMP/serve.log"; exit 1; }
+OP_ROOT="$ROOT" python3 - "$PROJ" "$AUDIO" "$BACKEND" "$TMP" <<'PYEOF'
+import os, pathlib, subprocess, sys
 
-python3 - "http://127.0.0.1:$PORT" "$PROJ" "$AUDIO" "$BACKEND" "$ROOT/build/opd" <<'PYEOF'
-import json, shutil, subprocess, sys, time, urllib.request
+sys.path.insert(0, os.environ["OP_ROOT"] + "/harness")
+from job_client import provenance_producer, start_sidecar, submit, wait_done
 
-base, proj, audio, backend, opd = sys.argv[1:6]
+proj, audio, backend, tmp = sys.argv[1:5]
+_op, base = start_sidecar(os.environ["OP_ROOT"], tmp + "/jobs")
+snap = wait_done(base, submit(base, backend, "separate", {"audio_path": audio}))
 
-
-def req(method, path, body=None):
-    rq = urllib.request.Request(
-        base + path, method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(rq) as r:
-        return json.loads(r.read().decode())
-
-
-jid = req("POST", "/jobs", {"backend": backend, "task": "separate",
-                            "params": {"audio_path": audio}})["job_id"]
-# Generous ceiling: demucs on CPU is ~1.6x realtime + model load; mocks finish instantly.
-snap = None
-for _ in range(300):
-    snap = req("GET", f"/jobs/{jid}")
-    if snap["state"] in ("done", "failed", "cancelled"):
-        break
-    time.sleep(2)
-assert snap and snap["state"] == "done", f"job not done: {snap}"
-
-prov = json.loads(open(snap["result"]["provenance_file"]).read())
-producer = f"{backend}@{prov.get('model_version', '?')}"
+producer = provenance_producer(base, snap, backend)
 artifacts = dict(sorted(snap["result"]["artifacts"].items()))
 assert artifacts, "no artifacts in result"
 
+opd = os.environ["OP_ROOT"] + "/build/opd"
 n = 0
 for name, src in artifacts.items():
     rel = f"stems/{name}.wav"
-    import pathlib
     dst = pathlib.Path(proj).parent / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
+    import shutil
     shutil.copyfile(src, dst)
     r = subprocess.run([opd, "attach", proj, "--path", rel, "--kind", "stem",
                         "--producer", producer], capture_output=True, text=True)

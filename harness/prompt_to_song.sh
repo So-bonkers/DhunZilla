@@ -5,16 +5,16 @@
 #   prompt → [generate backend] → audio → [transcribe backend] → MIDI → opd midi2opj → .opj
 #          → attach source audio + MIDI with provenance → render final WAV
 #
-# CI-safe by default (mockgen + mocktrans). Real backends: set OP_GEN_BACKEND / 
+# CI-safe by default (mockgen + mocktrans). Real backends: set OP_GEN_BACKEND /
 # OP_TRANSCRIBE_PYTHON per the other glue scripts. usage: prompt_to_song.sh "your prompt" [outdir]
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+case "${1:-}" in -h|--help) sed -n '2,9p' "$0"; exit 0;; esac
 PROMPT="${1:-}"
-[ -n "$PROMPT" ] || { echo "usage: $0 \"text prompt\" [outdir]"; exit 2; }
+[ -n "$PROMPT" ] || { echo "usage: $0 \"text prompt\" [outdir]   (-h for details)"; exit 2; }
 OUT="${2:-$PWD/prompt_song}"
 TMP="$(mktemp -d)"
-cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; wait "${SRV:-}" 2>/dev/null; rm -rf "$TMP"; }
-trap cleanup EXIT
+trap 'rm -rf "$TMP"' EXIT
 
 GEN="${OP_GEN_BACKEND:-mockgen}"
 if [ -n "${OP_TRANSCRIBE_PYTHON:-}" ]; then DEF_TR=basicpitch; else DEF_TR=mocktrans; fi
@@ -23,59 +23,25 @@ if [ "$TR" = "basicpitch" ] && [ -z "${OP_TRANSCRIBE_PYTHON:-}" ]; then
     echo "SKIP: basicpitch requested but OP_TRANSCRIBE_PYTHON not set"; exit 3
 fi
 
-cd "$ROOT/ai-sidecar"
-uv run opsidecar serve --port 0 --jobs-dir "$TMP/jobs" > "$TMP/serve.log" 2>&1 &
-SRV=$!
-PORT=""
-for _ in $(seq 1 60); do
-    PORT=$(grep -o 'SIDECAR_PORT=[0-9]*' "$TMP/serve.log" | head -1 | cut -d= -f2 || true)
-    [ -n "$PORT" ] && break
-    sleep 0.5
-done
-[ -n "$PORT" ] || { echo "FAIL: sidecar never announced a port"; tail -20 "$TMP/serve.log"; exit 1; }
+OP_ROOT="$ROOT" python3 - "$TMP" "$GEN" "$TR" "$PROMPT" <<'PYEOF'
+import json, os, pathlib, sys
 
-python3 - "http://127.0.0.1:$PORT" "$TMP" "$GEN" "$TR" "$PROMPT" <<'PYEOF'
-import json, pathlib, sys, time, urllib.request
+sys.path.insert(0, os.environ["OP_ROOT"] + "/harness")
+from job_client import provenance_producer, start_sidecar, submit, wait_done
 
-base, tmp, gen_backend, tr_backend, prompt = sys.argv[1:6]
+tmp, gen_backend, tr_backend, prompt = sys.argv[1:5]
+_op, base = start_sidecar(os.environ["OP_ROOT"], tmp + "/jobs")
 
-
-def req(method, path, body=None):
-    rq = urllib.request.Request(
-        base + path, method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(rq) as r:
-        return json.loads(r.read().decode())
-
-
-def wait_done(jid):
-    for _ in range(300):
-        s = req("GET", f"/jobs/{jid}")
-        if s["state"] in ("done", "failed", "cancelled"):
-            return s
-        time.sleep(2)
-    raise SystemExit(f"job {jid} timed out")
-
-
-gen = wait_done(req("POST", "/jobs", {"backend": gen_backend, "task": "generate",
-                                      "params": {"prompt": prompt, "duration_s": 4.0,
-                                                 "seed": 2026}})["job_id"])
-assert gen["state"] == "done", f"generate failed: {gen.get('error')}"
+gen = wait_done(base, submit(base, gen_backend, "generate",
+                             {"prompt": prompt, "duration_s": 4.0, "seed": 2026}))
 src_wav = next(iter(gen["result"]["artifacts"].values()))
-gen_prov = json.loads(open(gen["result"]["provenance_file"]).read())
-
-tr = wait_done(req("POST", "/jobs", {"backend": tr_backend, "task": "transcribe",
-                                     "params": {"audio_path": src_wav}})["job_id"])
-assert tr["state"] == "done", f"transcribe failed: {tr.get('error')}"
-src_mid = tr["result"]["artifacts"]["midi"]
-tr_prov = json.loads(open(tr["result"]["provenance_file"]).read())
+tr = wait_done(base, submit(base, tr_backend, "transcribe", {"audio_path": src_wav}))
 
 out = pathlib.Path(tmp, "chain.json")
 out.write_text(json.dumps({
-    "wav": src_wav, "mid": str(src_mid),
-    "gen_producer": f"{gen_backend}@{gen_prov.get('model_version', '?')}",
-    "tr_producer": f"{tr_backend}@{tr_prov.get('model_version', '?')}",
+    "wav": src_wav, "mid": str(tr["result"]["artifacts"]["midi"]),
+    "gen_producer": provenance_producer(base, gen, gen_backend),
+    "tr_producer": provenance_producer(base, tr, tr_backend),
 }))
 print("chain jobs done")
 PYEOF
