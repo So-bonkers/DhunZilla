@@ -43,7 +43,8 @@ def wait_terminal(c: TestClient, job_id: str, timeout_iters: int = 400) -> dict:
         # unknown task: 4xx or accepted-then-failed, never a hang
         ({"backend": "mockgen", "task": "teleport", "params": {}}, None),
         ({"backend": "mockgen", "task": "generate", "params": "loud"}, 422),   # params not object
-        ({"backend": "mockgen", "task": "generate", "params": {"prompt": None}}, None),  # null prompt: reject or fail
+        # null prompt: reject at boundary or fail the job, never crash
+        ({"backend": "mockgen", "task": "generate", "params": {"prompt": None}}, None),
     ],
 )
 def test_malformed_submissions(client: TestClient, payload: object, expected: int | None) -> None:
@@ -60,7 +61,7 @@ def test_malformed_submissions(client: TestClient, payload: object, expected: in
 
 
 def test_unknown_task_reaches_failed_not_hang(client: TestClient) -> None:
-    """If unknown-task submissions are accepted (202), the job must terminate 'failed' with a reason."""
+    """Accepted unknown-task jobs must terminate 'failed' with a reason — never hang."""
     resp = client.post("/jobs", json={"backend": "mockgen", "task": "teleport", "params": {}})
     if resp.status_code == 202:
         body = wait_terminal(client, resp.json()["job_id"])
@@ -82,8 +83,9 @@ def test_duration_over_backend_cap_fails_cleanly(client: TestClient) -> None:
 
 # --- filesystem paths through transcribe-style params --------------------------------------------
 def test_bad_audio_paths_fail_cleanly(client: TestClient, tmp_path: Path) -> None:
-    from ai_sidecar.wav import write_wav
     import numpy as np
+
+    from ai_sidecar.wav import write_wav
 
     good = tmp_path / "good.wav"   # sanity artifact; bad paths below must all fail cleanly
     write_wav(good, np.zeros((1000, 2), dtype=np.float32), 48000)
