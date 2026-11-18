@@ -210,7 +210,17 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
         // The default path iterates patterns in declaration order with offset exactly 0.0 and passes
         // note.t_beats through unmodified → bit-identical to pre-WP-0101 renders (goldens prove it).
         const double bpb = static_cast<double>(p.beats_per_bar);
-        auto render_pattern_at = [&](const Pattern& pat, double offset_beats) {
+        auto render_pattern_at = [&](const Pattern& pat, double offset_beats, double clip_gain_db) {
+            // Clip gain (WP-0120): one mix-target copy per clip; 0.0 skips entirely → bit-identical.
+            MixTarget* mt = &t;
+            MixTarget clip_t;
+            if (clip_gain_db != 0.0) {
+                clip_t = t;
+                const float cg = dsp::db_to_lin(clip_gain_db);
+                clip_t.gain_l *= cg;
+                clip_t.gain_r *= cg;
+                mt = &clip_t;
+            }
             for (const Note& note : pat.notes) {
                 const double t_abs = (offset_beats == 0.0) ? note.t_beats : offset_beats + note.t_beats;
                 const long long start = tmap.at(t_abs);
@@ -218,10 +228,10 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 if (start >= total) continue;  // beyond render window
                 // Per-note velocity: copy the mix target with pre-multiplied gains so voice code
                 // never changes; default velocity skips the copy entirely → bit-identical legacy.
-                MixTarget* target = &t;
+                MixTarget* target = mt;
                 MixTarget vel_t;
                 if (note.velocity != 1.0) {
-                    vel_t = t;
+                    vel_t = *mt;
                     const float v = static_cast<float>(note.velocity);
                     vel_t.gain_l *= v;
                     vel_t.gain_r *= v;
@@ -243,7 +253,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
         if (p.arrangement.empty()) {
             for (const Pattern& pat : p.patterns) {
                 if (static_cast<size_t>(pat.track) != ti) continue;
-                if (!render_pattern_at(pat, 0.0)) return false;
+                if (!render_pattern_at(pat, 0.0, 0.0)) return false;
             }
         } else {
             for (const Clip& clip : p.arrangement) {
@@ -257,7 +267,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 const int reps = (extent > 0.0) ? clip.repeats : 1;
                 const double base = clip.start_bar * bpb;
                 for (int r = 0; r < reps; ++r) {
-                    if (!render_pattern_at(pat, base + static_cast<double>(r) * extent)) return false;
+                    if (!render_pattern_at(pat, base + static_cast<double>(r) * extent, clip.gain_db)) return false;
                 }
             }
         }

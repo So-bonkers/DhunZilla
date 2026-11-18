@@ -853,6 +853,68 @@ static void test_attachments() {
     CHECK(no_missing, "att.bundle_skips_missing");
 }
 
+// --- clip gain (WP-0120).
+static void test_clip_gain() {
+    std::string err;
+    // Parse default/explicit + range rejection.
+    write_text("/tmp/op_cg.opj", R"({"format_version":0,"bpm":120,"length_bars":4,
+        "tracks":[{"voice":{"kind":"sine","freq_hz":220}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":3.5}]}],
+        "arrangement":[{"pattern":0,"start_bar":0},{"pattern":0,"start_bar":2,"gain_db":-6.0}]})");
+    op::Project p;
+    CHECK(op::load_project("/tmp/op_cg.opj", p, err) && p.arrangement.size() == 2 &&
+          p.arrangement[0].gain_db == 0.0 && p.arrangement[1].gain_db == -6.0, "cg.parse");
+    write_text("/tmp/op_cg_bad.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":1}]}],
+        "arrangement":[{"pattern":0,"gain_db":30.0}]})");
+    op::Project pb;
+    CHECK(!op::load_project("/tmp/op_cg_bad.opj", pb, err), "cg.rejects_out_of_range");
+
+    // Save: omitted at unity, preserved otherwise (round-trip).
+    op::Project q = p;
+    CHECK(op::save_project("/tmp/op_cg_rt.opj", q, err), "cg.save_ok");
+    // NOTE: search is scoped after `"arrangement"` — Track also has a gain_db field.
+    auto arrangement_slice = [](const std::string& fpath) {
+        std::ifstream f(fpath);
+        const std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        const size_t pos = txt.find("\"arrangement\"");
+        if (pos == std::string::npos) return std::string();
+        const size_t open_b = txt.find('[', pos);
+        const size_t close_b = txt.find(']', open_b);  // clips are flat: first ']' closes the array
+        return txt.substr(open_b, close_b - open_b);
+    };
+    CHECK(arrangement_slice("/tmp/op_cg_rt.opj").find("gain_db") != std::string::npos, "cg.saved_when_set");
+    op::Project r;
+    CHECK(op::load_project("/tmp/op_cg_rt.opj", r, err) && r.arrangement[1].gain_db == -6.0, "cg.roundtrip");
+    op::Project unity = p;
+    unity.arrangement[1].gain_db = 0.0;
+    CHECK(op::save_project("/tmp/op_cg_u.opj", unity, err), "cg.save_unity_ok");
+    CHECK(arrangement_slice("/tmp/op_cg_u.opj").find("gain_db") == std::string::npos, "cg.omitted_at_unity");
+
+    // Render: half-loudness clip (≈ -6.0206 dB) halves the second window's energy vs unity twin.
+    auto energy = [](const op::wav::StereoBuffer& b, long long lo, long long hi) {
+        double e = 0.0;
+        const long long n = static_cast<long long>(b.interleaved.size()) / 2;
+        if (lo < 0) lo = 0;
+        if (hi > n) hi = n;
+        for (long long i = lo; i < hi; ++i) {
+            e += static_cast<double>(b.interleaved[i * 2]) * b.interleaved[i * 2];
+            e += static_cast<double>(b.interleaved[i * 2 + 1]) * b.interleaved[i * 2 + 1];
+        }
+        return e;
+    };
+    op::wav::StereoBuffer full_u, full_h;
+    CHECK(op::render_project(unity, "", full_u, err) && op::render_project(p, "", full_h, err), "cg.renders_ok");
+    // Second clip starts at bar 2 = beat 8; at 120 BPM one beat = 24000 samples → note spans
+    // samples [192000, 276000); window skips the attack edge.
+    const long long w0 = 194000, w1 = 224000;
+    const double e_u = energy(full_u, w0, w1), e_h = energy(full_h, w0, w1);
+    const double ratio = e_h / e_u;  // half amplitude → quarter energy
+    CHECK(e_u > 0.0 && std::fabs(ratio - 0.25) < 0.02, "cg.half_gain_quarters_energy");
+    // First window (unity clip only) must be identical between the two projects.
+    CHECK(energy(full_u, 0, 90000) == energy(full_h, 0, 90000), "cg.untouched_clip_bit_identical");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -869,6 +931,7 @@ int main() {
     test_midi_merge();
     test_tempo_midi();
     test_attachments();
+    test_clip_gain();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

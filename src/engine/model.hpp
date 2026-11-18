@@ -36,6 +36,7 @@ struct Clip {
     int pattern = 0;             // index into Project::patterns
     double start_bar = 0.0;      // placement, bars from project start
     int repeats = 1;             // statements of the pattern, spaced by extent
+    double gain_db = 0.0;        // per-clip level (WP-0120), [-96, 24]; 0 omitted on save → legacy bytes
 };
 
 // Bar-anchored piecewise-constant tempo change (WP-0105): from bar `bar` onward the project

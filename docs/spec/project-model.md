@@ -155,3 +155,12 @@ is prepended if the earliest event is later); **single-tempo files keep the lega
 so existing imported fixtures are unchanged. Tempos outside (0,1000] bpm fail actionable — matching
 the model's validation ceiling; length comes from notes only (a late tempo point never extends it).
 Round-trip `opj → mid → opj` preserves bar positions exactly and BPM within µs quantization (<1e-3).
+
+## Clip gain — additive to arrangement (2026-11-18, WP-0120)
+
+Clips accept `"gain_db": <float in [-96, 24]>` (default 0.0; rejected outside range or non-finite).
+Per-clip level applied on top of track gain, uniform across all repeats of the clip; composes
+multiplicatively with per-note velocity. Implementation mirrors velocity: one mix-target copy per
+non-unity clip, none at unity → `gain_db` absent/0 renders **bit-identical** to pre-WP-0120
+(goldens prove it; `pow(10, ±0) ≡ 1` exactly). Canonical save omits the field at exactly 0.0.
+Use cases: intro builds, ducking an loop under a stem, dropping a section's energy — no note edits.

@@ -92,6 +92,8 @@ bool parse_project(const json& j, Project& p, std::string& err) {
             if (!(c.start_bar >= 0.0)) { err = "clip.start_bar must be a finite number >= 0"; return false; }
             c.repeats = cj.value("repeats", 1);
             if (c.repeats < 1 || c.repeats > 4096) { err = "clip.repeats out of range [1..4096]"; return false; }
+            c.gain_db = cj.value("gain_db", 0.0);
+            if (!(c.gain_db >= -96.0) || c.gain_db > 24.0) { err = "clip.gain_db out of range [-96, 24]"; return false; }
             p.arrangement.push_back(c);
         }
     }
@@ -229,6 +231,7 @@ bool save_project(const std::string& path, const Project& p, std::string& err) {
             cj["pattern"] = c.pattern;
             cj["start_bar"] = c.start_bar;
             cj["repeats"] = c.repeats;
+            if (c.gain_db != 0.0) cj["gain_db"] = c.gain_db;  // omitted at unity → legacy canonical bytes
             arr.push_back(std::move(cj));
         }
         j["arrangement"] = std::move(arr);
