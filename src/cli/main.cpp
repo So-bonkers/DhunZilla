@@ -1,9 +1,12 @@
 // opd — OpenPattern headless CLI. Subcommands: render | gen-testproject | info.
 // Exit codes (spec/project-model.md): 0 ok, 2 usage, 3 not-found, 4 parse, 5 render/write error.
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "engine/dsp.hpp"
 #include "engine/model.hpp"
@@ -25,13 +28,23 @@ static int fail(const char* code, const std::string& detail) {
     return code[0] == 'u' ? 2 : (std::strstr(code, "not_found") ? 3 : (std::strstr(code, "parse") ? 4 : 5));
 }
 
+static std::string sanitize_track_name(const std::string& in) {
+    std::string out;
+    for (char c : in) {
+        if (std::isalnum(static_cast<unsigned char>(c))) out += static_cast<char>(std::tolower(c));
+        else if ((c == ' ' || c == '-' || c == '_') && !(out.empty() || out.back() == '_')) out += '_';
+    }
+    return out;
+}
+
 static int cmd_render(int argc, char** argv) {
     if (argc < 4) { usage(); return fail("usage", "render needs project + -o out"); }
     const std::string proj = argv[1];
-    std::string out_path;
+    std::string out_path, stems_dir;
     long long seed_override = -1;
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
+        else if (!std::strcmp(argv[i], "--stems-dir") && i + 1 < argc) stems_dir = argv[++i];
         else if (!std::strcmp(argv[i], "--seed") && i + 1 < argc) seed_override = std::atoll(argv[++i]);
         else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
     }
@@ -43,14 +56,32 @@ static int cmd_render(int argc, char** argv) {
     if (!op::load_project(proj, p, err)) return fail("parse", err);
     if (seed_override >= 0) p.seed = static_cast<uint64_t>(seed_override);
 
-    op::wav::StereoBuffer buf;
     const std::string base_dir = fs::path(proj).parent_path().string();
-    if (!op::render_project(p, base_dir, buf, err)) return fail("render", err);
-    if (!op::wav::write_pcm16_stereo(out_path, buf, err)) return fail("write", err);
-
-    std::printf("rendered %lld frames @%d Hz -> %s (seed=%llu)\n",
-                static_cast<long long>(buf.frames()), buf.sample_rate, out_path.c_str(),
-                static_cast<unsigned long long>(p.seed));
+    if (stems_dir.empty()) {
+        op::wav::StereoBuffer buf;
+        if (!op::render_project(p, base_dir, buf, err)) return fail("render", err);
+        if (!op::wav::write_pcm16_stereo(out_path, buf, err)) return fail("write", err);
+        std::printf("rendered %lld frames @%d Hz -> %s (seed=%llu)\n",
+                    static_cast<long long>(buf.frames()), buf.sample_rate, out_path.c_str(),
+                    static_cast<unsigned long long>(p.seed));
+    } else {
+        std::vector<op::wav::StereoBuffer> stems;
+        op::wav::StereoBuffer mix;
+        if (!op::render_stems(p, base_dir, stems, mix, err)) return fail("render", err);
+        if (!op::wav::write_pcm16_stereo(out_path, mix, err)) return fail("write", err);
+        std::error_code ec;
+        fs::create_directories(stems_dir, ec);
+        if (ec) return fail("write", "cannot create stems dir " + stems_dir);
+        for (size_t i = 0; i < stems.size(); ++i) {
+            const std::string name = sanitize_track_name(p.tracks[i].name);
+            const std::string path = stems_dir + "/" + std::to_string(i) + "_" + (name.empty() ? "track" : name) + ".wav";
+            if (!op::wav::write_pcm16_stereo(path, stems[i], err)) return fail("write", err);
+            std::printf("stem %zu -> %s\n", i, path.c_str());
+        }
+        std::printf("rendered mix %lld frames @%d Hz -> %s (+%zu stems, seed=%llu)\n",
+                    static_cast<long long>(mix.frames()), mix.sample_rate, out_path.c_str(), stems.size(),
+                    static_cast<unsigned long long>(p.seed));
+    }
     return 0;
 }
 

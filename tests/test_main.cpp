@@ -186,6 +186,36 @@ static void test_render() {
     bool left_silent = true;
     for (size_t i = 0; i < rb.frames(); ++i) if (rb.interleaved[i * 2] != 0.0f) left_silent = false;
     CHECK(left_silent, "render.pan_right_left_channel_exactly_zero");
+
+    // --- stems export: sum of solo stems must be BIT-IDENTICAL to full mix (same addition order)
+    {
+        op::Project ps;
+        ps.bpm = 100; ps.length_bars = 1.5; ps.sample_rate = 48000;
+        op::Track t1; t1.name = "Sine"; t1.pan = -0.6f; t1.gain_db = -3.0f;
+        t1.voice.kind = op::VoiceKind::Sine; t1.voice.freq_hz = 220.0f;
+        op::Track t2; t2.name = "Metro"; t2.gain_db = -10.0f;
+        t2.voice.kind = op::VoiceKind::Metronome; t2.voice.accent_every = 3;
+        op::Track t3; t3.name = "Sub"; t3.pan = 0.8f;
+        t3.voice.kind = op::VoiceKind::Sine; t3.voice.freq_hz = 55.0f;
+        ps.tracks = {t1, t2, t3};
+        op::Pattern a; a.track = 0; a.notes.push_back({0.0, 4.0});
+        op::Pattern b; b.track = 1; for (int i = 0; i < 6; ++i) b.notes.push_back({static_cast<double>(i), 0.25});
+        op::Pattern c; c.track = 2; c.notes.push_back({1.0, 3.0});
+        ps.patterns = {a, b, c};
+
+        std::vector<op::wav::StereoBuffer> stems;
+        op::wav::StereoBuffer mix_buf;
+        CHECK(op::render_stems(ps, "", stems, mix_buf, err), "stems.render_ok");
+        CHECK(stems.size() == 3, "stems.one_per_track");
+        bool sizes_ok = true;
+        for (const auto& s : stems) if (s.frames() != mix_buf.frames()) sizes_ok = false;
+        CHECK(sizes_ok, "stems.frame_lengths_match");
+        std::vector<float> summed(mix_buf.interleaved.size(), 0.0f);
+        for (const auto& s : stems)
+            for (size_t i = 0; i < summed.size(); ++i) summed[i] += s.interleaved[i];
+        CHECK(std::memcmp(summed.data(), mix_buf.interleaved.data(), summed.size() * sizeof(float)) == 0,
+              "stems.sum_equals_mix_bit_exact");
+    }
 }
 
 int main() {

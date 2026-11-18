@@ -92,7 +92,8 @@ long long total_samples_for(const Project& p) {
     return static_cast<long long>(std::ceil(beats * static_cast<double>(p.sample_rate) * 60.0 / p.bpm));
 }
 
-bool render_project(const Project& p, const std::string& base_dir, wav::StereoBuffer& out, std::string& err) {
+bool render_subset(const Project& p, const std::string& base_dir, const std::vector<size_t>* subset,
+                   wav::StereoBuffer& out, std::string& err) {
     const int sr = p.sample_rate;
     const long long total = total_samples_for(p);
     if (total <= 0) { err = "render_error: zero-length render"; return false; }
@@ -106,7 +107,10 @@ bool render_project(const Project& p, const std::string& base_dir, wav::StereoBu
 
     std::map<std::string, wav::ReadResult> sampler_cache;
 
-    for (size_t ti = 0; ti < p.tracks.size(); ++ti) {
+    const size_t ntracks = p.tracks.size();
+    const size_t iters = subset ? subset->size() : ntracks;
+    for (size_t k = 0; k < iters; ++k) {
+        const size_t ti = subset ? (*subset)[k] : k;
         const Track& tr = p.tracks[ti];
         MixTarget t;
         t.out = &out.interleaved;
@@ -132,6 +136,24 @@ bool render_project(const Project& p, const std::string& base_dir, wav::StereoBu
                 }
             }
         }
+    }
+    return true;
+}
+
+// Public API wrappers. render_project must remain bit-identical to pre-stems behavior —
+// committed goldens are the regression net for this refactor.
+bool render_project(const Project& p, const std::string& base_dir, wav::StereoBuffer& out, std::string& err) {
+    return render_subset(p, base_dir, nullptr, out, err);
+}
+
+bool render_stems(const Project& p, const std::string& base_dir, std::vector<wav::StereoBuffer>& stems,
+                  wav::StereoBuffer& mix, std::string& err) {
+    if (!render_subset(p, base_dir, nullptr, mix, err)) return false;
+    stems.clear();
+    stems.resize(p.tracks.size());
+    for (size_t i = 0; i < p.tracks.size(); ++i) {
+        const std::vector<size_t> one{i};
+        if (!render_subset(p, base_dir, &one, stems[i], err)) return false;
     }
     return true;
 }
