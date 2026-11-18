@@ -1,0 +1,24 @@
+{
+  "format_version": 0,
+  "bpm": 120.0,
+  "sample_rate": 48000,
+  "seed": 321,
+  "length_bars": 2,
+  "beats_per_bar": 4,
+  "tracks": [
+    { "name": "Lead", "gain_db": -8.0, "pan": -0.2, "voice": { "kind": "synth", "attack_ms": 5.0, "release_ms": 60.0 } },
+    { "name": "Metro", "gain_db": -18.0, "pan": 0.0, "voice": { "kind": "metronome", "accent_every": 4 } }
+  ],
+  "patterns": [
+    { "track": 0, "notes": [
+      { "t": 0.0, "dur": 0.5, "note": 60 },
+      { "t": 0.5, "dur": 0.5, "note": 64 },
+      { "t": 1.0, "dur": 0.5, "note": 67 },
+      { "t": 1.5, "dur": 0.5, "note": 64 },
+      { "t": 2.0, "dur": 1.0, "note": 60 },
+      { "t": 3.0, "dur": 1.0, "note": 67 } ] },
+    { "track": 1, "notes": [
+      { "t": 0.0, "dur": 1.0 }, { "t": 1.0, "dur": 1.0 }, { "t": 2.0, "dur": 1.0 }, { "t": 3.0, "dur": 1.0 },
+      { "t": 4.0, "dur": 1.0 }, { "t": 5.0, "dur": 1.0 }, { "t": 6.0, "dur": 1.0 }, { "t": 7.0, "dur": 1.0 } ] }
+  ]
+}

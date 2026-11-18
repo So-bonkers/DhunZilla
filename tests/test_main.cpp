@@ -298,6 +298,56 @@ static void test_arrangement() {
           "arr.unreferenced_pattern_silent_bit_exact");
 }
 
+// --- synth voice (WP-0103a): MIDI pitch → frequency, octave math, fallback, validation.
+static void test_synth() {
+    std::string err;
+    op::Project p;
+    p.bpm = 60.0; p.length_bars = 1.0; p.sample_rate = 48000;
+    op::Track t; t.name = "Syn";
+    t.voice.kind = op::VoiceKind::Synth;  // defaults: attack 5ms, release 30ms
+    p.tracks = {t};
+    op::Pattern pat; pat.track = 0;
+    pat.notes.push_back({0.0, 1.0, 69});  // A4 for exactly one beat = 48000 samples @60bpm
+    p.patterns = {pat};
+
+    auto freq_estimate = [](const op::wav::StereoBuffer& b) {
+        long long zc = 0;
+        for (long long i = 4800; i + 1 < 46000; ++i) {  // envelope edges excluded
+            float a = b.interleaved[i * 2], c = b.interleaved[(i + 1) * 2];
+            if ((a < 0.0f && c >= 0.0f) || (a >= 0.0f && c < 0.0f)) ++zc;
+        }
+        return static_cast<double>(zc) / 2.0 * 48000.0 / 41200.0;
+    };
+
+    op::wav::StereoBuffer b;
+    CHECK(op::render_project(p, "", b, err), "synth.render_ok");
+    double d440 = freq_estimate(b) - 440.0;
+    CHECK(d440 < 2.0 && d440 > -2.0, "synth.a4_is_440hz");
+
+    op::Project p2 = p; p2.patterns[0].notes[0].midi_note = 81;  // A5
+    op::wav::StereoBuffer b2;
+    CHECK(op::render_project(p2, "", b2, err), "synth.a5_render_ok");
+    double ratio = freq_estimate(b2) / freq_estimate(b);
+    CHECK(ratio > 1.99 && ratio < 2.01, "synth.octave_is_double_freq");
+
+    op::Project p3 = p; p3.patterns[0].notes[0].midi_note = -1;  // absent → voice.freq_hz fallback
+    op::wav::StereoBuffer b3;
+    CHECK(op::render_project(p3, "", b3, err), "synth.fallback_render_ok");
+    double dfb = freq_estimate(b3) - 440.0;
+    CHECK(dfb < 2.0 && dfb > -2.0, "synth.absent_note_uses_freq_hz");
+
+    write_text("/tmp/op_test_syn_note.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"synth"}}],"patterns":[{"track":0,"notes":[{"t":0,"dur":1,"note":128}]}]})");
+    op::Project pb;
+    CHECK(!op::load_project("/tmp/op_test_syn_note.opj", pb, err), "model.rejects_midi_note_128");
+
+    op::Project ps = p;
+    CHECK(op::save_project("/tmp/op_test_synth_rt.opj", ps, err), "synth.save_ok");
+    op::Project pl;
+    CHECK(op::load_project("/tmp/op_test_synth_rt.opj", pl, err) &&
+          pl.tracks[0].voice.kind == op::VoiceKind::Synth &&
+          pl.patterns[0].notes[0].midi_note == 69, "synth.roundtrip_preserves_pitch");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -306,6 +356,7 @@ int main() {
     test_wav_roundtrip();
     test_render();
     test_arrangement();
+    test_synth();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

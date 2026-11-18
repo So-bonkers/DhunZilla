@@ -67,3 +67,14 @@ Optional top-level `arrangement`: array of clip objects `{ "pattern": int, "star
 - Render order: clips in declaration order, filtered per track — accumulation order is part of bit-exactness.
 
 Canonical save omits `"arrangement"` when empty, so legacy files round-trip byte-identically.
+
+## Synth voice — additive to v0 (2026-11-18, WP-0103a)
+
+Voice `{"kind": "synth", "attack_ms": 5.0, "release_ms": 30.0}` (both optional, ≥ 0).
+Notes may carry `"note": <midi number 0..127>`; absent → the voice's `freq_hz` (sine-style
+fallback). Frequency: `f = 440 · 2^((note − 69)/12)` (12-TET, A4=440), computed via the
+`dsp::powf_` wrapper only. Waveform: fundamental + phase-locked octave partial at amplitude
+0.35, normalized by 1/1.35; envelope is linear attack (`attack_ms`) → full sustain → linear
+release (`release_ms` at note end). All math deterministic per ADR-0004 (no RNG, no wall clock).
+Canonical save emits `"note"` only when present and synth keys only for synth voices — legacy
+project files round-trip byte-identically.

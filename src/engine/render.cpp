@@ -56,6 +56,31 @@ void render_sine(MixTarget& t, long long start, const Note& note, const Voice& v
     }
 }
 
+// synth voice (spec §synth): pitch from note.midi_note (12-TET, A4=440), fallback voice.freq_hz.
+// Fundamental + phase-locked octave partial (amplitude 0.35, normalized); linear attack, sustain,
+// linear release ramp. Pure dsp wrappers → deterministic like every other voice.
+void render_synth(MixTarget& t, long long start, const Note& note, const Voice& v, int sr, double spb) {
+    long long len = static_cast<long long>(std::llround(note.dur_beats * spb));
+    if (len <= 0) return;
+    const float f = (note.midi_note >= 0)
+        ? 440.0f * dsp::powf_(2.0f, static_cast<float>(note.midi_note - 69) / 12.0f)
+        : v.freq_hz;
+    const long long atk = static_cast<long long>(v.attack_ms * 0.001f * static_cast<float>(sr));
+    const long long rel = static_cast<long long>(v.release_ms * 0.001f * static_cast<float>(sr));
+    const float dphi = dsp::twoPi() * f / static_cast<float>(sr);
+    const float dphi_oct = 2.0f * dphi;  // integer multiple → phase-locked, no extra state
+    constexpr float kNorm = 1.0f / 1.35f;
+    for (long long n = 0; n < len; ++n) {
+        float env = 1.0f;
+        if (atk > 0 && n < atk) env = static_cast<float>(n) / static_cast<float>(atk);
+        const long long since_end = len - n;
+        if (rel > 0 && since_end <= rel) env *= static_cast<float>(since_end) / static_cast<float>(rel);
+        const float s = (dsp::sinf_(dphi * static_cast<float>(n)) +
+                         0.35f * dsp::sinf_(dphi_oct * static_cast<float>(n))) * kNorm * env;
+        add_stereo(t, start + n, s, s);
+    }
+}
+
 bool render_sampler(MixTarget& t, long long start, const Note& note, const std::string& abs_path, int sr,
                     double spb, std::map<std::string, wav::ReadResult>& cache, std::string& err) {
     auto it = cache.find(abs_path);
@@ -133,6 +158,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 switch (tr.voice.kind) {
                     case VoiceKind::Metronome: render_metronome(t, start, note, tr.voice, sr); break;
                     case VoiceKind::Sine:      render_sine(t, start, note, tr.voice, sr, spb); break;
+                    case VoiceKind::Synth:     render_synth(t, start, note, tr.voice, sr, spb); break;
                     case VoiceKind::Sampler:
                         if (!render_sampler(t, start, note, join_path(base_dir, tr.voice.path), sr, spb, sampler_cache, err))
                             return false;

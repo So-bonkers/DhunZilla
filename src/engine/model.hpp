@@ -6,18 +6,21 @@
 
 namespace op {
 
-enum class VoiceKind { Metronome, Sine, Sampler };
+enum class VoiceKind { Metronome, Sine, Sampler, Synth };
 
 struct Voice {
     VoiceKind kind = VoiceKind::Metronome;
-    float freq_hz = 440.0f;      // sine voice
+    float freq_hz = 440.0f;      // sine voice (synth: base A4 reference when note absent)
     int accent_every = 4;        // metronome: downbeat every N beats
     std::string path;            // sampler: wav path (relative to project file dir)
+    float attack_ms = 5.0f;      // synth: linear attack ramp
+    float release_ms = 30.0f;    // synth: linear release ramp at note end
 };
 
 struct Note {
     double t_beats = 0.0;
     double dur_beats = 0.25;
+    int midi_note = -1;          // synth voice pitch (MIDI number, 0..127); -1 = absent → freq_hz
 };
 
 struct Pattern {

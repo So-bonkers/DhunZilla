@@ -23,6 +23,7 @@ inline void equal_power_pan(float pan, float& left, float& right) {
 
 inline float sinf_(float x) { return std::sin(x); }
 inline float cosf_(float x) { return std::cos(x); }
+inline float powf_(float x, float y) { return std::pow(x, y); }  // MIDI pitch conversion (synth voice)
 inline float expf_(float x) { return std::exp(x); }
 inline float sqrtf_(float x) { return std::sqrt(x); }
 

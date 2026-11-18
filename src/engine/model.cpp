@@ -14,12 +14,16 @@ bool parse_voice(const json& j, Voice& v, std::string& err) {
     if (kind == "metronome")      v.kind = VoiceKind::Metronome;
     else if (kind == "sine")      v.kind = VoiceKind::Sine;
     else if (kind == "sampler")   v.kind = VoiceKind::Sampler;
+    else if (kind == "synth")     v.kind = VoiceKind::Synth;
     else { err = "voice.kind unknown: '" + kind + "'"; return false; }
     v.freq_hz = j.value("freq_hz", 440.0f);
     v.accent_every = j.value("accent_every", 4);
     v.path = j.value("path", std::string{});
+    v.attack_ms = j.value("attack_ms", 5.0f);
+    v.release_ms = j.value("release_ms", 30.0f);
     if (v.kind == VoiceKind::Sampler && v.path.empty()) { err = "sampler voice requires path"; return false; }
     if (v.accent_every <= 0) { err = "accent_every must be > 0"; return false; }
+    if (!(v.attack_ms >= 0.0f) || !(v.release_ms >= 0.0f)) { err = "attack_ms/release_ms must be >= 0"; return false; }
     return true;
 }
 
@@ -61,7 +65,9 @@ bool parse_project(const json& j, Project& p, std::string& err) {
                     Note n;
                     n.t_beats = nj.value("t", 0.0);
                     n.dur_beats = nj.value("dur", 0.25);
+                    n.midi_note = nj.value("note", -1);
                     if (n.t_beats < 0.0 || n.dur_beats <= 0.0) { err = "note needs t >= 0 and dur > 0"; return false; }
+                    if (n.midi_note < -1 || n.midi_note > 127) { err = "note.note must be a MIDI number 0..127 (or absent)"; return false; }
                     pat.notes.push_back(n);
                 }
             }
@@ -91,10 +97,12 @@ json voice_to_json(const Voice& v) {
     json j;
     // Stable key order (ordered_json would be needed for byte-stable dumps across nlohmann versions;
     // object() is insertion-ordered in nlohmann 3.11 — we insert explicitly.)
-    j["kind"] = v.kind == VoiceKind::Metronome ? "metronome" : (v.kind == VoiceKind::Sine ? "sine" : "sampler");
-    if (v.kind == VoiceKind::Sine) j["freq_hz"] = v.freq_hz;
-    if (v.kind == VoiceKind::Metronome) j["accent_every"] = v.accent_every;
-    if (v.kind == VoiceKind::Sampler) j["path"] = v.path;
+    switch (v.kind) {
+        case VoiceKind::Metronome: j["kind"] = "metronome"; j["accent_every"] = v.accent_every; break;
+        case VoiceKind::Sine:      j["kind"] = "sine"; j["freq_hz"] = v.freq_hz; break;
+        case VoiceKind::Sampler:   j["kind"] = "sampler"; j["path"] = v.path; break;
+        case VoiceKind::Synth:     j["kind"] = "synth"; j["attack_ms"] = v.attack_ms; j["release_ms"] = v.release_ms; break;
+    }
     return j;
 }
 
@@ -138,7 +146,11 @@ bool save_project(const std::string& path, const Project& p, std::string& err) {
         pj["track"] = pat.track;
         json notes = json::array();
         for (const auto& n : pat.notes) {
-            notes.push_back({{"t", n.t_beats}, {"dur", n.dur_beats}});
+            json nj;
+            nj["t"] = n.t_beats;
+            nj["dur"] = n.dur_beats;
+            if (n.midi_note >= 0) nj["note"] = n.midi_note;  // omitted when absent → legacy output byte-identical
+            notes.push_back(std::move(nj));
         }
         pj["notes"] = std::move(notes);
         patterns.push_back(std::move(pj));

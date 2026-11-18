@@ -23,6 +23,8 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
+| WP-0103a | Synth voice (MIDI-pitched, 12-TET) + note pitch field — closes hum→MIDI→sound engine path | **done** | orchestrator |
+| WP-0103b | `opd midi2opj`: SMF reader → project model (import loop with basicpitch) | next | orchestrator |
 | WP-0101 | Arrangement layer: clips {pattern, start_bar, repeats}, legacy-compatible, bit-exact | **done** | orchestrator |
 | WP-0102 | Basic-Pitch transcription cartridge via ONNX runtime (ADR-0005; real MIDI e2e on aarch64) | **done** | orchestrator |
 | WP-0010 | Native stem export (`--stems-dir`) — solo stems recombine bit-exact to mix | **done** | orchestrator |
