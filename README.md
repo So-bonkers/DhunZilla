@@ -27,13 +27,22 @@ Suno gives you a finished MP3; we hand you a session you keep producing in.
 ## Quickstart (dev)
 
 ```bash
-# Core: build + tests + golden render (deterministic, no GUI needed)
+# Core: build + tests + golden renders (deterministic, no GUI needed)
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-./build/opd gen-testproject demo.json
-./build/opd render demo.json -o out.wav --seed 42
+./build/op_tests                        # 43 assertions
+./harness/run_goldens.sh                # bit-exact re-render + golden match + negative control
+./harness/test_cli_errors.sh            # CLI exit-code contracts
 
-# AI sidecar (uv-managed)
+# Render, with native stem export:
+./build/opd gen-testproject demo.json
+./build/opd render demo.json -o out.wav --seed 42 --stems-dir stems/
+
+# AI sidecar (uv-managed; 59 tests + conformance suite over all backends)
 cd ai-sidecar && uv sync && uv run pytest -q
+
+# Optional: real Demucs stem separation (torch stays outside the sidecar core)
+uv pip install --python /path/to/ml-venv demucs numpy   # one-time
+OP_DEMUCS_PYTHON=/path/to/ml-venv/bin/python uv run pytest -q   # +7 tests incl. e2e
 ```
 
 ## Ground rules
