@@ -32,6 +32,15 @@ jobs:
       # match renders from every architecture. If libm drifts across platforms this fails loudly.
       - name: Golden renders (bit-exact vs committed fixtures)
         run: bash harness/run_goldens.sh
+      # The three glue scripts (stem/midi/prompt → editable project) have never been exercised in
+      # CI; a shared bug in job_client.py would ship unnoticed (WP-0134). Mock backends only —
+      # uv is here just to launch `opsidecar serve`; no ML extras, no GPU, no network.
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.12" }
+      - name: Glue scripts e2e (mock backends)
+        run: |
+          cd ai-sidecar && uv sync
+          cd .. && bash harness/test_glue_scripts.sh
       - name: Negative control — corrupt fixture must FAIL the harness
         run: |
           tmp=$(mktemp -d); mkdir -p "$tmp/goldens"
