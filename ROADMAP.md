@@ -21,7 +21,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0004 | Sidecar v0 (FastAPI + adapters + conformance) | **done** (59 tests) | subagent+orchestrator |
 | WP-0005 | Model manager (manifest, sha256, license gates) | **done** | subagent+orchestrator |
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
-| WP-0007 | CI workflow: Linux matrix, x86_64 + aarch64 (ADR-0006) | **done** (untested until push) | orchestrator |
+| WP-0007 | CI workflow: Linux matrix, x86_64 + aarch64 (ADR-0006) | **done** — green on push (run 44277877478) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
 | WP-0123 | Remove dead _WIN32 blocks in engine validators (ADR-0006 Linux-only hygiene) | **done** | orchestrator |
 | WP-0122 | JSON model fuzz (truncation+mutation+type-confusion) — fixes 22 escaping type_error paths in load_project | **done** | orchestrator |
@@ -55,5 +55,5 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription), ADR-0006 (Linux-only target). Distribution deferred by product owner — not blocked, just not scheduled.
 4. **Platform scope** — Linux x86_64 + aarch64 only for now (ADR-0006). Revisit at first GUI/public beta; macOS/Windows are deferred, not dropped.
 
-## Nightly (once repo is pushed)
-Linux CI (x86_64 + aarch64); reference-rig (DGX Spark aarch64) CPU-inference evals; determinism sweep across the two Linux arches. macOS/Windows CI is deferred (ADR-0006) and returns only when a GUI exists to port.
+## Nightly (CI live on push)
+Linux CI (x86_64 + aarch64) green on `main`; reference-rig (DGX Spark aarch64) CPU-inference evals; determinism sweep across the two Linux arches. macOS/Windows CI is deferred (ADR-0006) and returns only when a GUI exists to port.
