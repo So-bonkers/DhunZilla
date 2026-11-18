@@ -31,3 +31,7 @@ Actual multi-GB weight downloads in CI (test with tiny synthetic files only).
 
 ## Notes for the implementing agent
 Same ownership rules as WP-0004: `ai-sidecar/` only, no git. Keep honest — placeholder hashes must be marked, never fabricated as real.
+
+## Handoff report (orchestrator, completing for subagent 93bb0ea4)
+- **What changed:** model_manager.py (pydantic schema, httpx downloader w/ range-resume + sha256 verify → quarantine on mismatch, license tri-state gate incl. awaiting-weights refusal), models/manifest.json with 5 entries: htdemucs/acestep-v15/yue2-3b (personal-use-ok), basic-pitch-onnx (permissive), acestep-next (awaiting-weights stub w/ unverified claims marked).
+- **Evidence:** included in the 59-pass suite; manifest honesty verified programmatically: placeholder hashes carry hash_verified:false. Vacuous-availability bug fixed + regression-tested.

@@ -33,3 +33,9 @@ Real model adapters (WP-0006/8), gRPC, auth/TLS, GPU scheduling policy.
 
 ## Notes for the implementing agent
 Work ONLY under `ai-sidecar/`. Do not run git commands. Reference rig is aarch64 — all deps must be pure-python/numpy wheels available for aarch64. If PyPI access fails from bash, write BLOCKED with the error immediately.
+
+## Handoff report (orchestrator, completing for subagent 93bb0ea4 which died mid-WP-0005)
+- **What changed:** full sidecar v0 per spec — src/ai_sidecar/{base,jobs,registry,app,cli,wav,model_manager}.py + opsidecar alias package; backends/mockgen (seeded sine WAV gen) + backends/mocksep (4-band FFT split); conformance suite tests/conformance/ over both mocks (5 checks each incl. determinism byte-identity + provenance).
+- **Fixes applied by orchestrator after takeover:** (1) SyntaxError: non-ASCII em-dash in bytes literal (tests/test_model_manager.py); (2) startup race — SIDECAR_PORT announced before listen(): added sock.listen(128) pre-announce + spec-compliant backoff retry in lifecycle test; (3) vacuous-truth bug: local_available()==True for zero-source entries → now False (real bug caught by fixture); (4) lint/type cleanup: StrEnum, B904 from-exc, E501 wraps, mypy-strict src clean.
+- **Evidence:** `uv run pytest -q` → 59 passed; `ruff check .` → clean; `mypy --strict src/` → no issues (11 files). Manual: serve --port 0 announces port, /health lists backends with capabilities JSON.
+- **Follow-ups noticed:** httpx/starlette TestClient deprecation warning (cosmetic); SSE events endpoint covered by tests? verify coverage in morning review; conftest file_server fixture is reusable for WP-0006 demucs adapter download tests.

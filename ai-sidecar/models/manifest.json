@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "id": "htdemucs",
+      "backend": "demucs",
+      "task": "stem_separation",
+      "sources": [
+        {
+          "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th",
+          "sha256": "d5c39d596f5f8cf23adcd3fe83b0e0855935b814df082336097a337cb9661470",
+          "size_bytes": 84141911,
+          "hash_verified": false
+        }
+      ],
+      "cache_dir": "models/cache/htdemucs",
+      "license": {
+        "code": "MIT",
+        "weights_tier": "personal-use-ok",
+        "weights_spdx": "NOASSERTION",
+        "notes": "Demucs weights: research-derived (MUSDB); upstream weights license unclear — verified 2026-11-18. PLACEHOLDER sha256 (hash_verified:false): host serves the file (HTTP 200, accept-ranges) but publishes no checksum; pin the real digest by running scripts/pin_hashes before first production download.",
+        "verified_on": "2026-11-18"
+      },
+      "default_enabled": false,
+      "status": "live",
+      "capabilities_hint": {
+        "stems": ["vocals", "drums", "bass", "other"],
+        "vram_tiers": {"cpu": "slow-ok", "6gb": "ok", "24gb": "ok"}
+      }
+    },
+    {
+      "id": "acestep-v15",
+      "backend": "acestep",
+      "task": "text2song",
+      "sources": [
+        {
+          "url": "https://huggingface.co/ACE-Step/acestep-v15/resolve/main/model.safetensors",
+          "sha256": "c5ceea1a268876b8061d4d89002e61c5da0205128d489fc503542e42fd57fdbb",
+          "size_bytes": null,
+          "hash_verified": false
+        }
+      ],
+      "cache_dir": "models/cache/acestep-v15",
+      "license": {
+        "code": "Apache-2.0",
+        "weights_tier": "personal-use-ok",
+        "weights_spdx": "NOASSERTION",
+        "notes": "ACE-Step code is Apache-2.0; the weights repo has an open license-clarification request — tier stays personal-use-ok (default-off, explicit accept) until the clarification is CONFIRMED, then re-verify. PLACEHOLDER sha256 (hash_verified:false): HF returned 401 for this repo id on 2026-11-18; exact file set unconfirmed.",
+        "verified_on": "2026-11-18"
+      },
+      "default_enabled": false,
+      "status": "live",
+      "capabilities_hint": {
+        "text2song": true,
+        "text2loop": true,
+        "vram_tiers": {"cpu": "no", "6gb": "tight", "12gb": "ok", "24gb": "ok"}
+      }
+    },
+    {
+      "id": "yue2-3b",
+      "backend": "yue2",
+      "task": "text2song",
+      "sources": [
+        {
+          "url": "https://huggingface.co/qwen2audio/YuE-2-3B/resolve/main/model-00001-of-00002.safetensors",
+          "sha256": "d10134b5506bf906780358f81a609a443dc0e33b6303e4b0f48f6980f0428148",
+          "size_bytes": null,
+          "hash_verified": false
+        }
+      ],
+      "cache_dir": "models/cache/yue2-3b",
+      "license": {
+        "code": "MIT",
+        "weights_tier": "personal-use-ok",
+        "weights_spdx": "NOASSERTION",
+        "notes": "YuE-family MODEL_LICENSE pattern: individuals free (incl. monetized outputs), commercial needs contact. Claim recorded 2026-11-18 but HF returned 401 for this repo id — re-read the actual MODEL_LICENSE at first download and re-verify tier before flipping default_enabled. PLACEHOLDER sha256 (hash_verified:false).",
+        "verified_on": "2026-11-18"
+      },
+      "default_enabled": false,
+      "status": "live",
+      "capabilities_hint": {
+        "text2song": true,
+        "score_plan": true,
+        "vram_tiers": {"cpu": "no", "6gb": "no", "12gb": "tight", "24gb": "ok"}
+      }
+    },
+    {
+      "id": "basic-pitch-onnx",
+      "backend": "basic_pitch_onnx",
+      "task": "transcription",
+      "sources": [
+        {
+          "url": "https://huggingface.co/spotify/basic-pitch/resolve/main/onnx/basic_pitch.onnx",
+          "sha256": "f5d59cb6a1f447bf0f8a05221561a370d074e1e7ab1c6eb02dfb74832b0a50b3",
+          "size_bytes": null,
+          "hash_verified": false
+        }
+      ],
+      "cache_dir": "models/cache/basic-pitch-onnx",
+      "license": {
+        "code": "Apache-2.0",
+        "weights_tier": "permissive",
+        "weights_spdx": "Apache-2.0",
+        "notes": "Upstream spotify/basic-pitch code+model repo is Apache-2.0 (HF api reachable 2026-11-18). The ONNX export path itself was NOT found published by Spotify on 2026-11-18 — claim 'export inherits Apache-2.0' is unconfirmed, and the URL below is a not-yet-published path with a PLACEHOLDER sha256 (hash_verified:false). Keep default_enabled=false until a trusted export + real digest exist.",
+        "verified_on": "2026-11-18"
+      },
+      "default_enabled": false,
+      "status": "live",
+      "capabilities_hint": {
+        "transcription": true,
+        "stems_support": ["vocals"],
+        "vram_tiers": {"cpu": "ok", "6gb": "ok", "24gb": "ok"}
+      }
+    },
+    {
+      "id": "acestep-next",
+      "backend": "acestep",
+      "task": "text2song",
+      "sources": [],
+      "cache_dir": "models/cache/acestep-next",
+      "license": {
+        "code": "Apache-2.0",
+        "weights_tier": "commercial-needs-contact",
+        "weights_spdx": "NOASSERTION",
+        "notes": "Pre-wired stub for the announced successor — weights unreleased, license unknown. Recorded conservatively as commercial-needs-contact until release; flipping status to live MUST re-trigger full license verification.",
+        "verified_on": "2026-11-18"
+      },
+      "default_enabled": false,
+      "status": "awaiting-weights",
+      "capabilities_hint": {
+        "unverified_claims": true,
+        "text2song": true,
+        "stem_aware_generation": true,
+        "vram_tiers_claimed": {"cpu": "no", "12gb": "tight", "24gb": "ok"},
+        "announcement_url": "https://github.com/ace-step/ACE-Step/releases",
+        "announced_on": "2026-11-18",
+        "disclaimer": "Capability claims are announcement-era and UNVERIFIED (no weights to run). Do not surface in UI without an 'unverified' badge."
+      }
+    }
+  ]
+}

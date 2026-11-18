@@ -18,8 +18,8 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0001 | Repo scaffold | **done** | orchestrator |
 | WP-0002 | Deterministic render core v0 | **done** | orchestrator |
 | WP-0003 | Golden-file harness | **done** | orchestrator |
-| WP-0004 | Sidecar v0: FastAPI job queue, adapter base, mock backends, conformance suite green | in-progress | subagent-sidecar |
-| WP-0005 | Model manager: manifest schema (license tri-state), downloader w/ sha256 + gates, tests | pending | subagent-sidecar |
+| WP-0004 | Sidecar v0 (FastAPI + adapters + conformance) | **done** (59 tests) | subagent+orchestrator |
+| WP-0005 | Model manager (manifest, sha256, license gates) | **done** | subagent+orchestrator |
 | WP-0006 | Demucs CPU adapter — **engine verified on aarch64** (htdemucs, 1.57x realtime, stems OK in scratch); sidecar integration pending merge | in-progress | orchestrator |
 | WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |

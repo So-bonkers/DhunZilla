@@ -4,7 +4,7 @@ out/
 *.o
 *.so
 __pycache__/
-.pytest_cache__/
+.pytest_cache/
 .mypy_cache__/
 .ruff_cache__/
 .venv/

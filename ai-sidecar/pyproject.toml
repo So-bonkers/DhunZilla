@@ -1,0 +1,56 @@
+# OpenPattern AI sidecar — WP-0004 / WP-0005.
+# Python 3.12, uv-managed. Core env is deliberately light: FastAPI + numpy only.
+# Real ML adapters (WP-0006/8) land in the optional "heavy" extra; their absence
+# must never break the sidecar or its tests (docs/spec/backend-adapters.md).
+
+[project]
+name = "openpattern-sidecar"
+version = "0.1.0"
+description = "OpenPattern AI sidecar: job queue + backend adapter chassis (WP-0004) and model manager (WP-0005)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "numpy>=1.26",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Placeholder for real adapters (demucs, basic-pitch, acestep, yue2) — WP-0006/8.
+# CI never installs this group; conformance runs on the mock backends.
+heavy = []
+
+[project.scripts]
+opsidecar = "ai_sidecar.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# ai_sidecar: the package itself (docs/spec/backend-adapters.md names it).
+# opsidecar: thin CLI alias so `python -m opsidecar` works per WP-0004.
+# backends: adapter packages discovered by the registry at runtime.
+packages = ["src/ai_sidecar", "src/opsidecar", "backends"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
