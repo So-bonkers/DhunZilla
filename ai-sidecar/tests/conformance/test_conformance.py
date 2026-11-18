@@ -138,6 +138,8 @@ def test_determinism_byte_identical(
 
     if isinstance(backend, GenerationBackend):
         task, params = "generate", generate_params(duration_s=1.5, seed=99)
+    elif isinstance(backend, TranscriptionBackend):  # WP-0119: same dispatch gap as check5 had
+        task, params = "transcribe", transcribe_params(make_input_wav("det-input.wav"))
     else:
         task, params = "separate", separate_params(make_input_wav("det-input.wav"))
 

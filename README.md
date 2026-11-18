@@ -67,6 +67,15 @@ it all as one file (`mocksep` backend runs this CI-safe with zero ML deps):
 ./build/opd pack my.song.opj -o my.song.opd             # song + kit + AI stems, one shareable file
 ```
 
+Same idea for audio you *hummed*: transcribe → merge notes into the project as editable tracks →
+attach the MIDI with provenance (`mocktrans` keeps this CI-safe; `OP_TRANSCRIBE_PYTHON=...` uses
+real Basic Pitch):
+
+```bash
+./harness/midi_into_project.sh my.song.opj humming.wav
+# transcribed via basicpitch@basic-pitch-nmp-onnx-ort1.32.0: notes merged into my.song.opj, MIDI attached at ai/transcribed.mid
+```
+
 Setup for the transcription runtime lives in
 [`ai-sidecar/backends/basicpitch/impl.py`](ai-sidecar/backends/basicpitch/impl.py) (why ONNX and
 not TensorFlow: [ADR-0005](docs/adr/0005-transcription-onnx-runtime.md)). Stem splitting with
