@@ -123,6 +123,10 @@ ReadResult read_wav(const std::string& path) {
     if (!data || fmt_tag == 0) { r.error = "missing fmt/data chunk"; return r; }
     if (channels != 1 && channels != 2) { r.error = "only mono/stereo supported"; return r; }
     if (fmt_tag == 1 && bits != 16) { r.error = "PCM must be 16-bit in v0"; return r; }
+    // WP-0125 fuzz: without these, tag-3 files with bits∈{8,24} read out of bounds and bits=0
+    // divides by zero (silently on aarch64) — strict fmt validation is the whole defense.
+    if (fmt_tag == 3 && bits != 32) { r.error = "float WAV must be 32-bit"; return r; }
+    if (sr == 0 || sr > 1000000u) { r.error = "implausible sample rate"; return r; }
     if (fmt_tag != 1 && fmt_tag != 3) { r.error = "unsupported WAV format tag"; return r; }
 
     const size_t bps = static_cast<size_t>(channels) * (bits / 8u);

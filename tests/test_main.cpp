@@ -1046,6 +1046,82 @@ static void test_json_fuzz() {
                 trunc_ok, mut_parsed, mut_failed_clean);
 }
 
+// --- WAV reader fuzz (WP-0125): sampler loads WAVs from hostile .opd bundles — no crash, no OOB.
+static void test_wav_fuzz() {
+    // Build a canonical PCM16 stereo seed WAV via the writer, plus float32 twins with crafted
+    // fmt fields (the deliberate classes: bits=0 → div-by-zero, bits=24 → OOB read, sr=0).
+    op::wav::StereoBuffer buf;
+    buf.interleaved.assign(200, 0.25f);
+    std::string err;
+    CHECK(op::wav::write_pcm16_stereo("/tmp/op_wf_seed.wav", buf, err), "wf.seed_saved");
+
+    auto patch_u16 = [](std::vector<uint8_t>& v, size_t off, uint16_t x) {
+        v[off] = static_cast<uint8_t>(x & 0xFF);
+        v[off + 1] = static_cast<uint8_t>(x >> 8);
+    };
+    auto patch_u32 = [](std::vector<uint8_t>& v, size_t off, uint32_t x) {
+        for (int i = 0; i < 4; ++i) v[off + i] = static_cast<uint8_t>((x >> (8 * i)) & 0xFFu);
+    };
+    std::ifstream f("/tmp/op_wf_seed.wav", std::ios::binary);
+    const std::vector<uint8_t> seed((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+    auto load_must_survive = [&](const std::vector<uint8_t>& bytes, const char* label, bool must_reject) {
+        std::ofstream w("/tmp/op_wf_case.wav", std::ios::binary);
+        w.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        w.close();
+        op::wav::ReadResult r;
+        try {
+            r = op::wav::read_wav("/tmp/op_wf_case.wav");  // must return, never abort/OOB
+        } catch (...) { r.ok = false; }
+        if (must_reject) { CHECK(!r.ok, label); return; }  // crafted-invalid: clean rejection required
+        if (r.ok) {
+            for (float s : r.samples)
+                if (!std::isfinite(s) || std::fabs(s) > 16.0f) { CHECK(false, label); return; }
+        }
+    };
+
+    // Crafted fmt mutations (offsets into canonical header: fmt chunk at 12; tag@20, ch@22, sr@24, bits@34).
+    struct Bad { size_t off; uint32_t val; bool wide; const char* label; };
+    const Bad bads[] = {
+        {20, 3, false, "float_tag"},          // tag=3 with bits=16 → must reject (not read as f32)
+        {20, 3, false, "tag3_bits0"},         // combined below with bits patch
+        {34, 0, false, "bits0"},              // bps=0 → division by zero pre-fix
+        {34, 24, false, "bits24"},            // float tag w/ 24-bit → OOB read pre-fix
+        {34, 8, false, "bits8"},
+        {24, 0, true, "sr0"},                 // sample rate 0
+        {22, 0, false, "ch0"},                // channels 0
+        {22, 7, false, "ch7"},                // unsupported channel count
+    };
+    for (const auto& b : bads) {
+        std::vector<uint8_t> m = seed;
+        if (b.wide) patch_u32(m, b.off, b.val); else patch_u16(m, b.off, static_cast<uint16_t>(b.val));
+        // For float-tag cases also set tag=3 where the label asks for it.
+        if (std::string(b.label).find("tag3") != std::string::npos ||
+            std::string(b.label) == "bits24" || std::string(b.label) == "bits0" || std::string(b.label) == "bits8")
+            patch_u16(m, 20, 3);
+        load_must_survive(m, b.label, true);
+    }
+
+    // Random structural fuzz over the seed: truncations + byte flips, seeded.
+    op::rng::Pcg32 prng(20261119ull);
+    int survived = 0;
+    for (int trial = 0; trial < 400; ++trial) {
+        std::vector<uint8_t> m = seed;
+        const size_t cut = static_cast<size_t>(prng.next() % m.size());
+        if (trial % 3 == 0) m.resize(cut);  // truncate
+        else {
+            const int n_edits = 1 + static_cast<int>(prng.next() % 5);
+            for (int e = 0; e < n_edits && !m.empty(); ++e) {
+                const size_t pos = static_cast<size_t>(prng.next() % m.size());
+                m[pos] = static_cast<char>(prng.next() % 256u);
+            }
+        }
+        load_must_survive(m, "wf.random", false);
+        ++survived;
+    }
+    CHECK(survived == 400, "wf.random_all_returned");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -1064,6 +1140,7 @@ int main() {
     test_attachments();
     test_clip_gain();
     test_json_fuzz();
+    test_wav_fuzz();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
