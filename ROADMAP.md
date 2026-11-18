@@ -20,7 +20,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0003 | Golden-file harness | **done** | orchestrator |
 | WP-0004 | Sidecar v0 (FastAPI + adapters + conformance) | **done** (59 tests) | subagent+orchestrator |
 | WP-0005 | Model manager (manifest, sha256, license gates) | **done** | subagent+orchestrator |
-| WP-0006 | Demucs CPU adapter — **engine verified on aarch64** (htdemucs, 1.57x realtime, stems OK in scratch); sidecar integration pending merge | in-progress | orchestrator |
+| WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
 | WP-0010 | Native stem export (`--stems-dir`) — solo stems recombine bit-exact to mix | **done** | orchestrator |
