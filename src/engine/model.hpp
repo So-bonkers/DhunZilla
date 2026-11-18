@@ -25,6 +25,14 @@ struct Pattern {
     std::vector<Note> notes;
 };
 
+// Playlist clip: one placement of a pattern on the timeline (spec §arrangement).
+// Pattern extent (loop period) = max(note.t + note.dur) over its notes, in beats.
+struct Clip {
+    int pattern = 0;             // index into Project::patterns
+    double start_bar = 0.0;      // placement, bars from project start
+    int repeats = 1;             // statements of the pattern, spaced by extent
+};
+
 struct Track {
     std::string name;
     float gain_db = 0.0f;
@@ -41,6 +49,7 @@ struct Project {
     int beats_per_bar = 4;
     std::vector<Track> tracks;
     std::vector<Pattern> patterns;
+    std::vector<Clip> arrangement;  // empty = legacy semantics: every pattern once, at bar 0
 };
 
 // Load/validate per spec. Returns false + machine-parsable err string on any violation.

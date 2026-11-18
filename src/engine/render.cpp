@@ -121,10 +121,14 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
         t.gain_l = g * l;
         t.gain_r = g * r;
 
-        for (const Pattern& pat : p.patterns) {
-            if (static_cast<size_t>(pat.track) != ti) continue;
+        // Placement (spec §arrangement): explicit clips, or legacy default = every pattern once at bar 0.
+        // The default path iterates patterns in declaration order with offset exactly 0.0 and passes
+        // note.t_beats through unmodified → bit-identical to pre-WP-0101 renders (goldens prove it).
+        const double bpb = static_cast<double>(p.beats_per_bar);
+        auto render_pattern_at = [&](const Pattern& pat, double offset_beats) {
             for (const Note& note : pat.notes) {
-                const long long start = static_cast<long long>(std::llround(note.t_beats * spb));
+                const double t_abs = (offset_beats == 0.0) ? note.t_beats : offset_beats + note.t_beats;
+                const long long start = static_cast<long long>(std::llround(t_abs * spb));
                 if (start >= total) continue;  // beyond render window
                 switch (tr.voice.kind) {
                     case VoiceKind::Metronome: render_metronome(t, start, note, tr.voice, sr); break;
@@ -133,6 +137,29 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                         if (!render_sampler(t, start, note, join_path(base_dir, tr.voice.path), sr, spb, sampler_cache, err))
                             return false;
                         break;
+                }
+            }
+            return true;
+        };
+
+        if (p.arrangement.empty()) {
+            for (const Pattern& pat : p.patterns) {
+                if (static_cast<size_t>(pat.track) != ti) continue;
+                if (!render_pattern_at(pat, 0.0)) return false;
+            }
+        } else {
+            for (const Clip& clip : p.arrangement) {
+                const Pattern& pat = p.patterns[static_cast<size_t>(clip.pattern)];
+                if (static_cast<size_t>(pat.track) != ti) continue;
+                double extent = 0.0;  // loop period = pattern note extent, beats
+                for (const Note& n : pat.notes) {
+                    const double e = n.t_beats + n.dur_beats;
+                    if (e > extent) extent = e;
+                }
+                const int reps = (extent > 0.0) ? clip.repeats : 1;
+                const double base = clip.start_bar * bpb;
+                for (int r = 0; r < reps; ++r) {
+                    if (!render_pattern_at(pat, base + static_cast<double>(r) * extent)) return false;
                 }
             }
         }

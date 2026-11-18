@@ -1,0 +1,26 @@
+{
+  "format_version": 0,
+  "bpm": 96.0,
+  "sample_rate": 48000,
+  "seed": 2026,
+  "length_bars": 4,
+  "beats_per_bar": 4,
+  "tracks": [
+    { "name": "Kick", "gain_db": -3.0, "pan": 0.0, "voice": { "kind": "sampler", "path": "kits/kick.wav" } },
+    { "name": "Metro", "gain_db": -15.0, "pan": 0.0, "voice": { "kind": "metronome", "accent_every": 4 } },
+    { "name": "Bass", "gain_db": -6.0, "pan": 0.3, "voice": { "kind": "sine", "freq_hz": 82.41 } }
+  ],
+  "patterns": [
+    { "track": 0, "notes": [ { "t": 0.0, "dur": 1.0 }, { "t": 2.0, "dur": 1.0 } ] },
+    { "track": 0, "notes": [ { "t": 1.0, "dur": 1.0 }, { "t": 3.0, "dur": 1.0 } ] },
+    { "track": 1, "notes": [ { "t": 0.0, "dur": 1.0 }, { "t": 1.0, "dur": 1.0 }, { "t": 2.0, "dur": 1.0 }, { "t": 3.0, "dur": 1.0 } ] },
+    { "track": 2, "notes": [ { "t": 0.0, "dur": 2.0 }, { "t": 2.5, "dur": 1.5 } ] }
+  ],
+  "arrangement": [
+    { "pattern": 0, "start_bar": 0.0, "repeats": 1 },
+    { "pattern": 1, "start_bar": 1.0, "repeats": 1 },
+    { "pattern": 0, "start_bar": 2.0, "repeats": 1 },
+    { "pattern": 2, "start_bar": 0.0, "repeats": 4 },
+    { "pattern": 3, "start_bar": 0.5, "repeats": 3 }
+  ]
+}

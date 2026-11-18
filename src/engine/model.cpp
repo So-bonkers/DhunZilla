@@ -68,6 +68,22 @@ bool parse_project(const json& j, Project& p, std::string& err) {
             p.patterns.push_back(std::move(pat));
         }
     }
+
+    if (j.contains("arrangement")) {
+        if (!j["arrangement"].is_array()) { err = "arrangement must be an array"; return false; }
+        for (const auto& cj : j["arrangement"]) {
+            Clip c;
+            c.pattern = cj.value("pattern", -1);
+            if (c.pattern < 0 || static_cast<size_t>(c.pattern) >= p.patterns.size()) {
+                err = "clip.pattern out of range: " + std::to_string(c.pattern); return false;
+            }
+            c.start_bar = cj.value("start_bar", 0.0);
+            if (!(c.start_bar >= 0.0)) { err = "clip.start_bar must be a finite number >= 0"; return false; }
+            c.repeats = cj.value("repeats", 1);
+            if (c.repeats < 1 || c.repeats > 4096) { err = "clip.repeats out of range [1..4096]"; return false; }
+            p.arrangement.push_back(c);
+        }
+    }
     return true;
 }
 
@@ -85,6 +101,7 @@ json voice_to_json(const Voice& v) {
 }  // namespace
 
 bool load_project(const std::string& path, Project& out, std::string& err) {
+    out = Project{};  // full reset: loading into a dirty Project must never accumulate state
     std::ifstream f(path, std::ios::binary);
     if (!f) { err = "cannot open '" + path + "'"; return false; }
     json j;
@@ -127,6 +144,18 @@ bool save_project(const std::string& path, const Project& p, std::string& err) {
         patterns.push_back(std::move(pj));
     }
     j["patterns"] = std::move(patterns);
+
+    if (!p.arrangement.empty()) {  // omitted when empty → canonical output of legacy projects unchanged
+        json arr = json::array();
+        for (const auto& c : p.arrangement) {
+            json cj;
+            cj["pattern"] = c.pattern;
+            cj["start_bar"] = c.start_bar;
+            cj["repeats"] = c.repeats;
+            arr.push_back(std::move(cj));
+        }
+        j["arrangement"] = std::move(arr);
+    }
 
     std::ofstream f(path, std::ios::binary);
     if (!f) { err = "cannot write '" + path + "'"; return false; }

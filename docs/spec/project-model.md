@@ -55,3 +55,15 @@ Exit codes: 0 ok; 2 bad usage; 3 file not found; 4 parse error; 5 render error. 
 
 ## WAV writer
 Canonical PCM16 stereo, little-endian, 48 kHz (v0), header exactly 44 bytes, no metadata chunks — bit-exactness includes the header.
+
+## Arrangement (clips) — additive to v0 (2026-11-18, WP-0101)
+
+Optional top-level `arrangement`: array of clip objects `{ "pattern": int, "start_bar": double >= 0, "repeats": int in [1..4096] }` (`start_bar` default 0.0, `repeats` default 1). Semantics, normative:
+
+- **When `arrangement` is present it is the sole source of playback**: patterns not referenced by any clip render nothing. When absent, legacy v0 semantics apply: every pattern plays once from beat 0, in declaration order — bit-identical to pre-feature core (committed goldens enforce this).
+- Clip placement: for repeat `r` in `[0, repeats)`, notes are placed at absolute beat `start_bar * beats_per_bar + r * extent + note.t`, where `extent = max(note.t + note.dur)` over the pattern (**pattern-relative extent**, in beats). If `extent <= 0` (empty pattern), `repeats` is forced to 1.
+- Notes whose start frame lands at/after the project window end are dropped; audio extending past the end is clipped by the buffer (unchanged rule).
+- Metronome accent phase is **pattern-relative** (`accent_every` matches against `round(note.t)`, not absolute beat position).
+- Render order: clips in declaration order, filtered per track — accumulation order is part of bit-exactness.
+
+Canonical save omits `"arrangement"` when empty, so legacy files round-trip byte-identically.
