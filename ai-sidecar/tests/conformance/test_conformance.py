@@ -76,6 +76,10 @@ def separate_params(input_wav: Path) -> dict[str, Any]:
     return {"audio_path": str(input_wav)}
 
 
+def transcribe_params(input_wav: Path) -> dict[str, Any]:
+    return {"audio_path": str(input_wav)}
+
+
 # ------------------------------------------------------------------ check 1
 
 
@@ -108,6 +112,11 @@ def test_capability_honesty(backend: BackendBase, tmp_path: Path, make_input_wav
         assert rec.state == "done", f"{backend.id}: declared separate failed: {rec.error}"
         artifacts = (rec.result or {}).get("artifacts", {})
         assert {"vocals", "drums", "bass", "other"} <= set(artifacts)
+    if structural["transcribe"]:
+        rec = run_job(backend.id, "transcribe", transcribe_params(make_input_wav()), tmp_path)
+        assert rec.state == "done", f"{backend.id}: declared transcribe failed: {rec.error}"
+        artifacts = (rec.result or {}).get("artifacts", {})
+        assert "midi" in artifacts, f"{backend.id}: transcribe must return a 'midi' artifact"
 
     # An undeclared task must be refused at submit time, not silently accepted.
     for task, implemented in structural.items():
@@ -240,6 +249,8 @@ def test_provenance_present_and_correct(
     """Done jobs carry {backend_id, model_version, seed, request_hash} provenance."""
     if isinstance(backend, GenerationBackend):
         task, params = "generate", generate_params(duration_s=1.0, seed=2024)
+    elif isinstance(backend, TranscriptionBackend):
+        task, params = "transcribe", transcribe_params(make_input_wav("prov-input.wav"))
     else:
         task, params = "separate", separate_params(make_input_wav("prov-input.wav"))
 

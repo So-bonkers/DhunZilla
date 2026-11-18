@@ -24,7 +24,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
 | WP-0101 | Arrangement layer: clips {pattern, start_bar, repeats}, legacy-compatible, bit-exact | **done** | orchestrator |
-| WP-0102 | Basic-Pitch transcription cartridge via ONNX runtime (TF is dead on aarch64 — ADR-0005) | in-progress | orchestrator |
+| WP-0102 | Basic-Pitch transcription cartridge via ONNX runtime (ADR-0005; real MIDI e2e on aarch64) | **done** | orchestrator |
 | WP-0010 | Native stem export (`--stems-dir`) — solo stems recombine bit-exact to mix | **done** | orchestrator |
 
 ## Open human decisions (blocking nothing; flagged for review)
