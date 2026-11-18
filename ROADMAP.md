@@ -23,6 +23,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: Linux matrix, x86_64 + aarch64 (ADR-0006) | **done** — green on push (run 44277877478) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
+| WP-0126 | Sidecar wav reader robustness — mirror of C++ fuzz classes; fixes ZeroDivisionError on bits=0, mono/stereo+rate domains | **done** | orchestrator |
 | WP-0125 | WAV reader fuzz+hardening — strict fmt validation (float bits==32, sr range); crafted-invalid now rejected | **done** | orchestrator |
 | WP-0124 | prompt→editable-song e2e chain (generate→transcribe→opj+provenance+render), deterministic, mock CI + real ONNX proven | **done** | orchestrator |
 | WP-0123 | Remove dead _WIN32 blocks in engine validators (ADR-0006 Linux-only hygiene) | **done** | orchestrator |

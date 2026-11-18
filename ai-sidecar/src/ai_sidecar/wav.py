@@ -103,6 +103,14 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
     )
     if channels <= 0 or sample_rate <= 0:
         raise ValueError(f"{path}: bad header (channels={channels}, rate={sample_rate})")
+    # Mirror of the C++ engine's WP-0125 validation: reject nonsense field domains BEFORE using
+    # them — bits=0 would make block_align zero and crash the modulo below with ZeroDivisionError.
+    if channels > 2:
+        raise ValueError(f"{path}: only mono/stereo supported (channels={channels})")
+    if sample_rate > 1_000_000:
+        raise ValueError(f"{path}: implausible sample rate ({sample_rate})")
+    if bits not in (16, 32):
+        raise ValueError(f"{path}: unsupported bit depth ({bits})")
     block_align = channels * bits // 8
     usable = len(data_bytes) - (len(data_bytes) % block_align)
     if usable == 0:
