@@ -23,6 +23,8 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: Linux matrix, x86_64 + aarch64 (ADR-0006) | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
+| WP-0122 | JSON model fuzz (truncation+mutation+type-confusion) — fixes 22 escaping type_error paths in load_project | **done** | orchestrator |
+| WP-0121 | README CLI reference table + harness workflow index; usage refresh | **done** | orchestrator |
 | WP-0120 | Clip-level gain (dB) in arrangement — mix-target scaling, unity bit-exact, [-96,24] validated | **done** | orchestrator |
 | WP-0119 | hum→project glue + mocktrans CI backend — transcribe job → import-midi → attach; conformance dispatch gap fixed | **done** | orchestrator |
 | WP-0118 | stem→project glue: sidecar separation + auto `opd attach` provenance, .opd carries AI stems (mock CI + real demucs proven) | **done** | orchestrator |

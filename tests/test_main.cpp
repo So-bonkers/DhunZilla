@@ -915,6 +915,137 @@ static void test_clip_gain() {
     CHECK(energy(full_u, 0, 90000) == energy(full_h, 0, 90000), "cg.untouched_clip_bit_identical");
 }
 
+// --- JSON model fuzz (WP-0122): .opj files arrive from strangers via .opd — no input may crash.
+static void test_json_fuzz() {
+    std::string err;
+    // Rich seed corpus: every field family exercised, built deterministically via save_project.
+    op::Project rich;
+    rich.bpm = 133.7; rich.length_bars = 6.0; rich.sample_rate = 48000; rich.seed = 7;
+    op::Track t0; t0.name = "Metro"; t0.voice.kind = op::VoiceKind::Metronome;
+    op::Track t1; t1.name = "Sine"; t1.voice.kind = op::VoiceKind::Sine; t1.voice.freq_hz = 233.0f;
+    op::Track t2; t2.name = "Syn"; t2.voice.kind = op::VoiceKind::Synth; t2.voice.attack_ms = 4.0;
+    op::Track t3; t3.name = "Sam"; t3.voice.kind = op::VoiceKind::Sampler; t3.voice.path = "kits/k.wav";
+    rich.tracks = {t0, t1, t2, t3};
+    for (int i = 0; i < 4; ++i) {
+        op::Pattern pat; pat.track = i;
+        pat.notes.push_back({0.0, 1.5, 60 + i, 0.75});
+        pat.notes.push_back({2.0, 0.5, -1, 1.0});
+        rich.patterns.push_back(pat);
+    }
+    rich.arrangement = {{0, 0.0, 3, 0.0}, {1, 2.0, 1, -6.0}, {2, 4.0, 2, 0.0}};
+    rich.tempo_map = {{0.0, 133.7}, {4.0, 88.0}};
+    rich.attachments = {{"stems/drums.wav", "stem", "demucs"}};
+    CHECK(op::save_project("/tmp/op_fz_seed.opj", rich, err), "fz.seed_saved");
+    std::ifstream f("/tmp/op_fz_seed.opj", std::ios::binary);
+    const std::string seed((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+    // Invariants any successfully-parsed project must satisfy (spec promises).
+    auto invariants = [](const op::Project& p) {
+        if (!(p.bpm > 0.0) || p.sample_rate <= 0 || p.beats_per_bar < 1) return false;
+        if (p.tracks.empty() && !p.patterns.empty()) return false;
+        for (const auto& pat : p.patterns) {
+            if (pat.track < 0 || static_cast<size_t>(pat.track) >= p.tracks.size()) return false;
+            for (const auto& n : pat.notes) {
+                if (!(n.t_beats >= 0.0) || !(n.dur_beats > 0.0)) return false;
+                if (n.midi_note < -1 || n.midi_note > 127) return false;
+                if (!(n.velocity > 0.0) || n.velocity > 1.0) return false;
+            }
+        }
+        for (const auto& c : p.arrangement) {
+            if (c.pattern < 0 || static_cast<size_t>(c.pattern) >= p.patterns.size()) return false;
+            if (!(c.start_bar >= 0.0) || c.repeats < 1) return false;
+            if (!(c.gain_db >= -96.0) || c.gain_db > 24.0) return false;
+        }
+        double prev = -1.0;
+        bool first_tp = true;
+        for (const auto& tp : p.tempo_map) {
+            if (!(tp.bar > prev)) return false;                 // strictly increasing bars
+            if (first_tp && tp.bar != 0.0) return false;        // anchored at bar 0
+            first_tp = false;
+            prev = tp.bar;
+            if (!(tp.bpm > 0.0) || tp.bpm > 1000.0) return false;
+        }
+        return true;
+    };
+
+    // A load attempt must never escape an exception, whatever the bytes claim.
+    auto try_load = [&](const std::string& path) -> int {  // 1 ok / 0 clean-fail / -1 escaped
+        op::Project p;
+        try {
+            return op::load_project(path, p, err) ? (invariants(p) ? 1 : -2) : 0;
+        } catch (const std::exception&) {
+            return -1;
+        } catch (...) {
+            return -1;
+        }
+    };
+
+    // Truncation sweep: every prefix must load or fail cleanly.
+    int trunc_crash = 0, trunc_ok = 0;
+    for (size_t i = 1; i < seed.size(); ++i) {
+        std::ofstream w("/tmp/op_fz_t.opj", std::ios::binary);
+        w.write(seed.data(), static_cast<std::streamsize>(i));
+        w.close();
+        const int r = try_load("/tmp/op_fz_t.opj");
+        if (r < 0) ++trunc_crash; else if (r == 1) ++trunc_ok;
+    }
+    CHECK(trunc_crash == 0, "fz.truncation_never_escapes");
+
+    // Mutation fuzz: seeded byte flips/inserts/deletions + structural corruptions.
+    op::rng::Pcg32 prng(20261118ull);
+    static const char kFzChars[] = "{}[]\":,0e-9truefalsnul";
+    constexpr size_t kFzN = sizeof(kFzChars) - 1;
+    int mut_parsed = 0, mut_failed_clean = 0, mut_crash = 0;
+    for (int trial = 0; trial < 500; ++trial) {
+        std::string m = seed;
+        const int n_edits = 1 + static_cast<int>(prng.next() % 4);
+        for (int e = 0; e < n_edits && !m.empty(); ++e) {
+            const size_t pos = static_cast<size_t>(prng.next() % static_cast<uint64_t>(m.size()));
+            switch (prng.next() % 3) {
+                case 0: m[pos] = static_cast<char>(prng.next() % 256u); break;         // flip
+                case 1: m.insert(m.begin() + static_cast<long>(pos),                      // insert
+                                 kFzChars[prng.next() % kFzN]); break;
+                default: m.erase(m.begin() + static_cast<long>(pos)); break;             // delete
+            }
+        }
+        std::ofstream w("/tmp/op_fz_m.opj", std::ios::binary);
+        w.write(m.data(), static_cast<std::streamsize>(m.size()));
+        w.close();
+        const int r = try_load("/tmp/op_fz_m.opj");
+        if (r < 0) ++mut_crash; else if (r == 1) ++mut_parsed; else ++mut_failed_clean;
+    }
+    CHECK(mut_crash == 0, "fz.mutation_never_escapes");
+    CHECK(mut_parsed > 50, "fz.mutation_still_parses_many");  // not a reject-everything stub
+
+    // Type-confusion class (WP-0122): random byte mutations never produce exact key/type swaps,
+    // but hand-directed ones found 22 escaping type_error.302 paths before the fix. Every top-level
+    // field × wrong-typed value must fail cleanly — this is what strangers can send via .opd.
+    {
+        int escaped = 0, cases = 0;
+        const char* keys[] = {"bpm", "tracks", "patterns", "sample_rate", "length_bars",
+                              "arrangement", "tempo_map", "attachments", "seed", "beats_per_bar"};
+        const char* bad_vals[] = {"[]", "{}", "\"str\"", "null", "true"};
+        for (const char* key : keys) {
+            for (const char* v : bad_vals) {
+                const size_t kp = seed.find(std::string("\"") + key + "\"");
+                if (kp == std::string::npos) continue;
+                const size_t colon = seed.find(':', kp);
+                const size_t end = seed.find_first_of(",\n", colon);
+                std::string m = seed.substr(0, colon + 1) + " " + v + seed.substr(end);
+                std::ofstream w("/tmp/op_fz_tc.opj", std::ios::binary);
+                w << m;
+                w.close();
+                ++cases;
+                if (try_load("/tmp/op_fz_tc.opj") < 0) ++escaped;  // -1 escaped, -2 invariant broken
+            }
+        }
+        CHECK(cases >= 40, "fz.type_confusion_coverage");
+        CHECK(escaped == 0, "fz.type_confusion_never_escapes");
+    }
+    std::printf("json fuzz: trunc ok=%d | mut parsed=%d clean-fail=%d crash=0\n",
+                trunc_ok, mut_parsed, mut_failed_clean);
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -932,6 +1063,7 @@ int main() {
     test_tempo_midi();
     test_attachments();
     test_clip_gain();
+    test_json_fuzz();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

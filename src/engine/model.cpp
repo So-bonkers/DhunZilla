@@ -181,11 +181,17 @@ bool load_project(const std::string& path, Project& out, std::string& err) {
     json j;
     try {
         j = json::parse(f);
+        // parse_project's .value() calls throw type_error on mistyped fields (WP-0122 fuzz: 22 such
+        // paths) — same failure contract as a syntax error. Parse into tmp so a throw mid-way can
+        // never leave a half-filled project in *out.
+        Project tmp;
+        if (!parse_project(j, tmp, err)) return false;
+        out = std::move(tmp);
+        return true;
     } catch (const json::exception& e) {
-        err = std::string("json parse: ") + e.what();
+        err = std::string("json: ") + e.what();
         return false;
     }
-    return parse_project(j, out, err);
 }
 
 bool save_project(const std::string& path, const Project& p, std::string& err) {
