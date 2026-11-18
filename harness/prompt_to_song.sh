@@ -40,8 +40,8 @@ tr = wait_done(base, submit(base, tr_backend, "transcribe", {"audio_path": src_w
 out = pathlib.Path(tmp, "chain.json")
 out.write_text(json.dumps({
     "wav": src_wav, "mid": str(tr["result"]["artifacts"]["midi"]),
-    "gen_producer": provenance_producer(base, gen, gen_backend),
-    "tr_producer": provenance_producer(base, tr, tr_backend),
+    "gen_producer": provenance_producer(gen, gen_backend),
+    "tr_producer": provenance_producer(tr, tr_backend),
 }))
 print("chain jobs done")
 PYEOF

@@ -30,7 +30,7 @@ fi
 [ -f "$AUDIO" ] || { echo "FAIL: audio not found: $AUDIO"; exit 2; }
 
 OP_ROOT="$ROOT" python3 - "$PROJ" "$AUDIO" "$BACKEND" "$TMP" <<'PYEOF'
-import os, pathlib, subprocess, sys
+import os, pathlib, shutil, subprocess, sys
 
 sys.path.insert(0, os.environ["OP_ROOT"] + "/harness")
 from job_client import provenance_producer, start_sidecar, submit, wait_done
@@ -39,7 +39,7 @@ proj, audio, backend, tmp = sys.argv[1:5]
 _op, base = start_sidecar(os.environ["OP_ROOT"], tmp + "/jobs")
 snap = wait_done(base, submit(base, backend, "separate", {"audio_path": audio}))
 
-producer = provenance_producer(base, snap, backend)
+producer = provenance_producer(snap, backend)
 artifacts = dict(sorted(snap["result"]["artifacts"].items()))
 assert artifacts, "no artifacts in result"
 
@@ -49,7 +49,6 @@ for name, src in artifacts.items():
     rel = f"stems/{name}.wav"
     dst = pathlib.Path(proj).parent / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
-    import shutil
     shutil.copyfile(src, dst)
     r = subprocess.run([opd, "attach", proj, "--path", rel, "--kind", "stem",
                         "--producer", producer], capture_output=True, text=True)

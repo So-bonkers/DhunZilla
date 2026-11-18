@@ -1,4 +1,4 @@
-# WP-0132 — Glue script dedup (shared sidecar library)
+# WP-0133 — Glue script dedup (shared sidecar library)
 
 **Status: done** · Owner: orchestrator · Behavior-preserving refactor inside harness/ only.
 

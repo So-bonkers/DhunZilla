@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""job_client.py — shared sidecar lifecycle + job helpers for harness glue scripts (WP-0132).
+"""job_client.py — shared sidecar lifecycle + job helpers for harness glue scripts (WP-0133).
 
 Behavior-preserving extraction of the serve-start/port-scan/submit/poll code that was copy-pasted
 across stem_into_project.sh, midi_into_project.sh, and prompt_to_song.sh. Not engine code: dev
@@ -85,7 +85,7 @@ def wait_done(base: str, job_id: str, timeout_iters: int = 300) -> dict:
     raise SystemExit(f"FAIL: job {job_id} timed out; last={snapshot}")
 
 
-def provenance_producer(base_unused: str, snapshot: dict, backend: str) -> str:
+def provenance_producer(snapshot: dict, backend: str) -> str:
     """'backend@model_version' from a done snapshot's provenance file (glue convention)."""
     prov_path = snapshot["result"]["provenance_file"]
     with open(prov_path) as f:

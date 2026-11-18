@@ -31,7 +31,7 @@ proj, audio, backend, tmp = sys.argv[1:5]
 _op, base = start_sidecar(os.environ["OP_ROOT"], tmp + "/jobs")
 snap = wait_done(base, submit(base, backend, "transcribe", {"audio_path": audio}))
 
-producer = provenance_producer(base, snap, backend)
+producer = provenance_producer(snap, backend)
 src_midi = pathlib.Path(snap["result"]["artifacts"]["midi"])
 
 rel = "ai/transcribed.mid"
