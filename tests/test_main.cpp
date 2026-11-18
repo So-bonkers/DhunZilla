@@ -678,6 +678,53 @@ static void test_velocity() {
     CHECK(vel_rt, "vel.midi_roundtrip_preserves_velocity");
 }
 
+// --- MIDI merge into existing project (WP-0114).
+static void test_midi_merge() {
+    const std::string fix = std::string(OP_TEST_DATA) + "/fixtures/midi/two_notes.mid";
+    std::string err;
+
+    op::Project host;
+    host.bpm = 120.0; host.length_bars = 8.0; host.sample_rate = 48000;
+    op::Track th; th.name = "Host"; th.voice.kind = op::VoiceKind::Sine; th.voice.freq_hz = 110.0f;
+    host.tracks = {th};
+    op::Pattern ph; ph.track = 0; ph.notes.push_back({0.0, 7.0, -1});
+    host.patterns = {ph};
+
+    CHECK(op::import_midi_into(host, fix, err), "merge.ok");
+    CHECK(host.tracks.size() == 3 && host.patterns.size() == 3, "merge.tracks_appended");
+    CHECK(host.patterns[1].track == 1 && host.patterns[2].track == 2, "merge.indices_sequential");
+    // Grid semantics: positions identical to standalone import (no rescale).
+    op::Project alone;
+    CHECK(op::load_midi(fix, alone, err), "merge.reference_load");
+    bool grid_same = alone.patterns.size() == 2 &&
+                     host.patterns[1].notes.size() == alone.patterns[0].notes.size() &&
+                     host.patterns[2].notes.size() == alone.patterns[1].notes.size();
+    for (size_t k = 0; grid_same && k < alone.patterns[0].notes.size(); ++k)
+        if (host.patterns[1].notes[k].t_beats != alone.patterns[0].notes[k].t_beats ||
+            host.patterns[1].notes[k].midi_note != alone.patterns[0].notes[k].midi_note) grid_same = false;
+    CHECK(grid_same, "merge.grid_semantics_exact");
+    CHECK(host.tracks[1].voice.kind == op::VoiceKind::Synth, "merge.imported_voice_synth");
+    CHECK(host.length_bars == 8.0, "merge.length_not_shrunk");
+
+    // Length extends when content exceeds the host (fixture ends at beat 4 → 0.25-bar host → 1 bar).
+    op::Project tiny = host;
+    tiny.tracks = {th}; tiny.patterns = {ph}; tiny.length_bars = 0.25;
+    CHECK(op::import_midi_into(tiny, fix, err) && tiny.length_bars == 1.0, "merge.length_extends");
+
+    // Failure leaves host untouched: missing file → error + unchanged structure.
+    op::Project before = host;
+    CHECK(!op::import_midi_into(host, "/tmp/definitely_missing_file.mid", err), "merge.missing_fails");
+    CHECK(host.tracks.size() == before.tracks.size() && host.patterns.size() == before.patterns.size(),
+          "merge.failure_leaves_project_untouched");
+
+    // Render works with merged content (non-silent, valid).
+    op::wav::StereoBuffer b;
+    CHECK(op::render_project(host, "", b, err), "merge.render_ok");
+    double e = 0.0;
+    for (size_t i = 0; i < b.interleaved.size(); i += 2) e += b.interleaved[i] * b.interleaved[i];
+    CHECK(e > 0.0, "merge.render_has_audio");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -691,6 +738,7 @@ int main() {
     test_tempo_map();
     test_bundle();
     test_velocity();
+    test_midi_merge();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

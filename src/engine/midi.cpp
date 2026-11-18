@@ -354,4 +354,25 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
     return true;
 }
 
+bool import_midi_into(Project& p, const std::string& midi_path, std::string& err) {
+    Project src;  // build everything in a temp first: failure must leave *p untouched
+    if (!load_midi(midi_path, src, err)) return false;
+    if (p.tracks.size() + src.tracks.size() > 1024) {
+        err = "midi merge: would exceed 1024 tracks"; return false;
+    }
+    double max_end = 0.0;
+    for (size_t i = 0; i < src.tracks.size(); ++i) {
+        Track t = std::move(src.tracks[i]);  // synth voice + name already set by the loader
+        Pattern pat;
+        pat.track = static_cast<int>(p.tracks.size());  // pre-push track count == this track's index
+        if (i < src.patterns.size()) pat.notes = std::move(src.patterns[i].notes);
+        for (const Note& n : pat.notes) max_end = std::max(max_end, n.t_beats + n.dur_beats);
+        p.tracks.push_back(std::move(t));
+        p.patterns.push_back(std::move(pat));
+    }
+    const double need = std::ceil(max_end / static_cast<double>(p.beats_per_bar));
+    if (need > p.length_bars) p.length_bars = need;  // extend to fit, never shrink
+    return true;
+}
+
 }  // namespace op

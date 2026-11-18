@@ -23,6 +23,7 @@ static void usage() {
         "  opd render <project.opj> -o <out.wav> [--seed N]\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
+        "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
         "  opd opj2mid <in.opj> -o <out.mid>\n"
         "  opd pack <in.opj> -o <song.opd>    (project + samples in one file)\n"
         "  opd unpack <song.opd> -d <out-dir>\n"
@@ -203,6 +204,24 @@ static int cmd_unpack(int argc, char** argv) {
     return 0;
 }
 
+static int cmd_import_midi(int argc, char** argv) {
+    if (argc < 3) { usage(); return fail("usage", "import-midi needs <proj.opj> <in.mid>"); }
+    const std::string proj = argv[1], mid = argv[2];
+    std::string out = proj;  // in-place by default (model-driven: load → engine merge op → save)
+    for (int i = 3; i < argc; ++i)
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+    op::Project p;
+    std::string err;
+    if (!op::load_project(proj, p, err)) return fail("parse", err);
+    const bool has_arr = !p.arrangement.empty();
+    if (!op::import_midi_into(p, mid, err)) return fail("parse", err);
+    if (!op::save_project(out, p, err)) return fail("write", err);
+    std::printf("import-midi: %s -> %s (tracks now %zu)\n", mid.c_str(), out.c_str(), p.tracks.size());
+    if (has_arr)
+        std::fprintf(stderr, "note: project has an arrangement — imported tracks stay silent until clips reference them\n");
+    return 0;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
@@ -240,6 +259,7 @@ int main(int argc, char** argv) {
     if (cmd == "render") return cmd_render(argc - 1, argv + 1);
     if (cmd == "gen-testproject") return cmd_gen_testproject(argc - 1, argv + 1);
     if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
+    if (cmd == "import-midi") return cmd_import_midi(argc - 1, argv + 1);
     if (cmd == "opj2mid") return cmd_opj2mid(argc - 1, argv + 1);
     if (cmd == "pack") return cmd_pack(argc - 1, argv + 1);
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);

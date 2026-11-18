@@ -21,4 +21,11 @@ bool load_midi(const std::string& path, Project& out, std::string& err);
 // clamped non-negative so output is always well-formed. Byte-deterministic for a given Project.
 bool save_midi(const std::string& path, const Project& p, std::string& err);
 
+// Merges *midi_path* into an existing project (WP-0114): each note-bearing MIDI track becomes a
+// new op track (synth voice) appended at the end with its patterns. Grid semantics: MIDI beats
+// map 1:1 onto project beats (musical position preserved; tempo differences do NOT rescale —
+// documented v0 choice). Project length extends if content exceeds it. Fails actionable if the
+// track index space would overflow or the MIDI is invalid; on failure *p* is unchanged.
+bool import_midi_into(Project& p, const std::string& midi_path, std::string& err);
+
 }  // namespace op

@@ -128,3 +128,18 @@ default-velocity render is bit-identical to pre-WP-0111 (goldens prove it; IEEE 
 `x · 1.0 ≡ x`). Canonical save omits `"vel"` when exactly 1.0 → legacy files round-trip
 byte-identically. MIDI: import maps note-on velocity → `vel/127`; export writes
 `clamp(round(vel·127), 1, 127)`; a MIDI round-trip preserves velocity within ±½ MIDI step.
+
+## MIDI merge — additive to v0 (2026-11-18, WP-0114)
+
+`opd import-midi <proj.opj> <in.mid> [-o out.opj]` appends each note-bearing MIDI track as a new
+synth-voice op track at the end of an **existing** project (the hum→MIDI result lands alongside
+your drums, not in a separate file). Semantics:
+- **Grid mapping:** MIDI beats map 1:1 onto project beats — musical position is preserved; a tempo
+  difference does *not* rescale note positions (documented v0 choice; a `--rescale` mode is a
+  possible future flag, not implied).
+- **Track indices** are assigned sequentially from the current track count; pattern `.track` fields
+  stay consistent. On any failure the target project is left untouched (merge builds in a temp first).
+- **Length:** extends `length_bars` to fit imported content; never shrinks it.
+- **Arrangement interaction:** if the host has an arrangement, imported tracks are silent until a
+  clip references them — the CLI prints that note rather than surprising the user with quiet output.
+This is a model-driven mutation (load → engine op → save); no direct state mutation from the CLI.
