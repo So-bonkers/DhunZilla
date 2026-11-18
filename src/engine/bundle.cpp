@@ -56,9 +56,6 @@ constexpr uint16_t kFixedDosTime = 0;
 
 bool safe_entry_name(const std::string& name) {
     if (name.empty() || name[0] == '/' || name.find('\\') != std::string::npos) return false;
-#ifdef _WIN32
-    if (name.size() >= 2 && name[1] == ':') return false;
-#endif
     size_t pos = 0;
     while (pos < name.size()) {
         const size_t slash = name.find('/', pos);

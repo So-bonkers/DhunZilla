@@ -149,9 +149,6 @@ bool valid_attachment(const Attachment& a, std::string& err) {
     if (a.path[0] == '/' || a.path.find('\\') != std::string::npos) {
         err = "attachment.path must be project-relative with '/' separators: '" + a.path + "'"; return false;
     }
-#ifdef _WIN32
-    if (a.path.size() >= 2 && a.path[1] == ':') { err = "attachment.path must not be absolute"; return false; }
-#endif
     size_t pos = 0;
     while (pos < a.path.size()) {
         const size_t slash = a.path.find('/', pos);
