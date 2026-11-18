@@ -23,6 +23,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
+| WP-0106 | Live sidecar HTTP smoke harness (health/jobs/artifacts/provenance/error-path over real uvicorn) | **done** | orchestrator |
 | WP-0105 | Tempo map (bar-anchored piecewise tempo) — legacy path bit-exact, golden w/ mid-song drop | **done** | orchestrator |
 | WP-0104 | `opd opj2mid` SMF writer — byte-deterministic export, exact round-trip with loader (DAW interop) | **done** | orchestrator |
 | WP-0103a | Synth voice (MIDI-pitched, 12-TET) + note pitch field — closes hum→MIDI→sound engine path | **done** | orchestrator |
