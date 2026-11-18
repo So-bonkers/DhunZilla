@@ -48,8 +48,10 @@ struct TempoPoint {
 
 struct Track {
     std::string name;
-    float gain_db = 0.0f;
-    float pan = 0.0f;            // -1..1 equal-power
+    float gain_db = 0.0f;        // [-96, 24], validated at parse (WP-0136 closed a pre-existing gap)
+    float pan = 0.0f;            // -1..1 equal-power, validated at parse (WP-0136)
+    bool mute = false;           // mixer (spec §mixer): silent regardless of solo; omitted at default
+    bool solo = false;           // mixer: when any track solos, only non-muted solo tracks are audible
     Voice voice;
 };
 
@@ -70,6 +72,8 @@ struct Project {
     uint64_t seed = 42;
     double length_bars = 4.0;
     int beats_per_bar = 4;
+    float master_gain_db = 0.0f;  // mixer master fader (spec §mixer): [-96, 24]; multiplies every
+                                  // output sample after sum; exactly 0.0 skips → bit-identical legacy
     std::vector<Track> tracks;
     std::vector<Pattern> patterns;
     std::vector<Clip> arrangement;  // empty = legacy semantics: every pattern once, at bar 0
@@ -82,6 +86,12 @@ struct Project {
 // any violation with *p unchanged. Example:
 //   op::Attachment a{"stems/drums.wav", "stem", "demucs"};  op::add_attachment(proj, a, err);
 bool add_attachment(Project& p, Attachment a, std::string& err);
+
+// Mixer audibility rule (spec §mixer): with any_solo = some track has solo == true, track i is
+// audible iff !mute && (!any_solo || solo) — mute wins over solo. The single source of truth:
+// mix and stems both consult it, so an inaudible stem stays all-zero by construction. Example:
+//   for (size_t i = 0; i < p.tracks.size(); ++i) if (track_audible(p, i)) render_track(i);
+bool track_audible(const Project& p, std::size_t i);
 
 // Load/validate per spec. Returns false + machine-parsable err string on any violation.
 bool load_project(const std::string& path, Project& out, std::string& err);

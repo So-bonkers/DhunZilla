@@ -48,6 +48,10 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
     if (p.sample_rate <= 0) { err = "sample_rate must be > 0"; return false; }
     if (p.beats_per_bar <= 0) { err = "beats_per_bar must be > 0"; return false; }
     if (p.length_bars <= 0.0) { err = "length_bars must be > 0"; return false; }
+    p.master_gain_db = j.value("master_gain_db", 0.0f);  // mixer master fader (spec §mixer)
+    if (!(p.master_gain_db >= -96.0f) || p.master_gain_db > 24.0f) {  // NaN-safe: rejects NaN too
+        err = "master_gain_db out of range [-96, 24]"; return false;
+    }
 
     if (!j.contains("tracks") || !j["tracks"].is_array() || j["tracks"].empty()) {
         err = "tracks must be a non-empty array"; return false;
@@ -57,6 +61,17 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
         t.name = tj.value("name", std::string{});
         t.gain_db = tj.value("gain_db", 0.0f);
         t.pan = tj.value("pan", 0.0f);
+        // WP-0136: close the pre-existing gap — gain/pan used to load unbounded (+99 dB, pan 5).
+        if (!(t.gain_db >= -96.0f) || t.gain_db > 24.0f) { err = "track.gain_db out of range [-96, 24]"; return false; }
+        if (!(t.pan >= -1.0f) || t.pan > 1.0f) { err = "track.pan out of range [-1, 1]"; return false; }
+        if (tj.contains("mute")) {
+            if (!tj.at("mute").is_boolean()) { err = "track.mute must be a boolean"; return false; }
+            t.mute = tj.at("mute").get<bool>();
+        }
+        if (tj.contains("solo")) {
+            if (!tj.at("solo").is_boolean()) { err = "track.solo must be a boolean"; return false; }
+            t.solo = tj.at("solo").get<bool>();
+        }
         if (!parse_voice(tj.value("voice", json::object()), t.voice, err)) return false;
         p.tracks.push_back(std::move(t));
     }
@@ -179,6 +194,15 @@ bool add_attachment(Project& p, Attachment a, std::string& err) {
     return true;
 }
 
+bool track_audible(const Project& p, std::size_t i) {
+    bool any_solo = false;
+    for (const Track& t : p.tracks) {
+        if (t.solo) { any_solo = true; break; }
+    }
+    const Track& t = p.tracks[i];
+    return !t.mute && (!any_solo || t.solo);  // mute wins over solo (spec §mixer)
+}
+
 bool load_project(const std::string& path, Project& out, std::string& err) {
     out = Project{};  // full reset: loading into a dirty Project must never accumulate state
     std::ifstream f(path, std::ios::binary);
@@ -209,12 +233,15 @@ json project_to_json(const Project& p) {
     j["seed"] = p.seed;
     j["length_bars"] = p.length_bars;
     j["beats_per_bar"] = p.beats_per_bar;
+    if (p.master_gain_db != 0.0f) j["master_gain_db"] = p.master_gain_db;  // omit at default (spec §mixer)
     json tracks = json::array();
     for (const auto& t : p.tracks) {
         json tj;
         tj["name"] = t.name;
         tj["gain_db"] = t.gain_db;
         tj["pan"] = t.pan;
+        if (t.mute) tj["mute"] = true;  // omitted at default → legacy canonical bytes unchanged
+        if (t.solo) tj["solo"] = true;
         tj["voice"] = voice_to_json(t.voice);
         tracks.push_back(std::move(tj));
     }

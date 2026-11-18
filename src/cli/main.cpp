@@ -316,6 +316,13 @@ static int cmd_info(int argc, char** argv) {
                 path.c_str(), p.bpm, p.length_bars, p.tracks.size(), p.patterns.size(), total,
                 static_cast<double>(total) / p.sample_rate,
                 static_cast<unsigned long long>(p.seed));
+    if (p.master_gain_db != 0.0f)  // mixer state (WP-0136): markers per track, master when non-default
+        std::printf("master_gain_db=%.2f\n", static_cast<double>(p.master_gain_db));
+    for (size_t i = 0; i < p.tracks.size(); ++i) {
+        const op::Track& t = p.tracks[i];
+        std::printf("  [%zu] %s%s%s\n", i, t.name.c_str(), t.mute ? " [mute]" : "",
+                    t.solo ? " [solo]" : "");
+    }
     if (!p.attachments.empty()) {
         std::printf("attachments=%zu\n", p.attachments.size());
         for (const auto& a : p.attachments)

@@ -22,6 +22,9 @@ Indices are 0-based positions in the current project's arrays.
 | `remove_track` | `index` | erase; **reject if any pattern references it** (`"track in use"`) |
 | `set_track_gain` | `index`, `gain_db` | |
 | `set_track_pan` | `index`, `pan` | |
+| `set_track_mute` | `index`, `mute` (bool) | |
+| `set_track_solo` | `index`, `solo` (bool) | |
+| `set_master_gain` | `gain_db` | `Project::master_gain_db` |
 | `rename_track` | `index`, `name` | |
 | `add_pattern` | `pattern` (same shape as an element of `patterns`) | append |
 | `remove_pattern` | `index` | erase; **reject if any clip references it** (`"pattern in use"`) |

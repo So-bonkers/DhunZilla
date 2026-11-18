@@ -196,6 +196,9 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
     const size_t iters = subset ? subset->size() : ntracks;
     for (size_t k = 0; k < iters; ++k) {
         const size_t ti = subset ? (*subset)[k] : k;
+        // Mixer (spec §mixer): inaudible tracks are skipped entirely, not rendered at gain 0.
+        // Stems path gets its all-zero full-length stem "for free" from the reset above.
+        if (!track_audible(p, ti)) continue;
         const Track& tr = p.tracks[ti];
         MixTarget t;
         t.out = &out.interleaved;
@@ -271,6 +274,14 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 }
             }
         }
+    }
+
+    // Master gain (spec §mixer): one multiply per sample after all tracks are summed. Exactly 0.0
+    // skips it → bit-identical to pre-WP-0136 renders. render_stems calls render_subset per stem,
+    // so the same multiply lands on the mix and every stem (sum of stems ≈ mix, float-assoc only).
+    if (p.master_gain_db != 0.0f) {
+        const float m = dsp::db_to_lin(p.master_gain_db);
+        for (float& s : out.interleaved) s *= m;
     }
     return true;
 }

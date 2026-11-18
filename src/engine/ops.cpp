@@ -53,6 +53,12 @@ bool has_number(const json& o, const char* key, std::string& err) {
     return true;
 }
 
+bool has_bool(const json& o, const char* key, std::string& err) {
+    if (!o.contains(key)) { err = std::string("missing argument '") + key + "'"; return false; }
+    if (!o.at(key).is_boolean()) { err = std::string("'") + key + "' must be a boolean"; return false; }
+    return true;
+}
+
 bool has_string(const json& o, const char* key, std::string& err) {
     if (!o.contains(key)) { err = std::string("missing argument '") + key + "'"; return false; }
     if (!o.at(key).is_string()) { err = std::string("'") + key + "' must be a string"; return false; }
@@ -114,6 +120,19 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
                 !has_number(op_json, "pan", err)) return false;
             j["tracks"][idx]["pan"] = op_json.at("pan");
+        } else if (name == "set_track_mute") {  // mixer (spec §mixer); audibility rule lives in the model
+            if (!check_keys(op_json, {"index", "mute"}, err)) return false;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
+                !has_bool(op_json, "mute", err)) return false;
+            j["tracks"][idx]["mute"] = op_json.at("mute");
+        } else if (name == "set_track_solo") {
+            if (!check_keys(op_json, {"index", "solo"}, err)) return false;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
+                !has_bool(op_json, "solo", err)) return false;
+            j["tracks"][idx]["solo"] = op_json.at("solo");
+        } else if (name == "set_master_gain") {  // range checked by the parse below (no second ruleset)
+            if (!check_keys(op_json, {"gain_db"}, err) || !has_number(op_json, "gain_db", err)) return false;
+            j["master_gain_db"] = op_json.at("gain_db");
         } else if (name == "rename_track") {
             if (!check_keys(op_json, {"index", "name"}, err)) return false;
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||

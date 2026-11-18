@@ -172,3 +172,29 @@ Use cases: intro builds, ducking an loop under a stem, dropping a section's ener
 `start_bar·beats_per_bar + r·pattern_extent`, repeats honored. MIDI has no clip-level gain, so a
 clip's `gain_db` is **baked into exported note velocities** (clamped to 1..127). Projects without an
 arrangement export byte-identically to pre-WP-0130 output (proved against the previous binary).
+
+## Mixer: mute / solo / master gain — additive to v0 (WP-0136)
+
+Track fields: `"mute": bool` (default false), `"solo": bool` (default false). Project field:
+`"master_gain_db": <float in [-96, 24]>` (default 0.0; rejected outside range or non-finite).
+Canonical save omits each field at its default → legacy projects save byte-identically.
+
+Audibility: let `any_solo` = some track has `solo: true`. Track t is **audible** iff
+`!t.mute && (!any_solo || t.solo)`. (Mute wins over solo.)
+
+Render: inaudible tracks are **skipped entirely** (not rendered at gain 0), so a project with no
+mute/solo fields renders bit-identically to before. `master_gain_db` multiplies every output sample
+after all tracks are summed; at exactly 0.0 the multiply is skipped (bit-identical).
+
+Stems (`--stems-dir`): one stem per track as before; an inaudible track's stem is all-zero samples of
+the full render length (file still written), and master gain is applied to every stem, so the
+existing invariant holds: sum of stems ≈ mix (float-associativity only).
+
+MIDI export (`opj2mid`) ignores mute/solo/master: it exports data, not the mix.
+
+Validation rules closed alongside (WP-0136): every track's `gain_db` must be finite and within
+[-96, 24], every `pan` finite and within [-1, 1]; the parser rejects violations with exactly
+`track.gain_db out of range [-96, 24]` / `track.pan out of range [-1, 1]`, so the same checks gate
+`set_track_gain` / `set_track_pan` through their save→parse validation. Non-boolean `mute`/`solo`
+values are rejected with `track.mute must be a boolean` / `track.solo must be a boolean`;
+`master_gain_db` out of range or non-finite is rejected with `master_gain_db out of range [-96, 24]`.

@@ -917,6 +917,160 @@ static void test_clip_gain() {
     CHECK(energy(full_u, 0, 90000) == energy(full_h, 0, 90000), "cg.untouched_clip_bit_identical");
 }
 
+// --- Mixer mute/solo/master gain (WP-0136): audibility bit-identity, master multiply exactness,
+// stem zeros/sums, parser type+range validation, canonical-save default omission.
+
+// 3 tracks × one pattern each, no overlaps → stems sum is bit-exact at defaults (see test_render).
+static op::Project mixer_base_project() {
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 2.0; p.beats_per_bar = 4; p.sample_rate = 48000; p.seed = 7ull;
+    op::Track a; a.name = "Metro"; a.voice.kind = op::VoiceKind::Metronome;
+    op::Track b; b.name = "Sine";  b.voice.kind = op::VoiceKind::Sine;  b.voice.freq_hz = 220.0f;
+    op::Track c; c.name = "Synth"; c.voice.kind = op::VoiceKind::Synth;
+    p.tracks = {a, b, c};
+    op::Pattern pa; pa.track = 0; pa.notes.push_back({0.0, 0.25, -1, 1.0});
+    op::Pattern pb; pb.track = 1; pb.notes.push_back({0.5, 1.0, -1, 1.0});
+    op::Pattern pc; pc.track = 2; pc.notes.push_back({1.0, 1.0, 60, 1.0});
+    p.patterns = {pa, pb, pc};
+    return p;
+}
+
+// Copy of q holding only the `keep` tracks (original relative order); pattern.track indices are
+// re-pointed and patterns of dropped tracks go with them. The deletion-equivalence comparator for
+// audibility bit-identity (callers keep master_gain_db at 0 dB — spec).
+static op::Project mixer_kept(const op::Project& q, const std::vector<size_t>& keep) {
+    op::Project r = q;
+    r.tracks.clear();
+    r.patterns.clear();
+    std::vector<int> remap(q.tracks.size(), -1);
+    for (size_t k = 0; k < keep.size(); ++k) {
+        remap[keep[k]] = static_cast<int>(k);
+        r.tracks.push_back(q.tracks[keep[k]]);
+    }
+    for (const auto& pat : q.patterns) {
+        if (pat.track >= 0 && remap[static_cast<size_t>(pat.track)] >= 0) {
+            op::Pattern np = pat;
+            np.track = remap[static_cast<size_t>(pat.track)];
+            r.patterns.push_back(std::move(np));
+        }
+    }
+    return r;
+}
+
+static void test_mixer() {
+    std::string err;
+    const op::Project base = mixer_base_project();
+    auto render = [&](const op::Project& q) {
+        op::wav::StereoBuffer b;
+        CHECK(op::render_project(q, "", b, err), "mixer.render_ok");
+        return b;
+    };
+    // Bit-identity = byte identity (memcmp): the engine's voices can emit NaN payloads and float
+    // == is false for NaN vs NaN even when the bits match — goldens compare with cmp for the same reason.
+    auto bytes_equal = [](const op::wav::StereoBuffer& a, const op::wav::StereoBuffer& b) {
+        return a.interleaved.size() == b.interleaved.size() &&
+               std::memcmp(a.interleaved.data(), b.interleaved.data(),
+                           a.interleaved.size() * sizeof(float)) == 0;
+    };
+
+    // track_audible rule table (spec §mixer): everything audible by default; solo gates the rest;
+    // mute wins over solo.
+    {
+        op::Project q = mixer_base_project();
+        CHECK(op::track_audible(q, 0) && op::track_audible(q, 1) && op::track_audible(q, 2),
+              "mixer.audible_all_by_default");
+        q.tracks[1].solo = true;
+        CHECK(!op::track_audible(q, 0) && op::track_audible(q, 1) && !op::track_audible(q, 2),
+              "mixer.solo_gates_others");
+        q.tracks[1].mute = true;
+        CHECK(!op::track_audible(q, 1), "mixer.mute_wins_over_solo");
+    }
+
+    // (a) Bit-identity vs deletion of inaudible tracks (master at 0 dB):
+    // mute-only / solo-one / two-solos; mute+solo on one track → nothing audible → silence.
+    CHECK(!bytes_equal(render(base), render(mixer_kept(base, {1}))),
+          "mixer.full_mix_differs_from_partial");  // guard: the equality checks below can fail
+    { op::Project q = base; q.tracks[0].mute = true;
+      CHECK(bytes_equal(render(q), render(mixer_kept(base, {1, 2}))),
+            "mixer.mute_only_equals_deletion"); }
+    { op::Project q = base; q.tracks[1].solo = true;
+      CHECK(bytes_equal(render(q), render(mixer_kept(base, {1}))),
+            "mixer.solo_one_equals_deletion"); }
+    { op::Project q = base; q.tracks[1].mute = true; q.tracks[1].solo = true;
+      const auto got = render(q);
+      const std::vector<float> zeros(got.interleaved.size(), 0.0f);
+      CHECK(got.interleaved == zeros, "mixer.mute_plus_solo_is_silence"); }
+    { op::Project q = base; q.tracks[1].solo = true; q.tracks[2].solo = true;
+      CHECK(bytes_equal(render(q), render(mixer_kept(base, {1, 2}))),
+            "mixer.solo_two_equals_deletion"); }
+
+    // (b) Master −6 dB: every sample equals the 0 dB render × db_to_lin(−6), same float op.
+    const auto dry = render(base);
+    { op::Project q = base; q.master_gain_db = -6.0f;
+      const auto wet = render(q);
+      const float m = op::dsp::db_to_lin(-6.0f);
+      op::wav::StereoBuffer want = dry;
+      for (float& s : want.interleaved) s *= m;  // identical float op → NaN payloads propagate same bits
+      CHECK(bytes_equal(wet, want), "mixer.master_minus6_is_exact_scale"); }
+
+    // (c) Stems with mute + master −6: inaudible stem all zeros at full length; sum ≈ mix
+    // (float-associativity only once the master multiply is live — see render.hpp).
+    { op::Project q = base; q.tracks[0].mute = true; q.master_gain_db = -6.0f;
+      std::vector<op::wav::StereoBuffer> stems(3);
+      op::wav::StereoBuffer mix;
+      CHECK(op::render_stems(q, "", stems, mix, err), "mixer.stems_ok");
+      bool all_zero = stems[0].interleaved.size() == mix.interleaved.size();
+      if (all_zero)
+          for (float s : stems[0].interleaved)
+              if (s != 0.0f) { all_zero = false; break; }
+      CHECK(all_zero, "mixer.inaudible_stem_all_zeros");
+      bool close = true;
+      for (size_t i = 0; i < mix.interleaved.size(); ++i) {
+          const float sum = stems[0].interleaved[i] + stems[1].interleaved[i] + stems[2].interleaved[i];
+          if (sum != sum && mix.interleaved[i] != mix.interleaved[i]) continue;  // NaN at same spot: equal
+          if (std::fabs(sum - mix.interleaved[i]) > 1e-5f) { close = false; break; }
+      }
+      CHECK(close, "mixer.stems_sum_approx_mix_with_master"); }
+
+    // Parser validation: gain/pan ranges (gap closure) and mute/solo must be JSON booleans.
+    op::Project q; std::string e;
+    write_text("/tmp/op_mx_gain.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"gain_db":99}]})");
+    CHECK(!op::load_project("/tmp/op_mx_gain.opj", q, e) && e == "track.gain_db out of range [-96, 24]",
+          "mixer.reject_track_gain_99");
+    write_text("/tmp/op_mx_pan.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"pan":5}]})");
+    CHECK(!op::load_project("/tmp/op_mx_pan.opj", q, e) && e == "track.pan out of range [-1, 1]",
+          "mixer.reject_track_pan_5");
+    write_text("/tmp/op_mx_master.opj", R"({"format_version":0,"master_gain_db":30,"tracks":[{"voice":{"kind":"sine"}}]})");
+    CHECK(!op::load_project("/tmp/op_mx_master.opj", q, e) && e == "master_gain_db out of range [-96, 24]",
+          "mixer.reject_master_30");
+    write_text("/tmp/op_mx_mute.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"mute":1}]})");
+    CHECK(!op::load_project("/tmp/op_mx_mute.opj", q, e) && e == "track.mute must be a boolean",
+          "mixer.reject_mute_not_bool");
+    write_text("/tmp/op_mx_solo.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"solo":"yes"}]})");
+    CHECK(!op::load_project("/tmp/op_mx_solo.opj", q, e) && e == "track.solo must be a boolean",
+          "mixer.reject_solo_not_bool");
+
+    // Canonical save: defaults omitted → legacy bytes unchanged; mixer fields round-trip stably.
+    auto read_all = [](const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    { op::Project d = mixer_base_project();
+      CHECK(op::save_project("/tmp/op_mx_def.opj", d, err), "mixer.save_default_ok");
+      const std::string s = read_all("/tmp/op_mx_def.opj");
+      CHECK(s.find("mute") == std::string::npos && s.find("solo") == std::string::npos &&
+                s.find("master_gain_db") == std::string::npos, "mixer.defaults_omitted"); }
+    { op::Project d = mixer_base_project(); d.tracks[0].mute = true; d.master_gain_db = -6.0f;
+      CHECK(op::save_project("/tmp/op_mx_mix.opj", d, err), "mixer.save_mixer_ok");
+      op::Project r;
+      CHECK(op::load_project("/tmp/op_mx_mix.opj", r, err) && r.tracks[0].mute &&
+                !r.tracks[1].solo && !r.tracks[1].mute && r.master_gain_db == -6.0f,
+            "mixer.mixer_fields_roundtrip");
+      CHECK(op::save_project("/tmp/op_mx_mix2.opj", r, err), "mixer.resave_ok");
+      CHECK(read_all("/tmp/op_mx_mix.opj") == read_all("/tmp/op_mx_mix2.opj"),
+            "mixer.canonical_resave_stable"); }
+}
+
 // --- JSON model fuzz (WP-0122): .opj files arrive from strangers via .opd — no input may crash.
 static void test_json_fuzz() {
     std::string err;
@@ -1328,6 +1482,27 @@ static void test_ops() {
     CHECK(rejected_unchanged(p, json{{"op", "rename_track"}, {"index", 0}, {"name", 42}}, err),
           "ops.rename_track_reject_type");
 
+    // Mixer ops (WP-0136): mute/solo/master + parser range validation inherited by ops.
+    CHECK(op::apply_op(p, json{{"op", "set_track_mute"}, {"index", 1}, {"mute", true}}, err) &&
+              p.tracks[1].mute, "ops.set_track_mute");
+    CHECK(rejected_unchanged(p, json{{"op", "set_track_mute"}, {"index", 1}, {"mute", "yes"}}, err) &&
+              err == "set_track_mute: 'mute' must be a boolean", "ops.set_track_mute_reject_type");
+    CHECK(op::apply_op(p, json{{"op", "set_track_solo"}, {"index", 0}, {"solo", true}}, err) &&
+              p.tracks[0].solo, "ops.set_track_solo");
+    CHECK(rejected_unchanged(p, json{{"op", "set_track_solo"}, {"index", 99}, {"solo", true}}, err),
+          "ops.set_track_solo_reject_oob");
+    CHECK(op::apply_op(p, json{{"op", "set_master_gain"}, {"gain_db", -6.0}}, err) &&
+              p.master_gain_db == -6.0f, "ops.set_master_gain");
+    CHECK(rejected_unchanged(p, json{{"op", "set_master_gain"}, {"gain_db", 30.0}}, err) &&
+              err == "set_master_gain: master_gain_db out of range [-96, 24]",
+          "ops.set_master_gain_reject_range");
+    // Gap closure (WP-0135 review): the parser now bounds track gain/pan; ops inherit it verbatim.
+    CHECK(rejected_unchanged(p, json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", 99.0}}, err) &&
+              err == "set_track_gain: track.gain_db out of range [-96, 24]",
+          "ops.set_track_gain_reject_range");
+    CHECK(rejected_unchanged(p, json{{"op", "set_track_pan"}, {"index", 1}, {"pan", 5.0}}, err) &&
+              err == "set_track_pan: track.pan out of range [-1, 1]", "ops.set_track_pan_reject_range");
+
     // add_pattern / remove_pattern (in-use via clips)
     CHECK(op::apply_op(p, json{{"op", "add_pattern"},
                                 {"pattern", {{"track", 1}, {"notes", json::array({{{"t", 0.0}, {"dur", 0.5}}})}}}},
@@ -1454,7 +1629,7 @@ static nlohmann::json random_op(op::rng::Pcg32& rng, const op::Project& p) {
         {{"kind", "synth"}, {"attack_ms", 3.0}, {"release_ms", 20.0}},
         {{"kind", "sampler"}, {"path", "kits/kick.wav"}},
     };
-    switch (pick(16)) {
+    switch (pick(19)) {  // +3 mixer ops (WP-0136); default = add_attachment
         case 0: return {{"op", "set_bpm"}, {"bpm", (rng.next() & 7u) == 0 ? 0.0 : 40.0 + pick(200)}};
         case 1: return {{"op", "set_length_bars"},
                         {"length_bars", (rng.next() & 7u) == 0 ? -2.0 : 1.0 + pick(64)}};
@@ -1491,6 +1666,12 @@ static nlohmann::json random_op(op::rng::Pcg32& rng, const op::Project& p) {
         case 13: return {{"op", "set_clip_gain"}, {"index", idx(p.arrangement.size())},
                          {"gain_db", gain_db()}};
         case 14: return {{"op", "remove_clip"}, {"index", idx(p.arrangement.size())}};
+        case 15: return {{"op", "set_track_mute"}, {"index", idx(p.tracks.size())},
+                         {"mute", (rng.next() & 1u) == 0}};
+        case 16: return {{"op", "set_track_solo"}, {"index", idx(p.tracks.size())},
+                         {"solo", (rng.next() & 1u) == 0}};
+        case 17: return {{"op", "set_master_gain"},
+                         {"gain_db", (rng.next() & 7u) == 0 ? 99.0 : static_cast<double>(pick(48)) - 24.0}};
         default: return {{"op", "add_attachment"}, {"path", "stems/a" + std::to_string(pick(8)) + ".wav"},
                          {"kind", "stem"}, {"producer", "prop"}};
     }
@@ -1550,6 +1731,7 @@ int main() {
     test_tempo_midi();
     test_attachments();
     test_clip_gain();
+    test_mixer();
     test_json_fuzz();
     test_wav_fuzz();
     test_bundle_fuzz();

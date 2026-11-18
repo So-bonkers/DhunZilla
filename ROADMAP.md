@@ -15,6 +15,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0136 | Mixer: track `mute`/`solo` + project `master_gain_db` — audibility rule (mute wins), inaudible tracks skipped in render, all-zero stems for inaudible, master applied to mix + every stem, gain/pan range validation closed, ops `set_track_mute`/`set_track_solo`/`set_master_gain`, `opd info` markers, golden `mixer.opj` | **done** | subagent+orchestrator |
 | WP-0135 | Model operations + undo/redo history + `opd apply` journal CLI — atomic ops validated via save→parse path, JSON-Lines all-or-nothing journals, snapshot History (cap 256) | **done** | subagent+orchestrator |
 | WP-0001 | Repo scaffold | **done** | orchestrator |
 | WP-0002 | Deterministic render core v0 | **done** | orchestrator |
