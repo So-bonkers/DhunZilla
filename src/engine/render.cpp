@@ -110,11 +110,71 @@ std::string join_path(const std::string& dir, const std::string& rel) {
     return dir + "/" + rel;
 }
 
+// ---------------------------------------------------------------- tempo map (WP-0105)
+// Bar-anchored piecewise-constant tempo. Empty segments = constant bpm: at() then computes
+// exactly llround(beats * spb_const) — the legacy expression, so legacy renders stay bit-exact.
+struct TempoSeg {
+    double start_beats = 0.0;      // segment start on the beat timeline
+    long long start_sample = 0;    // exact accumulated sample at segment start
+    double spb = 0.0;              // samples per beat inside this segment
+};
+
+struct TempoMap {
+    std::vector<TempoSeg> segs;    // empty → constant-tempo legacy path
+    double spb_const = 0.0;
+
+    size_t seg_index(double beats) const {
+        size_t i = 0;
+        for (size_t j = 0; j < segs.size(); ++j)
+            if (beats >= segs[j].start_beats) i = j; else break;
+        return i;
+    }
+    long long at(double beats) const {
+        if (segs.empty()) return std::llround(beats * spb_const);
+        const TempoSeg& s = segs[seg_index(beats)];
+        return s.start_sample + static_cast<long long>(std::llround((beats - s.start_beats) * s.spb));
+    }
+    double spb_at(double beats) const {  // duration simplification: local tempo at note start (spec §tempo)
+        if (segs.empty()) return spb_const;
+        return segs[seg_index(beats)].spb;
+    }
+};
+
+TempoMap build_tempo_map(const Project& p, int sr) {
+    TempoMap tm;
+    if (p.tempo_map.empty()) {
+        tm.spb_const = static_cast<double>(sr) * 60.0 / p.bpm;
+        return tm;
+    }
+    const double bpb = static_cast<double>(p.beats_per_bar);
+    double seg_b0 = p.tempo_map[0].bar * bpb;  // model validator guarantees first point at bar 0
+    double seg_spb = static_cast<double>(sr) * 60.0 / p.tempo_map[0].bpm;
+    long long cum = 0;
+    for (size_t i = 1; i < p.tempo_map.size(); ++i) {
+        const double next_b = p.tempo_map[i].bar * bpb;
+        tm.segs.push_back({seg_b0, cum, seg_spb});
+        cum += static_cast<long long>(std::llround((next_b - seg_b0) * seg_spb));
+        seg_b0 = next_b;
+        seg_spb = static_cast<double>(sr) * 60.0 / p.tempo_map[i].bpm;
+    }
+    tm.segs.push_back({seg_b0, cum, seg_spb});
+    return tm;
+}
+
 }  // namespace
 
 long long total_samples_for(const Project& p) {
     const double beats = p.length_bars * static_cast<double>(p.beats_per_bar);
-    return static_cast<long long>(std::ceil(beats * static_cast<double>(p.sample_rate) * 60.0 / p.bpm));
+    if (p.tempo_map.empty())
+        return static_cast<long long>(std::ceil(beats * static_cast<double>(p.sample_rate) * 60.0 / p.bpm));
+    // Piecewise: full segments accumulate llround samples (same rule as placement), final partial ceil.
+    const TempoMap tm = build_tempo_map(p, p.sample_rate);
+    for (size_t i = 1; i < tm.segs.size(); ++i)
+        if (beats < tm.segs[i].start_beats)
+            return tm.segs[i - 1].start_sample +
+                   static_cast<long long>(std::ceil((beats - tm.segs[i - 1].start_beats) * tm.segs[i - 1].spb));
+    const TempoSeg& last = tm.segs.back();
+    return last.start_sample + static_cast<long long>(std::ceil((beats - last.start_beats) * last.spb));
 }
 
 bool render_subset(const Project& p, const std::string& base_dir, const std::vector<size_t>* subset,
@@ -128,7 +188,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
 
     out.sample_rate = sr;
     out.interleaved.assign(static_cast<size_t>(total) * 2u, 0.0f);
-    const double spb = static_cast<double>(sr) * 60.0 / p.bpm;  // samples per beat
+    const TempoMap tmap = build_tempo_map(p, sr);  // constant bpm → legacy bit-exact math
 
     std::map<std::string, wav::ReadResult> sampler_cache;
 
@@ -153,7 +213,8 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
         auto render_pattern_at = [&](const Pattern& pat, double offset_beats) {
             for (const Note& note : pat.notes) {
                 const double t_abs = (offset_beats == 0.0) ? note.t_beats : offset_beats + note.t_beats;
-                const long long start = static_cast<long long>(std::llround(t_abs * spb));
+                const long long start = tmap.at(t_abs);
+                const double spb = tmap.spb_at(t_abs);  // local tempo at note start governs duration
                 if (start >= total) continue;  // beyond render window
                 switch (tr.voice.kind) {
                     case VoiceKind::Metronome: render_metronome(t, start, note, tr.voice, sr); break;

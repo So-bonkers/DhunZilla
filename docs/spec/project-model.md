@@ -100,3 +100,17 @@ ticks. Beat→tick is `llround`; zero/negative durations clamp to 1 tick so outp
 well-formed. Notes lacking `midi_note` map via nearest-12-TET of `voice.freq_hz` (table scan,
 `dsp::powf_` only). Byte-deterministic for a given Project; round-trip through `load_midi`
 preserves track count, bpm, and exact `(t_beats, midi_note)` content for tick-aligned input.
+
+## Tempo map — additive to v0 (2026-11-18, WP-0105)
+
+`"tempo_map": [{"bar": 0.0, "bpm": 120.0}, ...]`: bar-anchored piecewise-constant tempo.
+Empty/absent = constant `bpm` (legacy path — bit-exact, goldens prove it). Non-empty: strictly
+increasing bars ≥ 0, bpm ∈ (0, 1000], **first point must be at bar 0**, and it governs from
+onward (`bpm` field then only matters when the map is absent). Bars keep `beats_per_bar` beats.
+Beat→sample conversion is piecewise: each full segment contributes `llround(dur_beats · spb)`
+samples accumulated exactly; note start = segment base + `llround(local_beats · spb)`. A single
+point `{0, bpm}` must render bit-identically to no map (tested). **Duration simplification:** a
+note's length uses the local tempo at its start — notes crossing a change do not stretch inside
+(spec choice; revisit with audio-warped sampler if musical need appears). Total frames = full
+segments + `ceil` of final partial. Canonical save omits an empty map. MIDI import/export ignore
+tempo maps in v0 (first tempo → constant); follow-up noted.

@@ -90,6 +90,24 @@ bool parse_project(const json& j, Project& p, std::string& err) {
             p.arrangement.push_back(c);
         }
     }
+
+    if (j.contains("tempo_map")) {
+        if (!j["tempo_map"].is_array()) { err = "tempo_map must be an array"; return false; }
+        double prev_bar = -1.0;
+        for (const auto& tj : j["tempo_map"]) {
+            TempoPoint tp;
+            tp.bar = tj.value("bar", 0.0);
+            tp.bpm = tj.value("bpm", 0.0);
+            if (!(tp.bar >= 0.0)) { err = "tempo_map.bar must be a finite number >= 0"; return false; }
+            if (!(tp.bpm > 0.0) || !(tp.bpm <= 1000.0)) { err = "tempo_map.bpm out of range (0, 1000]"; return false; }
+            if (tp.bar <= prev_bar) { err = "tempo_map bars must be strictly increasing"; return false; }
+            prev_bar = tp.bar;
+            p.tempo_map.push_back(tp);
+        }
+        if (!p.tempo_map.empty() && p.tempo_map[0].bar != 0.0) {
+            err = "tempo_map must start at bar 0 — prepend {\"bar\": 0, \"bpm\": <initial>}"; return false;
+        }
+    }
     return true;
 }
 
@@ -167,6 +185,12 @@ bool save_project(const std::string& path, const Project& p, std::string& err) {
             arr.push_back(std::move(cj));
         }
         j["arrangement"] = std::move(arr);
+    }
+
+    if (!p.tempo_map.empty()) {  // omitted when empty → canonical output of legacy projects unchanged
+        json tm = json::array();
+        for (const auto& tp : p.tempo_map) tm.push_back({{"bar", tp.bar}, {"bpm", tp.bpm}});
+        j["tempo_map"] = std::move(tm);
     }
 
     std::ofstream f(path, std::ios::binary);

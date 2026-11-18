@@ -36,6 +36,13 @@ struct Clip {
     int repeats = 1;             // statements of the pattern, spaced by extent
 };
 
+// Bar-anchored piecewise-constant tempo change (WP-0105): from bar `bar` onward the project
+// runs at `bpm`. Bars keep beats_per_bar beats across changes.
+struct TempoPoint {
+    double bar = 0.0;            // effective from this bar (>= 0)
+    double bpm = 120.0;
+};
+
 struct Track {
     std::string name;
     float gain_db = 0.0f;
@@ -53,6 +60,7 @@ struct Project {
     std::vector<Track> tracks;
     std::vector<Pattern> patterns;
     std::vector<Clip> arrangement;  // empty = legacy semantics: every pattern once, at bar 0
+    std::vector<TempoPoint> tempo_map;  // empty = constant bpm (legacy bit-exact); else first bar must be 0
 };
 
 // Load/validate per spec. Returns false + machine-parsable err string on any violation.

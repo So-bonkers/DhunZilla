@@ -426,6 +426,63 @@ static void test_midi() {
     }
 }
 
+// --- tempo map (WP-0105): legacy bit-exactness, displacement across changes, validation.
+static void test_tempo_map() {
+    std::string err;
+    op::Project a;
+    a.bpm = 120.0; a.length_bars = 2.0; a.sample_rate = 48000;
+    op::Track t; t.name = "S"; t.voice.kind = op::VoiceKind::Sine; t.voice.freq_hz = 220.0f;
+    a.tracks = {t};
+    op::Pattern pat; pat.track = 0;
+    pat.notes.push_back({0.0, 0.5, -1}); pat.notes.push_back({1.0, 0.5, -1}); pat.notes.push_back({4.5, 0.5, -1});
+    a.patterns = {pat};
+
+    op::wav::StereoBuffer ba, bb;
+    CHECK(op::render_project(a, "", ba, err), "tempo.legacy_render_ok");
+    op::Project b = a;
+    b.tempo_map.push_back({0.0, 120.0});
+    CHECK(op::render_project(b, "", bb, err), "tempo.constant_map_render_ok");
+    CHECK(ba.interleaved == bb.interleaved, "tempo.single_point_map_bit_identical_to_legacy");
+
+    // Half-tempo from bar 4 (beat 16): note at beat 25 must land at 384000 + 9*48000 = 816000.
+    op::Project c = a;
+    c.length_bars = 8.0;
+    c.tempo_map.push_back({0.0, 120.0});
+    c.tempo_map.push_back({4.0, 60.0});
+    c.patterns[0].notes.push_back({25.0, 0.5, -1});
+    op::wav::StereoBuffer bc;
+    CHECK(op::render_project(c, "", bc, err), "tempo.change_render_ok");
+    const long long expect_note = 384000 + 9 * 48000;
+    auto energy_in = [](const op::wav::StereoBuffer& buf, long long lo, long long hi) {
+        const long long n = static_cast<long long>(buf.interleaved.size() / 2);
+        if (lo < 0) lo = 0;
+        if (hi > n) hi = n;  // windows may exceed shorter buffers — clamp, never overrun
+        double s = 0.0;
+        for (long long i = lo; i < hi; ++i) { const double x = buf.interleaved[static_cast<size_t>(i) * 2]; s += x * x; }
+        return s;
+    };
+    CHECK(energy_in(bc, expect_note - 2000, expect_note + 4000) > 0.0, "tempo.note_after_drop_at_expected_samples");
+
+    op::Project d = a; d.length_bars = 8.0;
+    op::wav::StereoBuffer bd;
+    CHECK(op::render_project(d, "", bd, err), "tempo.constant8bar_ok");
+    // Stronger displacement proof in the mapped buffer itself: beat 25 at constant 120 would be
+    // sample 600000 — with the drop there must be silence exactly there.
+    CHECK(energy_in(bc, 600000 - 2000, 600000 + 4000) == 0.0, "tempo.note_not_at_constant_tempo_position");
+
+    // Duration governed by local tempo at note start: 0.5 beats @60bpm = 24000 samples → silent after +30000
+    CHECK(energy_in(bc, expect_note + 30000, expect_note + 100000) == 0.0, "tempo.duration_uses_local_tempo");
+
+    write_text("/tmp/op_tm_badbpm.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"tempo_map":[{"bar":0,"bpm":120},{"bar":2,"bpm":-5}]})");
+    op::Project pb;
+    CHECK(!op::load_project("/tmp/op_tm_badbpm.opj", pb, err), "model.rejects_bad_tempo_bpm");
+    write_text("/tmp/op_tm_nozero.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"tempo_map":[{"bar":1,"bpm":120}]})");
+    CHECK(!op::load_project("/tmp/op_tm_nozero.opj", pb, err), "model.rejects_tempo_map_not_starting_at_zero");
+
+    CHECK(op::save_project("/tmp/op_tm_rt.opj", c, err) && op::load_project("/tmp/op_tm_rt.opj", pb, err) &&
+          pb.tempo_map.size() == 2 && pb.tempo_map[1].bpm == 60.0, "tempo.save_roundtrip");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -436,6 +493,7 @@ int main() {
     test_arrangement();
     test_synth();
     test_midi();
+    test_tempo_map();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
