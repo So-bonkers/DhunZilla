@@ -255,6 +255,21 @@ static int cmd_info(int argc, char** argv) {
                     static_cast<double>(rr.samples.size() / rr.channels) / rr.sample_rate);
         return 0;
     }
+    if ((path.size() > 4 && path.substr(path.size() - 4) == ".mid") ||
+        (path.size() > 4 && path.substr(path.size() - 4) == ".MID")) {
+        op::Project mp;
+        std::string err;
+        if (!op::load_midi(path, mp, err)) return fail("parse", err);
+        size_t notes = 0;
+        for (const auto& pt : mp.patterns) notes += pt.notes.size();
+        std::printf("midi: %s bpm=%.2f%s tracks=%zu notes=%zu length≈%.2f bars\n", path.c_str(), mp.bpm,
+                    mp.tempo_map.empty() ? "" : " (tempo map)", mp.tracks.size(), notes, mp.length_bars);
+        for (size_t i = 0; i < mp.tracks.size(); ++i) {
+            size_t n = i < mp.patterns.size() ? mp.patterns[i].notes.size() : 0;
+            std::printf("  [%zu] %s: %zu notes\n", i, mp.tracks[i].name.c_str(), n);
+        }
+        return 0;
+    }
     if (path.size() > 4 && path.substr(path.size() - 4) == ".opd") {
         std::vector<std::string> entries;
         std::string err;
