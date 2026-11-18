@@ -23,6 +23,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: Linux matrix, x86_64 + aarch64 (ADR-0006) | **done** — green on push (run 44277877478) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter — ONNX route (ADR-0005), cartridge-gated; conformance + eval corpus green | **done** | orchestrator |
+| WP-0131 | Sidecar API robustness suite — malformed bodies, bad paths, lifecycle edges: zero product gaps, contract documented | **done** | orchestrator |
 | WP-0130 | MIDI export flattens arrangement (clips/repeats/offsets; gain baked to velocity) — legacy exports byte-identical | **done** | orchestrator |
 | WP-0128 | .opd structural fuzz — fixes heap OOB read (crafted central-dir name length) in unpack+list; duplicate entries rejected | **done** | orchestrator |
 | WP-0127 | transcription eval corpus (register/transient/legato stress) + shared scorer — real ONNX mean event F1 ≈ 0.99, all gates pass | **done** | orchestrator |
