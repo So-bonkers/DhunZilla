@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "doc/document.hpp"
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
@@ -1714,6 +1715,213 @@ static void test_ops_property() {
     CHECK(applied_total >= 2000, "prop.workload_exercises_many_applies");
 }
 
+// --- Document layer (WP-0141): open/save/dirty, undo/redo, one undo entry per gesture.
+// src/doc/document.hpp; dirty is canonical save bytes vs the last open/save baseline.
+static void test_document() {
+    using nlohmann::json;
+    std::string err;
+    const std::string demo = std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj";
+
+    // Canonical save bytes of a Project — same writer as save_project, so equality with the
+    // open-time baseline is exactly what dirty() compares. Never called on fixture paths.
+    auto bytes_of = [](const op::Project& p, const char* path) {
+        std::string serr;
+        if (!op::save_project(path, p, serr)) return std::vector<uint8_t>{};
+        return slurp_bytes(path);
+    };
+
+    // open of a missing file: false, err non-empty, document untouched.
+    {
+        op::Document d;
+        CHECK(!op::Document::open("/tmp/op_doc_missing_wp0141.opj", d, err), "doc.open_missing_fails");
+        CHECK(!err.empty(), "doc.open_missing_err_set");
+        CHECK(d.revision() == 0 && d.path().empty() && !d.dirty() && !d.can_undo(),
+              "doc.open_missing_unchanged");
+    }
+
+    // open of a loaded document failing must leave it exactly as it was.
+    {
+        op::Document d;
+        CHECK(op::Document::open(demo, d, err), "doc.preopen_ok");
+        CHECK(d.apply(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -7.0}}, err) &&
+                  d.project().tracks[0].gain_db == -7.0f,
+              "doc.preopen_edit");
+        CHECK(!op::Document::open("/tmp/op_doc_missing_wp0141.opj", d, err), "doc.open_fail_returns_false");
+        CHECK(d.revision() == 1 && d.dirty() && d.can_undo() && d.path() == demo &&
+                  d.project().tracks[0].gain_db == -7.0f,
+              "doc.open_fail_leaves_doc_unchanged");
+    }
+
+    // open → path set, not dirty, revision 0, no history.
+    op::Document doc;
+    CHECK(op::Document::open(demo, doc, err), "doc.open_ok");
+    CHECK(doc.path() == demo, "doc.open_path_set");
+    CHECK(!doc.dirty(), "doc.open_not_dirty");
+    CHECK(doc.revision() == 0, "doc.open_revision_zero");
+    CHECK(!doc.can_undo() && !doc.can_redo(), "doc.open_no_history");
+    const auto orig_bytes = bytes_of(doc.project(), "/tmp/op_doc_orig.opj");
+
+    // apply → dirty + can_undo + revision +1; undo → original bytes and clean again; redo → edited.
+    CHECK(doc.apply(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -3.5}}, err),
+          "doc.apply_ok");
+    CHECK(doc.dirty(), "doc.apply_dirty");
+    CHECK(doc.can_undo() && !doc.can_redo(), "doc.apply_can_undo");
+    CHECK(doc.revision() == 1, "doc.apply_revision_plus_1");
+    const auto edited_bytes = bytes_of(doc.project(), "/tmp/op_doc_edited.opj");
+    CHECK(edited_bytes != orig_bytes, "doc.apply_changed_bytes");
+    CHECK(doc.undo(), "doc.undo_ok");
+    CHECK(bytes_of(doc.project(), "/tmp/op_doc_undo.opj") == orig_bytes, "doc.undo_bytes_equal_original");
+    CHECK(!doc.dirty(), "doc.undo_clean_again");  // undo back to saved state → clean by bytes
+    CHECK(doc.can_redo() && !doc.can_undo(), "doc.undo_can_redo");
+    CHECK(doc.redo(), "doc.redo_ok");
+    CHECK(bytes_of(doc.project(), "/tmp/op_doc_redo.opj") == edited_bytes, "doc.redo_bytes_equal_edited");
+
+    // Rejected op: false + err, revision/bytes/history all unchanged.
+    {
+        const auto rev = doc.revision();
+        const bool cu = doc.can_undo(), cr = doc.can_redo();
+        const auto before = bytes_of(doc.project(), "/tmp/op_doc_rej_before.opj");
+        err.clear();
+        CHECK(!doc.apply(json{{"op", "set_track_gain"}, {"index", 99}, {"gain_db", 3.0}}, err),
+              "doc.reject_oob_op");
+        CHECK(!err.empty(), "doc.reject_err_set");
+        CHECK(doc.revision() == rev && doc.can_undo() == cu && doc.can_redo() == cr,
+              "doc.reject_revision_history_unchanged");
+        CHECK(bytes_of(doc.project(), "/tmp/op_doc_rej_after.opj") == before, "doc.reject_bytes_unchanged");
+    }
+
+    // Gesture: 50 updates (−1 … −50) → exactly ONE undo entry; final gain −50; one undo restores.
+    {
+        op::Document g;
+        CHECK(op::Document::open(demo, g, err), "doc.gesture_open_ok");
+        const auto base_bytes = bytes_of(g.project(), "/tmp/op_doc_g_base.opj");
+
+        // No gesture active: update/end refused ("no gesture"), cancel is a no-op.
+        err.clear();
+        CHECK(!g.update_gesture(json{{"op", "set_bpm"}, {"bpm", 100.0}}, err) && err == "no gesture",
+              "doc.update_without_gesture");
+
+        CHECK(g.begin_gesture(), "doc.begin_gesture_ok");
+        CHECK(g.gesture_active(), "doc.gesture_active_flag");
+        CHECK(!g.begin_gesture(), "doc.begin_twice_fails");
+
+        // apply/undo/redo refused during a gesture; state and revision untouched.
+        const auto rev0 = g.revision();
+        err.clear();
+        CHECK(!g.apply(json{{"op", "set_bpm"}, {"bpm", 100.0}}, err) && err == "gesture active",
+              "doc.apply_refused_during_gesture");
+        CHECK(!g.undo() && !g.redo(), "doc.undo_redo_refused_during_gesture");
+        CHECK(g.revision() == rev0, "doc.refusals_keep_revision_and_state");
+
+        // Invalid preview op: false, preview unchanged, no revision bump.
+        CHECK(!g.update_gesture(json{{"op", "set_track_gain"}, {"index", 99}, {"gain_db", 1.0}}, err),
+              "doc.update_rejects_bad_op");
+        CHECK(g.project().tracks[0].gain_db == -12.0f && g.revision() == rev0,
+              "doc.bad_update_preview_unchanged");
+
+        bool updates_ok = true;
+        for (int i = 1; i <= 50 && updates_ok; ++i)
+            updates_ok = g.update_gesture(
+                json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -static_cast<double>(i)}}, err);
+        CHECK(updates_ok, "doc.fifty_updates_ok");
+        CHECK(g.project().tracks[0].gain_db == -50.0f, "doc.gesture_preview_minus50");
+        CHECK(!g.can_undo() && !g.can_redo(), "doc.gesture_previews_touch_no_history");
+        CHECK(g.revision() == rev0 + 50, "doc.gesture_revision_per_update");
+
+        CHECK(g.end_gesture(err), "doc.end_gesture_ok");
+        CHECK(!g.gesture_active(), "doc.gesture_ended");
+        CHECK(g.project().tracks[0].gain_db == -50.0f && g.revision() == rev0 + 50,
+              "doc.end_keeps_last_preview");  // commit == last preview → no extra revision bump
+        CHECK(g.can_undo() && !g.can_redo(), "doc.end_gesture_one_entry");
+        CHECK(g.dirty(), "doc.end_gesture_dirty");
+        CHECK(g.undo(), "doc.gesture_single_undo");
+        CHECK(bytes_of(g.project(), "/tmp/op_doc_g_undo.opj") == base_bytes,
+              "doc.gesture_undo_restores_original_bytes");
+        CHECK(!g.can_undo() && !g.undo(), "doc.gesture_exactly_one_entry");
+        CHECK(!g.dirty(), "doc.gesture_undo_clean");
+    }
+
+    // Updates are NOT cumulative: −6 then −3 previews/commits −3, not −9.
+    {
+        op::Document g;
+        CHECK(op::Document::open(demo, g, err), "doc.nc_open_ok");
+        CHECK(g.begin_gesture(), "doc.nc_begin");
+        CHECK(g.update_gesture(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -6.0}}, err) &&
+                  g.project().tracks[0].gain_db == -6.0f,
+              "doc.nc_update_minus6");
+        CHECK(g.update_gesture(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -3.0}}, err) &&
+                  g.project().tracks[0].gain_db == -3.0f,
+              "doc.nc_not_cumulative");  // −3 from the begin state, not −9
+        CHECK(g.end_gesture(err), "doc.nc_end_ok");
+        CHECK(g.project().tracks[0].gain_db == -3.0f && g.can_undo(), "doc.nc_commit_is_last_update");
+    }
+
+    // cancel_gesture: restores the begin state, adds no history entry, ends the gesture.
+    {
+        op::Document g;
+        CHECK(op::Document::open(demo, g, err), "doc.cancel_open_ok");
+        const auto base_bytes = bytes_of(g.project(), "/tmp/op_doc_c_base.opj");
+        CHECK(g.begin_gesture(), "doc.cancel_begin");
+        CHECK(g.update_gesture(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -20.0}}, err),
+              "doc.cancel_update_ok");
+        const auto rev_preview = g.revision();  // preview −20 already bumped the revision
+        g.cancel_gesture();
+        CHECK(!g.gesture_active(), "doc.cancel_ends_gesture");
+        CHECK(bytes_of(g.project(), "/tmp/op_doc_c_after.opj") == base_bytes, "doc.cancel_restores");
+        CHECK(!g.can_undo() && !g.dirty(), "doc.cancel_no_entry_clean");
+        CHECK(g.revision() == rev_preview + 1, "doc.cancel_revision_bump");  // restore changed project()
+    }
+
+    // save_as: path moves, file bytes == op::save_project of project(), document clean; then
+    // edit → dirty → save() writes the new path and does not touch history or revision.
+    {
+        op::Document s;
+        CHECK(op::Document::open(demo, s, err), "doc.saveas_open_ok");
+        CHECK(s.apply(json{{"op", "set_track_gain"}, {"index", 1}, {"gain_db", -9.0}}, err) && s.dirty(),
+              "doc.saveas_dirty_pre");
+        CHECK(s.save_as("/tmp/op_doc_saveas.opj", err), "doc.saveas_ok");
+        CHECK(s.path() == "/tmp/op_doc_saveas.opj", "doc.saveas_path_set");
+        CHECK(!s.dirty(), "doc.saveas_clean");
+        CHECK(op::save_project("/tmp/op_doc_saveref.opj", s.project(), err), "doc.saveref_ok");
+        CHECK(slurp_bytes("/tmp/op_doc_saveas.opj") == slurp_bytes("/tmp/op_doc_saveref.opj"),
+              "doc.saveas_bytes_match_save_project");
+        const auto rev = s.revision();
+        CHECK(s.apply(json{{"op", "set_track_gain"}, {"index", 1}, {"gain_db", -8.0}}, err) && s.dirty(),
+              "doc.save_dirty_pre");
+        CHECK(s.save(err), "doc.save_ok");
+        CHECK(!s.dirty() && s.revision() == rev + 1, "doc.save_clean_revision_untouched_by_save");
+        CHECK(op::save_project("/tmp/op_doc_saveref.opj", s.project(), err) &&
+                  slurp_bytes("/tmp/op_doc_saveas.opj") == slurp_bytes("/tmp/op_doc_saveref.opj"),
+              "doc.save_wrote_new_path");  // save() overwrote the save_as path with current bytes
+    }
+
+    // track_rows(): derived rows reflect name/gain/pan/mute/solo and audible per WP-0136 rule.
+    {
+        op::Document t;
+        CHECK(op::Document::open(demo, t, err), "doc.rows_open_ok");
+        auto rows = t.track_rows();
+        CHECK(rows.size() == 3, "doc.rows_count");
+        CHECK(rows[0].name == "Metronome" && rows[1].name == "Bassline" && rows[2].name == "Kick",
+              "doc.rows_names");
+        CHECK(rows[0].gain_db == -12.0f && std::fabs(rows[1].pan + 0.3f) < 1e-5f &&
+                  rows[2].gain_db == -2.0f,
+              "doc.rows_values");
+        CHECK(!rows[0].mute && !rows[0].solo && rows[0].audible && rows[1].audible && rows[2].audible,
+              "doc.rows_default_audible");
+        CHECK(t.apply(json{{"op", "set_track_solo"}, {"index", 2}, {"solo", true}}, err) &&
+                  t.apply(json{{"op", "set_track_mute"}, {"index", 0}, {"mute", true}}, err),
+              "doc.rows_mixer_ops_ok");
+        rows = t.track_rows();
+        CHECK(rows[2].solo && !rows[2].mute && rows[2].audible, "doc.rows_solo_audible");
+        CHECK(rows[0].mute && !rows[0].audible, "doc.rows_muted_inaudible");
+        CHECK(!rows[1].solo && !rows[1].audible, "doc.rows_solo_gates_others");
+        CHECK(t.apply(json{{"op", "set_track_mute"}, {"index", 2}, {"mute", true}}, err),
+              "doc.rows_mute_solo_ok");
+        rows = t.track_rows();
+        CHECK(rows[2].solo && rows[2].mute && !rows[2].audible, "doc.rows_mute_wins_over_solo");
+    }
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -1738,6 +1946,7 @@ int main() {
     test_arrangement_export();
     test_ops();
     test_ops_property();
+    test_document();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
