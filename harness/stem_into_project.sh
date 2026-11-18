@@ -13,6 +13,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 case "${1:-}" in -h|--help) sed -n '2,10p' "$0"; exit 0;; esac
 PROJ="${1:-}"
 [ -f "$PROJ" ] || { echo "usage: $0 <proj.opj> [audio.wav]   (-h for details)"; exit 2; }
+abspath() { printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")"; }  # resolve against the CALLER's cwd (WP-0140)
+PROJ="$(abspath "$PROJ")"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -28,6 +30,8 @@ if [ -z "$AUDIO" ]; then
     "$ROOT/build/opd" render "$PROJ" -o "$AUDIO" >/dev/null || { echo "FAIL: self-render"; exit 1; }
 fi
 [ -f "$AUDIO" ] || { echo "FAIL: audio not found: $AUDIO"; exit 2; }
+# the sidecar runs in ai-sidecar/, so a relative path would resolve there, not here
+AUDIO="$(abspath "$AUDIO")"
 
 OP_ROOT="$ROOT" python3 - "$PROJ" "$AUDIO" "$BACKEND" "$TMP" <<'PYEOF'
 import os, pathlib, shutil, subprocess, sys

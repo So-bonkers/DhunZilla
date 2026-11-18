@@ -15,6 +15,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0140 | Glue scripts resolve relative project/audio paths against the caller's cwd (midi + stem fixed; prompt already correct) + relative-path tests; stray `ai-sidecar/ai/transcribed.mid` explained (pre-WP-0133 `cd`) | **done** | orchestrator |
 | WP-0139 | CI hardening — `-Werror` on our targets (`DZ_WERROR`, ON by default) + ASAN/UBSAN build (`DZ_SANITIZE`, fake-stack off so the suite runs in ~6 s) + `sanitizers` CI job (unit tests, CLI contracts, goldens) | **done** | subagent+orchestrator |
 | WP-0136 | Mixer: track `mute`/`solo` + project `master_gain_db` — audibility rule (mute wins), inaudible tracks skipped in render, all-zero stems for inaudible, master applied to mix + every stem, gain/pan range validation closed, ops `set_track_mute`/`set_track_solo`/`set_master_gain`, `opd info` markers, golden `mixer.opj` | **done** | subagent+orchestrator |
 | WP-0135 | Model operations + undo/redo history + `opd apply` journal CLI — atomic ops validated via save→parse path, JSON-Lines all-or-nothing journals, snapshot History (cap 256) | **done** | subagent+orchestrator |

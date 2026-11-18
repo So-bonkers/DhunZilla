@@ -12,6 +12,9 @@ case "${1:-}" in -h|--help) sed -n '2,8p' "$0"; exit 0;; esac
 PROJ="${1:-}"; AUDIO="${2:-}"
 [ -f "$PROJ" ] || { echo "usage: $0 <proj.opj> <audio.wav>   (-h for details)"; exit 2; }
 [ -f "$AUDIO" ] || { echo "FAIL: audio not found: $AUDIO"; exit 2; }
+abspath() { printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")"; }  # resolve against the CALLER's cwd (WP-0140)
+# the sidecar runs in ai-sidecar/, so a relative path would resolve there, not here
+PROJ="$(abspath "$PROJ")"; AUDIO="$(abspath "$AUDIO")"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

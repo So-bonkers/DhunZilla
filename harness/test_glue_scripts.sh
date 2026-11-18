@@ -71,5 +71,21 @@ check det_run2 0 bash "$GL/midi_into_project.sh" "$TMP/det2/demo.opj" "$PITCHED"
 if cmp -s "$TMP/det1/demo.opj" "$TMP/det2/demo.opj"; then echo "PASS determinism (opj byte-identical)";
 else echo "FAIL determinism: the two demo.opj runs differ"; fails=$((fails+1)); fi
 
+# --- relative paths (WP-0140): resolved against the CALLER's cwd, artifacts land beside the project,
+#     and nothing appears inside the repo (the sidecar runs in ai-sidecar/, so a path passed through
+#     unresolved would be read — or, pre-WP-0133, written — there) ---
+repo_before="$(git -C "$ROOT" status --porcelain 2>/dev/null)"
+fresh_proj "$TMP/rel_stem"; cp "$PITCHED" "$TMP/rel_stem/"
+check rel_stem_exit0 0 env -C "$TMP/rel_stem" bash "$GL/stem_into_project.sh" demo.opj pitched.wav
+exists rel_stem_artifacts "$TMP/rel_stem/stems/vocals.wav" "$TMP/rel_stem/stems/drums.wav"
+fresh_proj "$TMP/rel_midi"; cp "$PITCHED" "$TMP/rel_midi/"
+check rel_midi_exit0 0 env -C "$TMP/rel_midi" bash "$GL/midi_into_project.sh" demo.opj pitched.wav
+exists rel_midi_artifact "$TMP/rel_midi/ai/transcribed.mid"
+mkdir -p "$TMP/rel_prompt"
+check rel_prompt_exit0 0 env -C "$TMP/rel_prompt" bash "$GL/prompt_to_song.sh" "rel smoke" songout
+exists rel_prompt_artifacts "$TMP/rel_prompt/songout/song.opj" "$TMP/rel_prompt/songout/final_render.wav"
+if [ "$(git -C "$ROOT" status --porcelain 2>/dev/null)" = "$repo_before" ]; then echo "PASS rel_no_repo_strays";
+else echo "FAIL rel_no_repo_strays: relative-path runs left files in the repo"; fails=$((fails+1)); fi
+
 echo "test_glue_scripts: $fails failures"
 exit $((fails > 0 ? 1 : 0))
