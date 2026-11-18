@@ -98,3 +98,35 @@ trademark clearance** — each finalist still needs a proper register search.
 in software; single dictionary words are all taken. Coined two-word compounds with a music/weaving
 root (fold, weft, loom) are the workable seam. Every candidate's `.com` is already registered
 (parked) — plan for `.io`/`.dev` and a later purchase, or accept the `.com` is not coming cheap.
+
+## Decision: **DhunZilla** — chosen 2026-11-18
+
+Product owner's call, and the cleanest namespace of any candidate screened. **Dhun** (धुन) =
+tune/melody in Hindi-Urdu (also "obsession" — the tune you can't get out of your head);
+**Zilla** = monster. *"The melody monster."*
+
+| Check | Result |
+|---|---|
+| `dhunzilla.com` | **free** |
+| `.io` / `.app` / `.dev` / `.studio` / `.music` | **free** |
+| `.in` / `.co.in` | **free** |
+| `.co` / `.net` / `.org` | **free** |
+| GitHub org / npm / PyPI / YouTube handle | **free** |
+| App Store (iTunes search) | no match |
+| Web footprint | zero hits for `DhunZilla` / `Dhun Zilla` as a brand |
+| USPTO (Trademarkia) | no results — preliminary only |
+
+### Caveats (unchanged by the decision)
+- **"Dhun" alone is generic in Hindi** — distinctiveness rests on the compound; do not expect
+  exclusive rights in "Dhun".
+- Adjacent but different mark: "Dhun – AI Music & Songs" Android app (`com.dhunmusic`).
+- `dunzilla.com` is registered (Namecheap, privacy) — the likely misspelling. Consider a defensive
+  purchase; if not, expect some typo traffic.
+- **EUIPO and Indian registers were not machine-searched** (access blocked / no public API used) —
+  a formal class 9/42 clearance in US + EU + IN is still required before filing.
+- Pronunciation guide for non-Hindi speakers: **"dhoon-ZIL-uh"**.
+
+### Next actions
+1. Buy `dhunzilla.com` + `.io` + `.app` + `.dev` (human; ~$40–60/yr total).
+2. Rename the GitHub repo, then run `TASKS/WP-0124-rename-dhunzilla.md`.
+3. Formal clearance + class 9/42 filing (US/EU/IN) before public beta.
