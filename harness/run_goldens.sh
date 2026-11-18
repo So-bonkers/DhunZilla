@@ -32,5 +32,17 @@ for opj in "${fixtures[@]}"; do
     esac
 done
 
+# Negative control: the harness itself must reject a corrupted golden.
+cp "$GOLD/demo.wav" "$TMP/corrupt.wav"
+python3 -c "
+import sys
+b = bytearray(open('$TMP/corrupt.wav','rb').read()); b[1000] ^= 0xFF
+open('$TMP/corrupt.wav','wb').write(bytes(b))"
+if python3 "$ROOT/harness/golden_diff.py" "$GOLD/demo.wav" "$TMP/corrupt.wav" >/dev/null 2>&1; then
+    echo "FAIL negative-control: harness ACCEPTED a corrupted golden!"; fails=$((fails+1))
+else
+    echo "PASS negative-control (corrupt golden rejected)"
+fi
+
 echo "run_goldens: ${#fixtures[@]} fixtures, $fails failures"
 exit $((fails > 0 ? 1 : 0))
