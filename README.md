@@ -1,19 +1,21 @@
-# OpenPattern
+# DhunZilla
+
+**dhoon-ZIL-uh** — *dhun* (धुन) is the tune stuck in your head; *zilla* is the monster that makes it.
 
 **The open-source, AI-native DAW.** FL Studio's fast pattern workflow where stems, MIDI and
 natural language are first-class citizens — plus generation that lands in your session as an
 *editable project*, not a flat file.
 
 > Status: **Phase 0 (harness-first)** — building the deterministic render core + AI sidecar
-> before any GUI. Provenance: plan at [`../ai-daw-plan.md`](../ai-daw-plan.md). Codename is
-> provisional; name selection is an open human decision (see ROADMAP).
+> before any GUI. Provenance: plan at [`../ai-daw-plan.md`](../ai-daw-plan.md). Formerly
+> **OpenPattern** (renamed 2026-11-18).
 >
 > Platforms: **Linux x86_64 + aarch64 only for now** ([ADR-0006](docs/adr/0006-linux-only-target.md)).
 > macOS and Windows are deferred — the core stays portable so porting is a build/CI job later.
 
 ## Why
 
-Incumbent DAWs bolt AI on top. OpenPattern designs the project format and workflow around AI
+Incumbent DAWs bolt AI on top. DhunZilla designs the project format and workflow around AI
 artifacts — separated stems, transcriptions, symbolic scores, embeddings — from day one.
 Suno gives you a finished MP3; we hand you a session you keep producing in.
 

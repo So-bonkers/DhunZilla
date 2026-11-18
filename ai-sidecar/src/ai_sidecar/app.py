@@ -132,7 +132,7 @@ def create_app(
         finally:
             await runner.stop()
 
-    app = FastAPI(title="OpenPattern AI sidecar", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="DhunZilla AI sidecar", version="0.1.0", lifespan=lifespan)
     app.state.backends = registry
     app.state.runner = runner
     app.state.manager = manager

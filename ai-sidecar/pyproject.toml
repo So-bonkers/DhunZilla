@@ -1,12 +1,12 @@
-# OpenPattern AI sidecar — WP-0004 / WP-0005.
+# DhunZilla AI sidecar — WP-0004 / WP-0005.
 # Python 3.12, uv-managed. Core env is deliberately light: FastAPI + numpy only.
 # Real ML adapters (WP-0006/8) land in the optional "heavy" extra; their absence
 # must never break the sidecar or its tests (docs/spec/backend-adapters.md).
 
 [project]
-name = "openpattern-sidecar"
+name = "dhunzilla-sidecar"
 version = "0.1.0"
-description = "OpenPattern AI sidecar: job queue + backend adapter chassis (WP-0004) and model manager (WP-0005)"
+description = "DhunZilla AI sidecar: job queue + backend adapter chassis (WP-0004) and model manager (WP-0005)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",

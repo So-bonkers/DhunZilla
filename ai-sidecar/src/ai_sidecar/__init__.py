@@ -1,4 +1,4 @@
-"""OpenPattern AI sidecar (WP-0004/WP-0005).
+"""DhunZilla AI sidecar (WP-0004/WP-0005).
 
 FastAPI job chassis + backend adapter interface per ``docs/spec/sidecar-protocol.md``
 and ``docs/spec/backend-adapters.md``, plus the manifest-gated model manager of

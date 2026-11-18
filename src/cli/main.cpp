@@ -1,4 +1,4 @@
-// opd — OpenPattern headless CLI. Subcommands: render | gen-testproject | info.
+// opd — DhunZilla headless CLI. Subcommands: render | gen-testproject | info.
 // Exit codes (spec/project-model.md): 0 ok, 2 usage, 3 not-found, 4 parse, 5 render/write error.
 #include <algorithm>
 #include <cctype>

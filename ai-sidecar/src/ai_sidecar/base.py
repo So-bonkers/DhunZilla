@@ -1,4 +1,4 @@
-"""Adapter interface shared by all OpenPattern AI backends (docs/spec/backend-adapters.md).
+"""Adapter interface shared by all DhunZilla AI backends (docs/spec/backend-adapters.md).
 
 Models are cartridges, not dependencies: the sidecar core never imports a model
 library directly — it only talks to :class:`BackendBase` subclasses discovered from

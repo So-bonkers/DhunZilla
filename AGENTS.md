@@ -1,6 +1,6 @@
 # AGENTS.md — read this before writing anything in this repo
 
-You are a coding agent working on OpenPattern, an open-source AI-native DAW. The human is the
+You are a coding agent working on DhunZilla (formerly OpenPattern), an open-source AI-native DAW. The human is the
 product owner: they approve decisions and review demos; **all code is agent-written**.
 Follow these rules exactly. When in doubt, these rules beat your instincts.
 

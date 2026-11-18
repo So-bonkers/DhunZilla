@@ -1,4 +1,4 @@
-# ROADMAP — OpenPattern
+# ROADMAP — DhunZilla
 
 Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo index; work packages live in `TASKS/`.
 
@@ -55,7 +55,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0010 | Native stem export (`--stems-dir`) — solo stems recombine bit-exact to mix | **done** | orchestrator |
 
 ## Open human decisions (blocking nothing; flagged for review)
-1. **Name — DECIDED 2026-11-18: "DhunZilla"** (धुन = tune/melody; "the melody monster"). Full `dhunzilla` namespace free (`.com/.io/.app/.dev/.in`, GitHub, npm, PyPI); no US mark found; formal US/EU/IN clearance before filing. Screen + caveats: [report](docs/legal/trademark-screen-2026-11-18.md). Rename tracked as `TASKS/WP-0128-rename-dhunzilla.md`; domains + GitHub rename are human steps.
+1. **Name — DECIDED 2026-11-18: "DhunZilla"** (धुन = tune/melody; "the melody monster"). Full `dhunzilla` namespace free (`.com/.io/.app/.dev/.in`, GitHub, npm, PyPI); no US mark found; formal US/EU/IN clearance before filing. Screen + caveats: [report](docs/legal/trademark-screen-2026-11-18.md). Rename tracked as `TASKS/WP-0129-rename-dhunzilla.md`; domains + GitHub rename are human steps.
 2. Signing certs budget (~$100–500/yr): Apple dev account + Azure Trusted Signing/EV.
 3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription), ADR-0006 (Linux-only target). Distribution deferred by product owner — not blocked, just not scheduled.
 4. **Platform scope** — Linux x86_64 + aarch64 only for now (ADR-0006). Revisit at first GUI/public beta; macOS/Windows are deferred, not dropped.

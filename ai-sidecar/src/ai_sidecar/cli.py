@@ -92,7 +92,7 @@ def _jobs_status(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     """Argparse tree for the ``opsidecar`` entry point."""
-    parser = argparse.ArgumentParser(prog="opsidecar", description="OpenPattern AI sidecar")
+    parser = argparse.ArgumentParser(prog="opsidecar", description="DhunZilla AI sidecar")
     parser.add_argument(
         "--version", action="version", version=f"opsidecar {_version_string()}"
     )

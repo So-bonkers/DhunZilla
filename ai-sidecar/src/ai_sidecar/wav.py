@@ -2,7 +2,7 @@
 
 The stdlib ``wave`` module cannot handle IEEE float PCM, and we deliberately avoid a
 soundfile dependency in the core env (WP-0004: no heavy ML libs). Only the formats
-OpenPattern itself produces/needs are supported: 32-bit float PCM (writer + reader)
+DhunZilla itself produces/needs are supported: 32-bit float PCM (writer + reader)
 and 16-bit int PCM (reader only, converted to float32).
 
 Usage example::
