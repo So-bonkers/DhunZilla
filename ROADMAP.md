@@ -51,7 +51,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0010 | Native stem export (`--stems-dir`) — solo stems recombine bit-exact to mix | **done** | orchestrator |
 
 ## Open human decisions (blocking nothing; flagged for review)
-1. **Name** — "OpenPattern" provisional; trademark/domain check required before public launch.
+1. **Name** — "OpenPattern" provisional. Preliminary trademark screen done 2026-11-18 ([report](docs/legal/trademark-screen-2026-11-18.md)): no software-class (9/42) registration found, but the name is descriptive and in use by unrelated brands; exact `.com/.org/.net/.dev/.io` and the GitHub org handle are taken. Decide distinctive name vs. keep-and-file before public beta.
 2. Signing certs budget (~$100–500/yr): Apple dev account + Azure Trusted Signing/EV.
 3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription), ADR-0006 (Linux-only target). Distribution deferred by product owner — not blocked, just not scheduled.
 4. **Platform scope** — Linux x86_64 + aarch64 only for now (ADR-0006). Revisit at first GUI/public beta; macOS/Windows are deferred, not dropped.
