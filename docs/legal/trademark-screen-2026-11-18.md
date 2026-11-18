@@ -127,6 +127,6 @@ tune/melody in Hindi-Urdu (also "obsession" — the tune you can't get out of yo
 - Pronunciation guide for non-Hindi speakers: **"dhoon-ZIL-uh"**.
 
 ### Next actions
-1. Buy `dhunzilla.com` + `.io` + `.app` + `.dev` (human; ~$40–60/yr total).
+1. ~~Buy domains~~ — **deferred by owner on 2026-11-18** until a feature-complete DAW exists. Accepted risk: the name is public on GitHub, so `dhunzilla.com` could be taken by a squatter in the meantime; revisit at first public beta. (When ready: `dhunzilla.com` + `.io` + `.app` + `.dev`, ~$60–90 first year.)
 2. Rename the GitHub repo, then run `TASKS/WP-0124-rename-dhunzilla.md`.
 3. Formal clearance + class 9/42 filing (US/EU/IN) before public beta.

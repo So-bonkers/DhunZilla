@@ -9,7 +9,7 @@ Replace the provisional "OpenPattern" name on all **user-facing** surfaces with 
 (pron. *dhoon-ZIL-uh*), without touching engine behavior or test fixtures.
 
 ## Human steps (blocking, do first)
-1. Buy domains: `dhunzilla.com`, `.io`, `.app`, `.dev` (optional: `.in`, `.co.in`, `.music`).
+1. ~~Buy domains~~ — **deferred by owner 2026-11-18** until a feature-complete DAW exists. Risk accepted (name is public; a squatter could take `.com`); revisit at first public beta.
 2. Rename the GitHub repo `So-bonkers/OpenPattern` → `DhunZilla` (Settings → Rename). Redirects
    keep old links working; then update the local remote:
    `git remote set-url origin git@github.com:So-bonkers/DhunZilla.git`.
@@ -71,6 +71,6 @@ Append below when done: what changed, evidence (commands/output), anything defer
 
 **Deferred / follow-ups**
 - `opd`, `opsidecar`, `ai_sidecar` identifiers unchanged → proposed **WP-0130** (mechanical CLI/package rename).
-- Human steps: buy `dhunzilla.*` domains; GitHub repo renamed by owner (remote updated to
-  `So-bonkers/DhunZilla`).
+- GitHub repo renamed by owner (remote updated to `So-bonkers/DhunZilla`).
+- Domain purchase deliberately deferred (see above); no code depends on a domain.
 - Former-URL redirects keep old links alive; CI badge/link URLs work because GitHub redirects.
