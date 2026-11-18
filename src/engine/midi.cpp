@@ -274,6 +274,7 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
                 const uint8_t key = r.u8();
                 const uint8_t vel = r.u8();
                 auto& acc = accums[trk];
+                if (key > 127) { acc.last_tick = tick; continue; }  // invalid data byte: ignore event, keep parsing
                 if (vel > 0) {
                     auto it = acc.open.find(key);
                     if (it != acc.open.end()) {  // retrigger: close previous at this tick, open new
@@ -297,6 +298,7 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
                 const uint8_t key = r.u8();
                 r.u8();  // velocity (ignored)
                 auto& acc = accums[trk];
+                if (key > 127) { acc.last_tick = tick; continue; }  // invalid data byte: ignore event
                 auto it = acc.open.find(key);
                 if (it != acc.open.end()) {
                     const double t_beats = static_cast<double>(it->second.tick) / ppq;

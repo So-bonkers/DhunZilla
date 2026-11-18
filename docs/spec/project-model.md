@@ -114,3 +114,6 @@ note's length uses the local tempo at its start — notes crossing a change do n
 (spec choice; revisit with audio-warped sampler if musical need appears). Total frames = full
 segments + `ceil` of final partial. Canonical save omits an empty map. MIDI import/export ignore
 tempo maps in v0 (first tempo → constant); follow-up noted.
+Note-event data bytes ≥ 0x80 (illegal per SMF) are ignored — the event is skipped and parsing
+continues; real-world files never fail import on quirk bytes, and model invariants (pitch range,
+dur > 0) hold under mutation fuzzing (500 seeded mutants, deterministic).

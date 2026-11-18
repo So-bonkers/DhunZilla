@@ -23,6 +23,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
+| WP-0109 | MIDI mutation fuzzer (seeded, invariant-checked) — caught+fixed illegal-data-byte acceptance | **done** | orchestrator |
 | WP-0108 | Event-level round-trip metric (onset ±80ms, greedy match; both F1 gates live) | **done** | orchestrator |
 | WP-0107 | Stem separation over live HTTP (demucs cartridge via uvicorn, non-silence verified) — gated demo | **done** | orchestrator |
 | WP-0106 | Live sidecar HTTP smoke harness (health/jobs/artifacts/provenance/error-path over real uvicorn) | **done** | orchestrator |

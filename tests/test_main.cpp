@@ -385,6 +385,30 @@ static void test_midi() {
     }
     CHECK(fuzz_ok, "midi.truncation_fuzz_no_crash_no_success");
 
+    // mutation fuzz: seeded byte flips must never crash/hang; if a mutant still parses, model
+    // invariants (dur > 0, pitch range) must hold — the parser's contract under garbage input.
+    op::rng::Pcg32 prng(20261118ull);
+    bool mut_ok = true;
+    size_t mutants_parsed = 0;
+    for (int trial = 0; trial < 500 && mut_ok; ++trial) {
+        std::vector<uint8_t> m = bytes;
+        const int nmut = 1 + static_cast<int>(prng.next() % 4u);
+        for (int k = 0; k < nmut; ++k) {
+            const size_t p = prng.next() % m.size();
+            m[p] ^= static_cast<uint8_t>(1u << (prng.next() % 8u));
+        }
+        { std::ofstream w("/tmp/op_mut.mid", std::ios::binary); w.write(reinterpret_cast<const char*>(m.data()), static_cast<std::streamsize>(m.size())); }
+        op::Project mp;
+        if (op::load_midi("/tmp/op_mut.mid", mp, err)) {
+            ++mutants_parsed;
+            for (const auto& pat : mp.patterns)
+                for (const auto& nn : pat.notes)
+                    if (!(nn.dur_beats > 0.0) || nn.midi_note < 0 || nn.midi_note > 127 || !(mp.bpm > 0.0)) mut_ok = false;
+        }
+    }
+    CHECK(mut_ok, "midi.mutation_fuzz_no_crash_invariants_hold");
+    std::printf("INFO midi mutation fuzz: %zu/500 mutants parsed\n", mutants_parsed);
+
     // wrong magic + SMPTE division rejected with actionable errors
     write_text("/tmp/op_badmagic.mid", "RIFFjunkjunk");
     op::Project bp;
