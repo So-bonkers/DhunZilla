@@ -97,6 +97,15 @@ real Basic Pitch):
 # transcribed via basicpitch@basic-pitch-nmp-onnx-ort1.32.0: notes merged into my.song.opj, MIDI attached at ai/transcribed.mid
 ```
 
+And the flagship, end to end — **a text prompt becomes an editable project**, not a dead audio blob
+(prompt → generate → transcribe → `.opj` + provenance attachments + render; byte-deterministic):
+
+```bash
+./harness/prompt_to_song.sh "rainy lofi drums with warm bass" ./my_song
+# prompt -> editable song: ./my_song
+#   song.opj (edit it, re-render, bundle it) · final_render.wav · ai/{source_audio.wav,transcribed.mid}
+```
+
 Setup for the transcription runtime lives in
 [`ai-sidecar/backends/basicpitch/impl.py`](ai-sidecar/backends/basicpitch/impl.py) (why ONNX and
 not TensorFlow: [ADR-0005](docs/adr/0005-transcription-onnx-runtime.md)). Stem splitting with
