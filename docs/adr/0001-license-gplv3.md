@@ -1,6 +1,6 @@
 # ADR-0001: Core licensed GPLv3; SDK boundary permissive later
 
-**Status:** Proposed (awaiting human approval) · 2026-11-18
+**Status:** Accepted (human approval — product owner) · 2026-11-18
 
 ## Decision
 OpenPattern core is GPLv3. Vendored deps under compatible licenses only, recorded in `third_party/`

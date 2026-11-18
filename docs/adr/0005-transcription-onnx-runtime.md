@@ -1,6 +1,6 @@
 # ADR-0005: Transcription runtime = ONNX via subprocess cartridge (TensorFlow rejected)
 
-**Status:** Accepted (agent decision, reversible; human review pending)
+**Status:** Accepted (human-reviewed — product owner) · 2026-11-18
 **Date:** 2026-11-18
 **Context:** WP-0008 (audio→MIDI for hum→MIDI / "convert a voice sample to an instrument's notes")
 

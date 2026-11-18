@@ -1,6 +1,6 @@
 # ADR-0003: AI sidecar v0 over HTTP/JSON (FastAPI); gRPC deferred
 
-**Status:** Proposed (awaiting human approval) · 2026-11-18
+**Status:** Accepted (human approval — product owner) · 2026-11-18
 
 ## Decision
 v0 sidecar transport is FastAPI + JSON over localhost with SSE progress. The interface surface

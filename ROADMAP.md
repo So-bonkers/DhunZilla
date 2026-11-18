@@ -49,7 +49,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Open human decisions (blocking nothing; flagged for review)
 1. **Name** — "OpenPattern" provisional; trademark/domain check required before public launch.
 2. Signing certs budget (~$100–500/yr): Apple dev account + Azure Trusted Signing/EV.
-3. Approve ADR-0002 (headless-core-first, JUCE deferred) and ADR-0003 (HTTP sidecar v0).
+3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription). Distribution deferred by product owner — not blocked, just not scheduled.
 
 ## Nightly (once repo is pushed)
 Six-target CI; reference-rig (DGX Spark aarch64) CPU-inference evals; determinism sweep across arches.
