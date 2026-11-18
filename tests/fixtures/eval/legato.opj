@@ -1,0 +1,87 @@
+{
+  "format_version": 0,
+  "bpm": 120.0,
+  "sample_rate": 48000,
+  "seed": 42,
+  "length_bars": 2.0,
+  "beats_per_bar": 4,
+  "tracks": [
+    {
+      "name": "Lead",
+      "gain_db": -8.0,
+      "pan": 0.0,
+      "voice": {
+        "kind": "synth",
+        "attack_ms": 5.0,
+        "release_ms": 60.0
+      }
+    }
+  ],
+  "patterns": [
+    {
+      "track": 0,
+      "notes": [
+        {
+          "t": 0.0,
+          "dur": 0.5,
+          "note": 64
+        },
+        {
+          "t": 0.5,
+          "dur": 0.5,
+          "note": 67
+        },
+        {
+          "t": 1.0,
+          "dur": 0.5,
+          "note": 71
+        },
+        {
+          "t": 1.5,
+          "dur": 0.5,
+          "note": 74
+        },
+        {
+          "t": 2.0,
+          "dur": 0.5,
+          "note": 71
+        },
+        {
+          "t": 2.5,
+          "dur": 0.5,
+          "note": 67
+        },
+        {
+          "t": 3.0,
+          "dur": 0.5,
+          "note": 64
+        },
+        {
+          "t": 3.5,
+          "dur": 0.5,
+          "note": 67
+        },
+        {
+          "t": 4.0,
+          "dur": 0.5,
+          "note": 71
+        },
+        {
+          "t": 4.5,
+          "dur": 0.5,
+          "note": 74
+        },
+        {
+          "t": 5.0,
+          "dur": 0.5,
+          "note": 71
+        },
+        {
+          "t": 5.5,
+          "dur": 0.5,
+          "note": 67
+        }
+      ]
+    }
+  ]
+}
