@@ -52,9 +52,10 @@ project → re-render. Measured, not vibes:
 
 ```bash
 OP_TRANSCRIBE_PYTHON=/path/to/onnx-venv/bin/python ./harness/roundtrip_eval.sh
-# roundtrip: want=[60, 60, 64, 64, 67, 67]
-# roundtrip:  got=[60, 60, 64, 64, 67, 67]
-# ROUNDTRIP F1=1.00 (precision 1.00, recall 1.00) threshold 0.8 -> PASS
+# want=[(0.0, 60), (0.25, 64), (0.5, 67), (0.75, 64), (1.0, 60), (1.5, 67)]
+# got =[(0.011, 60), (0.243, 64), (0.5, 67), (0.743, 64), (0.975, 60), (1.498, 67)]
+# PITCH F1=1.00 (thr 0.8) PASS
+# EVENT F1=1.00 (tol 0.08s, thr 0.8) PASS
 ```
 
 Setup for the transcription runtime lives in
