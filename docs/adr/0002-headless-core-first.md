@@ -16,6 +16,7 @@ every future engine bug reproducible by a CLI command.
 
 ## Consequences
 - Golden-render tests work from day 1 on all six CI targets, no audio hardware required.
+  *(Amended 2026-11-18 by ADR-0006: only the two Linux targets are built/tested for now; macOS/Windows are deferred.)*
 - JUCE integration becomes a well-scoped adapter layer later (graph executor over our model), not
   an architectural assumption. Risk: some rework of the driver/glue layer — accepted; the model and
   render semantics carry forward unchanged.

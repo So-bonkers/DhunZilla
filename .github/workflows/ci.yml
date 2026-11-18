@@ -1,5 +1,6 @@
-# Six-target CI matrix (plan §6b). NOTE: config authored pre-push; runner labels for
-# windows-11-arm are GitHub preview-tier — verify on first push and adjust per docs note.
+# Linux-only CI matrix (ADR-0006): x86_64 + aarch64. macOS/Windows are deferred, not
+# abandoned; the C++ stays portable so a port is a CI/build job later, not a rewrite.
+# Config authored pre-push — first run validates the runner labels.
 name: ci
 on:
   push: { branches: [main] }
@@ -15,14 +16,6 @@ jobs:
             name: linux-x64
           - os: ubuntu-24.04-arm    # linux-arm64 (native ARM runner)
             name: linux-arm64
-          - os: macos-14            # macOS arm64 (Apple Silicon)
-            name: macos-arm64
-          - os: macos-13            # macOS x64
-            name: macos-x64
-          - os: windows-latest      # windows x64 (MSVC)
-            name: windows-x64
-          - os: windows-11-arm      # windows arm64 (preview runner; verify label on first push)
-            name: windows-arm64
     name: core ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     steps:

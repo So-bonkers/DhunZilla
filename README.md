@@ -7,6 +7,9 @@ natural language are first-class citizens — plus generation that lands in your
 > Status: **Phase 0 (harness-first)** — building the deterministic render core + AI sidecar
 > before any GUI. Provenance: plan at [`../ai-daw-plan.md`](../ai-daw-plan.md). Codename is
 > provisional; name selection is an open human decision (see ROADMAP).
+>
+> Platforms: **Linux x86_64 + aarch64 only for now** ([ADR-0006](docs/adr/0006-linux-only-target.md)).
+> macOS and Windows are deferred — the core stays portable so porting is a build/CI job later.
 
 ## Why
 

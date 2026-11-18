@@ -57,6 +57,9 @@ Follow these rules exactly. When in doubt, these rules beat your instincts.
   this container context → CPU inference paths must always work and are tested here. This machine
   IS our linux-arm64 target; regressions found here count as platform bugs.
 - ALSA + JACK headers present (live-audio PoCs possible later); no clang locally; `uv` available.
+- **Supported platforms: Linux x86_64 + aarch64 only** (ADR-0006). Do not add macOS/Windows
+  build paths, CI targets, or platform-specific code to the engine; keep `src/engine/` and the
+  CLI portable so a port stays a build job. Ports are deferred, not rejected.
 
 ## Style of this project
 Boring, explicit code wins. Cleverness is a bug. If you need a trick to pass a test, the design

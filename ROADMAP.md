@@ -21,7 +21,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0004 | Sidecar v0 (FastAPI + adapters + conformance) | **done** (59 tests) | subagent+orchestrator |
 | WP-0005 | Model manager (manifest, sha256, license gates) | **done** | subagent+orchestrator |
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
-| WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
+| WP-0007 | CI workflow: Linux matrix, x86_64 + aarch64 (ADR-0006) | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
 | WP-0120 | Clip-level gain (dB) in arrangement — mix-target scaling, unity bit-exact, [-96,24] validated | **done** | orchestrator |
 | WP-0119 | hum→project glue + mocktrans CI backend — transcribe job → import-midi → attach; conformance dispatch gap fixed | **done** | orchestrator |
@@ -49,7 +49,8 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Open human decisions (blocking nothing; flagged for review)
 1. **Name** — "OpenPattern" provisional; trademark/domain check required before public launch.
 2. Signing certs budget (~$100–500/yr): Apple dev account + Azure Trusted Signing/EV.
-3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription). Distribution deferred by product owner — not blocked, just not scheduled.
+3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription), ADR-0006 (Linux-only target). Distribution deferred by product owner — not blocked, just not scheduled.
+4. **Platform scope** — Linux x86_64 + aarch64 only for now (ADR-0006). Revisit at first GUI/public beta; macOS/Windows are deferred, not dropped.
 
 ## Nightly (once repo is pushed)
-Six-target CI; reference-rig (DGX Spark aarch64) CPU-inference evals; determinism sweep across arches.
+Linux CI (x86_64 + aarch64); reference-rig (DGX Spark aarch64) CPU-inference evals; determinism sweep across the two Linux arches. macOS/Windows CI is deferred (ADR-0006) and returns only when a GUI exists to port.
