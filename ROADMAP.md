@@ -63,7 +63,8 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 1. **Name — DECIDED 2026-11-18: "DhunZilla"** (धुन = tune/melody; "the melody monster"). Full `dhunzilla` namespace free (`.com/.io/.app/.dev/.in`, GitHub, npm, PyPI); no US mark found; formal US/EU/IN clearance before filing. Screen + caveats: [report](docs/legal/trademark-screen-2026-11-18.md). Rename tracked as `TASKS/WP-0129-rename-dhunzilla.md` (done; GitHub repo renamed). **Domain registration deliberately deferred by owner on 2026-11-18 until a feature-complete DAW exists** — risk accepted; revisit at first public beta.
 2. Signing certs budget (~$100–500/yr): Apple dev account + Azure Trusted Signing/EV.
 3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription), ADR-0006 (Linux-only target). Distribution deferred by product owner — not blocked, just not scheduled.
-4. **Platform scope** — Linux x86_64 + aarch64 only for now (ADR-0006). Revisit at first GUI/public beta; macOS/Windows are deferred, not dropped.
+4. **ADR-0007 approved 2026-11-18** by product owner: JUCE 9 for the GUI shell + live audio in a new `src/app/` module (engine/CLI stay JUCE-free); PipeWire-via-ALSA default at 128 samples/48 kHz; licensing consequence accepted (shipped GUI app effectively AGPLv3 via JUCE 9; core remains GPLv3).
+5. **Platform scope** — Linux x86_64 + aarch64 only for now (ADR-0006). Revisit at first GUI/public beta; macOS/Windows are deferred, not dropped.
 
 ## Nightly (CI live on push)
 Linux CI (x86_64 + aarch64) green on `main`; reference-rig (DGX Spark aarch64) CPU-inference evals; determinism sweep across the two Linux arches. macOS/Windows CI is deferred (ADR-0006) and returns only when a GUI exists to port.

@@ -1,8 +1,8 @@
 # ADR-0007: JUCE 9 for the GUI shell + live audio; PipeWire via ALSA as the default Linux path
 
-**Status:** Proposed · 2026-11-18 · technical decision taken autonomously (reversible);
-**licensing consequence (§ Licensing) requires product-owner approval** because it amends the
-practical effect of ADR-0001.
+**Status:** Accepted · 2026-11-18 · **approved by the product owner** ("approve ADR-0007, go with
+JUCE"), including the licensing consequence (§ Licensing): the distributed GUI app is effectively
+AGPLv3 via JUCE 9; engine, CLI and sidecar remain GPLv3.
 
 Evidence: `spikes/juce-probe/` (WP-0132) — source, `evidence/window.png`, `evidence/latency-sweep-pipewire.txt`,
 `evidence/probe-default-window.txt`.
@@ -49,7 +49,7 @@ Evidence: `spikes/juce-probe/` (WP-0132) — source, `evidence/window.png`, `evi
   in samples over 60 s, at each buffer size; subtract nothing (that *is* the round trip). Expected at
   128 samples: ≈ 2×8 ms + converter delay.
 
-## Licensing (needs owner sign-off)
+## Licensing (approved by owner 2026-11-18)
 JUCE 9 modules are dual-licensed **AGPLv3 / commercial JUCE licence**. Our core is GPLv3 (ADR-0001).
 GPLv3 §13 explicitly permits combining with AGPLv3 code, so this is compatible, but:
 - The **distributed GUI app** (anything linking `src/app/`) is effectively subject to AGPLv3 terms for
@@ -59,8 +59,8 @@ GPLv3 §13 explicitly permits combining with AGPLv3 code, so this is compatible,
 - The plan already intends to bundle Vital (AGPLv3), so AGPL in the shipped bundle is not new in kind.
 - A commercial JUCE licence would only matter if we ever wanted a non-copyleft build — not planned.
 
-**Recommendation:** accept. **If rejected,** the fallback is Qt 6 (LGPLv3) + miniaudio/RtAudio +
-a hand-rolled plugin host — roughly +2–3 months of Phase 1/2 work, mostly on plugin hosting.
+**Decision:** accepted by the owner. *(Fallback recorded for history: had it been rejected,* the fallback is Qt 6 (LGPLv3) + miniaudio/RtAudio +
+a hand-rolled plugin host — roughly +2–3 months of Phase 1/2 work, mostly on plugin hosting.)*
 
 ## Alternatives considered
 | Option | Why not (now) |
@@ -78,7 +78,7 @@ a hand-rolled plugin host — roughly +2–3 months of Phase 1/2 work, mostly on
 - JUCE build adds ~2–4 min cold to CI; cache `_deps`.
 
 ## Revisit triggers
-- Owner rejects AGPL consequence → switch to the Qt fallback before any `src/app/` code lands.
+- We ever plan a hosted/network-served version of the GUI app → revisit AGPL obligations (or a JUCE commercial licence) first.
 - xrun rate at 128 samples under a 16-track load test > 1/minute on the reference rig → raise default to 256.
 - `pipewire-jack` becomes available → evaluate JACK backend latency vs ALSA-PipeWire; pick lower jitter.
 - A macOS/Windows port is scheduled (ADR-0006) → CoreAudio/WASAPI come for free with JUCE; re-measure.
