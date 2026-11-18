@@ -1,5 +1,8 @@
 # WP-0128 — Rename product to **DhunZilla**
 
+> **Superseded:** executed as `WP-0129-rename-dhunzilla.md` (commit 6603053). Kept for the decision record.
+
+
 **Status:** ready · **Created:** 2026-11-18 · **Owner:** orchestrator
 **Decision:** product owner chose "DhunZilla" on 2026-11-18 (see
 `docs/legal/trademark-screen-2026-11-18.md`). `dhunzilla` namespace was free at decision time.

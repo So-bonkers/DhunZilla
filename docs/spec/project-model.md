@@ -164,3 +164,10 @@ multiplicatively with per-note velocity. Implementation mirrors velocity: one mi
 non-unity clip, none at unity → `gain_db` absent/0 renders **bit-identical** to pre-WP-0120
 (goldens prove it; `pow(10, ±0) ≡ 1` exactly). Canonical save omits the field at exactly 0.0.
 Use cases: intro builds, ducking an loop under a stem, dropping a section's energy — no note edits.
+
+## MIDI export flattens arrangement (2026-11-18, WP-0130)
+
+`opd opj2mid` now expands the arrangement exactly like the renderer: clips placed at
+`start_bar·beats_per_bar + r·pattern_extent`, repeats honored. MIDI has no clip-level gain, so a
+clip's `gain_db` is **baked into exported note velocities** (clamped to 1..127). Projects without an
+arrangement export byte-identically to pre-WP-0130 output (proved against the previous binary).

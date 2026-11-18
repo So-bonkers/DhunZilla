@@ -164,15 +164,39 @@ bool save_midi(const std::string& path, const Project& p, std::string& err) {
     for (size_t ti = 0; ti < p.tracks.size(); ++ti) {
         const Track& tr = p.tracks[ti];
         std::vector<MidiEvent> evs;
-        for (const Pattern& pat : p.patterns) {  // gather every pattern belonging to this track
-            if (pat.track != static_cast<int>(ti)) continue;
-            for (const Note& n : pat.notes) {
+        // Placement (WP-0129): mirrors renderer semantics so exported MIDI matches what you hear.
+        // Legacy default = every pattern once at bar 0 (offset 0.0 → byte-identical to pre-WP output).
+        struct Placement { const Pattern* pat; double offset_beats; double gain_lin; };
+        std::vector<Placement> placements;
+        if (p.arrangement.empty()) {
+            for (const Pattern& pat : p.patterns)
+                if (pat.track == static_cast<int>(ti)) placements.push_back({&pat, 0.0, 1.0});
+        } else {
+            const double bpb = static_cast<double>(p.beats_per_bar);
+            for (const Clip& clip : p.arrangement) {
+                const Pattern& pat = p.patterns[static_cast<size_t>(clip.pattern)];
+                if (pat.track != static_cast<int>(ti)) continue;
+                double extent = 0.0;  // loop period, same computation as renderer
+                for (const Note& n : pat.notes) {
+                    const double e = n.t_beats + n.dur_beats;
+                    if (e > extent) extent = e;
+                }
+                const int reps = (extent > 0.0) ? clip.repeats : 1;
+                // MIDI has no clip level: bake gain_db into note velocities (documented in spec).
+                const double cg = clip.gain_db != 0.0 ? static_cast<double>(dsp::db_to_lin(clip.gain_db)) : 1.0;
+                for (int r = 0; r < reps; ++r)
+                    placements.push_back({&pat, clip.start_bar * bpb + static_cast<double>(r) * extent, cg});
+            }
+        }
+        for (const Placement& pl : placements) {
+            for (const Note& n : pl.pat->notes) {
                 const int midi = n.midi_note >= 0 ? n.midi_note : nearest_midi(tr.voice.freq_hz);
-                int out_vel = static_cast<int>(std::llround(n.velocity * 127.0));  // WP-0111: dynamics carry out
+                int out_vel = static_cast<int>(std::llround(n.velocity * pl.gain_lin * 127.0));  // WP-0111 dynamics, WP-0129 clip bake
                 if (out_vel < 1) out_vel = 1;
                 if (out_vel > 127) out_vel = 127;
-                long long t1 = std::llround(n.t_beats * kExportPpq);
-                long long t2 = std::llround((n.t_beats + n.dur_beats) * kExportPpq);
+                const double t_beats = n.t_beats + pl.offset_beats;
+                long long t1 = std::llround(t_beats * kExportPpq);
+                long long t2 = std::llround((t_beats + n.dur_beats) * kExportPpq);
                 if (t1 < 0) t1 = 0;
                 if (t2 <= t1) t2 = t1 + 1;
                 evs.push_back({t1, 1, {0x90, static_cast<uint8_t>(midi), static_cast<uint8_t>(out_vel)}});

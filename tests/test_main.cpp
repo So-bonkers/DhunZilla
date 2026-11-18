@@ -1,5 +1,6 @@
 // Unit tests for the deterministic core. Boring assert-based runner — no framework deps.
 // Exit code = number of failures. Run: ./build/op_tests
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1206,6 +1207,61 @@ static void test_bundle_fuzz() {
     std::filesystem::remove_all(dir + "/out");
 }
 
+// --- MIDI export flattens arrangement (WP-0129).
+static void test_arrangement_export() {
+    std::string err;
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 8.0;
+    op::Track t; t.name = "L"; t.voice.kind = op::VoiceKind::Synth;
+    p.tracks.push_back(t);
+    op::Pattern pat; pat.track = 0;
+    pat.notes.push_back({0.0, 1.0, 60, 1.0});
+    pat.notes.push_back({1.0, 1.0, 64, 1.0});   // extent = 2 beats
+    p.patterns.push_back(pat);
+
+    // No arrangement: legacy placement (every pattern once at bar 0).
+    CHECK(op::save_midi("/tmp/op_ae_legacy.mid", p, err), "ae.legacy_saved");
+    op::Project back_l;
+    CHECK(op::load_midi("/tmp/op_ae_legacy.mid", back_l, err), "ae.legacy_reloaded");
+    {
+        size_t notes = 0;
+        for (const auto& q : back_l.patterns) notes += q.notes.size();
+        CHECK(notes == 2, "ae.legacy_two_notes");
+    }
+
+    // Arrangement: clip@bar0 + clip@bar2×3 with -6.02 dB on the second → 8 note events total;
+    // reps spaced by extent (2 beats) exactly like the renderer; gain baked into velocity (~64).
+    p.arrangement = {{0, 0.0, 1, 0.0}, {0, 2.0, 3, -6.0206}};
+    CHECK(op::save_midi("/tmp/op_ae_flat.mid", p, err), "ae.flat_saved");
+    op::Project back;
+    CHECK(op::load_midi("/tmp/op_ae_flat.mid", back, err), "ae.flat_reloaded");
+    std::vector<double> onsets;
+    int quiet = 0, loud = 0;
+    for (const auto& q : back.patterns) {
+        for (const auto& n : q.notes) {
+            onsets.push_back(n.t_beats);
+            if (n.velocity < 0.6) ++quiet; else ++loud;
+        }
+    }
+    CHECK(onsets.size() == 8, "ae.eight_notes");
+    std::sort(onsets.begin(), onsets.end());
+    // Sorted onsets: [0,1, 8,9, 10,11, 12,13] — clip@bar2=beat8, reps spaced by extent (2 beats).
+    const bool spacing_ok = onsets.size() == 8 && std::fabs(onsets[2] - 8.0) < 1e-6 &&
+                            std::fabs(onsets[4] - 10.0) < 1e-6 && std::fabs(onsets[6] - 12.0) < 1e-6;
+    CHECK(spacing_ok, "ae.rep_offsets_match_renderer");
+    CHECK(loud == 2 && quiet == 6, "ae.gain_baked_into_velocity");
+
+    // Determinism: same project → byte-identical MIDI.
+    CHECK(op::save_midi("/tmp/op_ae_flat2.mid", p, err), "ae.save2_ok");
+    {
+        auto rb = [](const char* path) {
+            std::ifstream f(path, std::ios::binary);
+            return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        };
+        CHECK(rb("/tmp/op_ae_flat.mid") == rb("/tmp/op_ae_flat2.mid"), "ae.export_deterministic");
+    }
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -1226,6 +1282,7 @@ int main() {
     test_json_fuzz();
     test_wav_fuzz();
     test_bundle_fuzz();
+    test_arrangement_export();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
