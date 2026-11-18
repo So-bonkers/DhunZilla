@@ -23,6 +23,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 | WP-0006 | Demucs CPU cartridge (opt-in) + e2e separation through /jobs | **done** (aarch64 CPU) | orchestrator |
 | WP-0007 | CI workflow: six-target matrix config | **done** (untested until push) | orchestrator |
 | WP-0008 | Basic-Pitch transcription adapter (ONNX or python pkg) + MIDI F1 conformance hook | queued | — |
+| WP-0113 | Ear-check pack generator (deterministic audio for human review + AI round-trip 02-vs-06 comparison) | **done** | orchestrator |
 | WP-0112 | `opd info *.opd` + engine list_bundle (metadata-only archive view) | **done** | orchestrator |
 | WP-0111 | Note velocity (dynamics) — mix-target scaling, MIDI import/export capture, legacy bit-exact | **done** | orchestrator |
 | WP-0110 | .opd bundle (store-only ZIP, deterministic, CRC+traversal-guarded) — shareable song files | **done** | orchestrator |

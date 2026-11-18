@@ -20,3 +20,5 @@ ai-sidecar/models/cache/
 .idea/
 .DS_Store
 *.swp
+demos/*
+!demos/README.md
