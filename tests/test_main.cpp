@@ -601,6 +601,77 @@ static void test_bundle() {
     }
 }
 
+// --- velocity (WP-0111): parse/save rules, exact gain behavior, MIDI capture.
+static void test_velocity() {
+    std::string err;
+    // Parse: default + explicit + rejections.
+    write_text("/tmp/op_vel.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":1,"vel":0.5},{"t":2,"dur":1}]}]})");
+    op::Project p;
+    CHECK(op::load_project("/tmp/op_vel.opj", p, err) && p.patterns[0].notes.size() == 2 &&
+          p.patterns[0].notes[0].velocity == 0.5 && p.patterns[0].notes[1].velocity == 1.0,
+          "vel.parse_default_and_explicit");
+    write_text("/tmp/op_vel0.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":1,"vel":0.0}]}]})");
+    op::Project pb;
+    CHECK(!op::load_project("/tmp/op_vel0.opj", pb, err), "model.rejects_vel_zero");
+    write_text("/tmp/op_vel2.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":1,"vel":1.5}]}]})");
+    CHECK(!op::load_project("/tmp/op_vel2.opj", pb, err), "model.rejects_vel_above_one");
+
+    // Save: velocity omitted when default → legacy canonical bytes unchanged.
+    op::Project q;
+    q.bpm = 120.0; q.length_bars = 1.0; q.sample_rate = 48000;
+    op::Track t; t.name = "S"; t.voice.kind = op::VoiceKind::Sine; t.voice.freq_hz = 220.0f;
+    q.tracks = {t};
+    op::Pattern pat; pat.track = 0; pat.notes.push_back({0.0, 1.0, -1});
+    q.patterns = {pat};
+    CHECK(op::save_project("/tmp/op_vel_save.opj", q, err), "vel.save_ok");
+    {
+        std::ifstream f("/tmp/op_vel_save.opj");
+        const std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        CHECK(txt.find("\"vel\"") == std::string::npos, "vel.omitted_from_save_when_default");
+    }
+
+    // Render: vel 1.0 (no field) vs parsed project identical bit-for-bit; vel 0.5 halves peak exactly.
+    op::wav::StereoBuffer b1, bh;
+    CHECK(op::render_project(q, "", b1, err), "vel.render_default_ok");
+    CHECK(op::load_project("/tmp/op_vel.opj", p, err) && p.sample_rate == 48000, "vel.reload_ok");
+    auto peak = [](const op::wav::StereoBuffer& b) {
+        float m = 0.0f;
+        for (float x : b.interleaved) { const float a = x < 0 ? -x : x; if (a > m) m = a; }
+        return m;
+    };
+    // half-gain twin of the default project:
+    op::Project qh = q; qh.patterns[0].notes[0].velocity = 0.5;
+    CHECK(op::render_project(qh, "", bh, err), "vel.render_half_ok");
+    const float pk1 = peak(b1), pkh = peak(bh);
+    const float rel = std::fabs(pk1 - 2.0f * pkh) / pk1;
+    CHECK(rel < 1e-6f, "vel.half_velocity_halves_peak");
+
+    // MIDI import captures velocity (fixture uses vel 90): every imported note is 90/127.
+    const std::string fix = std::string(OP_TEST_DATA) + "/fixtures/midi/two_notes.mid";
+    op::Project mp;
+    CHECK(op::load_midi(fix, mp, err), "vel.midi_import_load");
+    bool all90 = true;
+    for (const auto& pt : mp.patterns)
+        for (const auto& n : pt.notes)
+            if (std::fabs(n.velocity - 90.0 / 127.0) > 1e-12) all90 = false;
+    CHECK(all90, "vel.midi_import_captures_velocity");
+    // Export → reimport: velocity survives within one MIDI step (±0.5/127).
+    CHECK(op::save_midi("/tmp/op_vel.mid", mp, err), "vel.midi_export_ok");
+    op::Project mb;
+    CHECK(op::load_midi("/tmp/op_vel.mid", mb, err), "vel.midi_reimport_ok");
+    bool vel_rt = mb.patterns.size() == mp.patterns.size();
+    for (size_t i = 0; vel_rt && i < mb.patterns.size(); ++i) {
+        const auto& a = mp.patterns[i].notes; const auto& b2v = mb.patterns[i].notes;
+        if (a.size() != b2v.size()) { vel_rt = false; break; }
+        for (size_t k = 0; k < a.size(); ++k)
+            if (std::fabs(a[k].velocity - b2v[k].velocity) > 0.5 / 127.0 + 1e-12) vel_rt = false;
+    }
+    CHECK(vel_rt, "vel.midi_roundtrip_preserves_velocity");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -613,6 +684,7 @@ int main() {
     test_midi();
     test_tempo_map();
     test_bundle();
+    test_velocity();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

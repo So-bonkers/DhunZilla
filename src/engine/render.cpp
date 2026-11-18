@@ -216,12 +216,23 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 const long long start = tmap.at(t_abs);
                 const double spb = tmap.spb_at(t_abs);  // local tempo at note start governs duration
                 if (start >= total) continue;  // beyond render window
+                // Per-note velocity: copy the mix target with pre-multiplied gains so voice code
+                // never changes; default velocity skips the copy entirely → bit-identical legacy.
+                MixTarget* target = &t;
+                MixTarget vel_t;
+                if (note.velocity != 1.0) {
+                    vel_t = t;
+                    const float v = static_cast<float>(note.velocity);
+                    vel_t.gain_l *= v;
+                    vel_t.gain_r *= v;
+                    target = &vel_t;
+                }
                 switch (tr.voice.kind) {
-                    case VoiceKind::Metronome: render_metronome(t, start, note, tr.voice, sr); break;
-                    case VoiceKind::Sine:      render_sine(t, start, note, tr.voice, sr, spb); break;
-                    case VoiceKind::Synth:     render_synth(t, start, note, tr.voice, sr, spb); break;
+                    case VoiceKind::Metronome: render_metronome(*target, start, note, tr.voice, sr); break;
+                    case VoiceKind::Sine:      render_sine(*target, start, note, tr.voice, sr, spb); break;
+                    case VoiceKind::Synth:     render_synth(*target, start, note, tr.voice, sr, spb); break;
                     case VoiceKind::Sampler:
-                        if (!render_sampler(t, start, note, join_path(base_dir, tr.voice.path), sr, spb, sampler_cache, err))
+                        if (!render_sampler(*target, start, note, join_path(base_dir, tr.voice.path), sr, spb, sampler_cache, err))
                             return false;
                         break;
                 }

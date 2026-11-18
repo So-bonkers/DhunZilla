@@ -66,8 +66,10 @@ bool parse_project(const json& j, Project& p, std::string& err) {
                     n.t_beats = nj.value("t", 0.0);
                     n.dur_beats = nj.value("dur", 0.25);
                     n.midi_note = nj.value("note", -1);
+                    n.velocity = nj.value("vel", 1.0);
                     if (n.t_beats < 0.0 || n.dur_beats <= 0.0) { err = "note needs t >= 0 and dur > 0"; return false; }
                     if (n.midi_note < -1 || n.midi_note > 127) { err = "note.note must be a MIDI number 0..127 (or absent)"; return false; }
+                    if (!(n.velocity > 0.0) || n.velocity > 1.0) { err = "note.vel must be in (0, 1]"; return false; }
                     pat.notes.push_back(n);
                 }
             }
@@ -168,6 +170,7 @@ bool save_project(const std::string& path, const Project& p, std::string& err) {
             nj["t"] = n.t_beats;
             nj["dur"] = n.dur_beats;
             if (n.midi_note >= 0) nj["note"] = n.midi_note;  // omitted when absent → legacy output byte-identical
+            if (n.velocity != 1.0) nj["vel"] = n.velocity;   // same rule for velocity (spec §velocity)
             notes.push_back(std::move(nj));
         }
         pj["notes"] = std::move(notes);

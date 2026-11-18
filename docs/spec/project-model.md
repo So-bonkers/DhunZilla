@@ -117,3 +117,14 @@ tempo maps in v0 (first tempo → constant); follow-up noted.
 Note-event data bytes ≥ 0x80 (illegal per SMF) are ignored — the event is skipped and parsing
 continues; real-world files never fail import on quirk bytes, and model invariants (pitch range,
 dur > 0) hold under mutation fuzzing (500 seeded mutants, deterministic).
+
+## Velocity — additive to v0 (2026-11-18, WP-0111)
+
+Notes accept `"vel": <float in (0, 1]>` (default 1.0; anything else rejected). Semantics:
+per-note gain multiplier applied **on top of** the track gain, uniformly across all voice kinds
+(metronome ticks, sine/synth oscillators, sampler hits). Implementation contract: voices never
+see velocity — the renderer copies the mix target with `gain ×= vel` only when vel ≠ 1.0, so a
+default-velocity render is bit-identical to pre-WP-0111 (goldens prove it; IEEE guarantees
+`x · 1.0 ≡ x`). Canonical save omits `"vel"` when exactly 1.0 → legacy files round-trip
+byte-identically. MIDI: import maps note-on velocity → `vel/127`; export writes
+`clamp(round(vel·127), 1, 127)`; a MIDI round-trip preserves velocity within ±½ MIDI step.

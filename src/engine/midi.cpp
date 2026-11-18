@@ -61,6 +61,7 @@ std::string sanitize_name(const std::string& in) {
 
 struct OpenNote {
     long long tick = 0;
+    int vel = 90;  // MIDI on-velocity, captured for Note.velocity (WP-0111)
 };
 
 struct TrackAccum {
@@ -157,11 +158,14 @@ bool save_midi(const std::string& path, const Project& p, std::string& err) {
             if (pat.track != static_cast<int>(ti)) continue;
             for (const Note& n : pat.notes) {
                 const int midi = n.midi_note >= 0 ? n.midi_note : nearest_midi(tr.voice.freq_hz);
+                int out_vel = static_cast<int>(std::llround(n.velocity * 127.0));  // WP-0111: dynamics carry out
+                if (out_vel < 1) out_vel = 1;
+                if (out_vel > 127) out_vel = 127;
                 long long t1 = std::llround(n.t_beats * kExportPpq);
                 long long t2 = std::llround((n.t_beats + n.dur_beats) * kExportPpq);
                 if (t1 < 0) t1 = 0;
                 if (t2 <= t1) t2 = t1 + 1;
-                evs.push_back({t1, 1, {0x90, static_cast<uint8_t>(midi), 0x5A}});
+                evs.push_back({t1, 1, {0x90, static_cast<uint8_t>(midi), static_cast<uint8_t>(out_vel)}});
                 evs.push_back({t2, 0, {0x80, static_cast<uint8_t>(midi), 0x40}});
             }
         }
@@ -280,16 +284,16 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
                     if (it != acc.open.end()) {  // retrigger: close previous at this tick, open new
                         const double t_beats = static_cast<double>(it->second.tick) / ppq;
                         const double dur = static_cast<double>(tick - it->second.tick) / ppq;
-                        if (dur > 0.0) acc.notes.push_back({t_beats, dur, key});
+                        if (dur > 0.0) acc.notes.push_back({t_beats, dur, key, it->second.vel / 127.0});
                         acc.open.erase(it);
                     }
-                    acc.open[key] = OpenNote{tick};
+                    acc.open[key] = OpenNote{tick, vel};
                 } else {
                     auto it = acc.open.find(key);
                     if (it != acc.open.end()) {
                         const double t_beats = static_cast<double>(it->second.tick) / ppq;
                         const double dur = static_cast<double>(tick - it->second.tick) / ppq;
-                        if (dur > 0.0) acc.notes.push_back({t_beats, dur, key});
+                        if (dur > 0.0) acc.notes.push_back({t_beats, dur, key, it->second.vel / 127.0});
                         acc.open.erase(it);
                     }
                 }
@@ -303,7 +307,7 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
                 if (it != acc.open.end()) {
                     const double t_beats = static_cast<double>(it->second.tick) / ppq;
                     const double dur = static_cast<double>(tick - it->second.tick) / ppq;
-                    if (dur > 0.0) acc.notes.push_back({t_beats, dur, key});
+                    if (dur > 0.0) acc.notes.push_back({t_beats, dur, key, it->second.vel / 127.0});
                     acc.open.erase(it);
                 }
                 acc.last_tick = tick;
@@ -320,7 +324,7 @@ bool load_midi(const std::string& path, Project& out, std::string& err) {
         for (auto& kv : acc.open) {  // unclosed notes close at track's last event tick
             const double t_beats = static_cast<double>(kv.second.tick) / ppq;
             const double dur = static_cast<double>(acc.last_tick - kv.second.tick) / ppq;
-            if (dur > 0.0) acc.notes.push_back({t_beats, dur, static_cast<uint8_t>(kv.first)});
+            if (dur > 0.0) acc.notes.push_back({t_beats, dur, static_cast<uint8_t>(kv.first), kv.second.vel / 127.0});
         }
     }
 

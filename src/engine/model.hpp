@@ -21,6 +21,8 @@ struct Note {
     double t_beats = 0.0;
     double dur_beats = 0.25;
     int midi_note = -1;          // synth voice pitch (MIDI number, 0..127); -1 = absent → freq_hz
+    double velocity = 1.0;       // per-note gain multiplier (0,1]; applied via mix-target scaling —
+                                 // exactly 1.0 is bit-identical to pre-WP-0111 renders (spec §velocity)
 };
 
 struct Pattern {
