@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,7 @@
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
+#include "engine/ops.hpp"
 #include "engine/render.hpp"
 #include "engine/wav.hpp"
 
@@ -25,6 +28,7 @@ static void usage() {
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
         "  opd attach <proj.opj> --path P --kind stem|transcription|other [--producer S] [-o out]\n"
+        "  opd apply <proj.opj> <ops.opjl> [-o out.opj]   (apply a JSON-Lines ops journal, all-or-nothing)\n"
         "  opd opj2mid <in.opj> -o <out.mid>\n"
         "  opd pack <in.opj> -o <song.opd>    (project + samples + attachments in one file)\n"
         "  opd unpack <song.opd> -d <out-dir>\n"
@@ -243,6 +247,32 @@ static int cmd_attach(int argc, char** argv) {
     return 0;
 }
 
+static int cmd_apply(int argc, char** argv) {
+    if (argc < 3) { usage(); return fail("usage", "apply needs <proj.opj> <ops.opjl>"); }
+    const std::string proj = argv[1], journal = argv[2];
+    std::string out = proj;  // in-place by default, same convention as import-midi / attach
+    for (int i = 3; i < argc; ++i)
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+        else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
+
+    std::string err;
+    if (!fs::exists(proj)) return fail("not_found", proj);
+    if (!fs::exists(journal)) return fail("not_found", journal);
+    op::Project p;
+    if (!op::load_project(proj, p, err)) return fail("parse", err);
+    std::ifstream jf(journal, std::ios::binary);
+    if (!jf) return fail("not_found", journal);
+    const std::string text((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
+
+    // All-or-nothing (docs/spec/operations.md §CLI): nothing is written unless every op applied.
+    op::JournalOutcome oc;
+    if (!op::apply_journal(p, text, err, &oc))
+        return fail(oc.failure == op::JournalFailure::kParse ? "parse" : "apply", err);
+    if (!op::save_project(out, p, err)) return fail("write", err);
+    std::printf("apply: %zu op(s) -> %s\n", oc.applied, out.c_str());
+    return 0;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
@@ -303,6 +333,7 @@ int main(int argc, char** argv) {
     if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
     if (cmd == "import-midi") return cmd_import_midi(argc - 1, argv + 1);
     if (cmd == "attach") return cmd_attach(argc - 1, argv + 1);
+    if (cmd == "apply") return cmd_apply(argc - 1, argv + 1);
     if (cmd == "opj2mid") return cmd_opj2mid(argc - 1, argv + 1);
     if (cmd == "pack") return cmd_pack(argc - 1, argv + 1);
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);

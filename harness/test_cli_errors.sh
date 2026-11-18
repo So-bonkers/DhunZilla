@@ -27,5 +27,30 @@ cat > "$TMP/nokick.opj" <<'EOF'
 EOF
 check sampler_missing      5 "$OPD" render "$TMP/nokick.opj" -o "$TMP/o.wav"
 
+# --- opd apply (WP-0135): journal CLI contract per docs/spec/operations.md §CLI
+cp "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/ap.opj"
+printf '{"op":"set_bpm","bpm":95.0}\n# comment line\n\n{"op":"rename_track","index":0,"name":"Tick"}\n' > "$TMP/ok.opjl"
+check apply_ok             0 "$OPD" apply "$TMP/ap.opj" "$TMP/ok.opjl" -o "$TMP/ap_out.opj"
+if [ -s "$TMP/ap_out.opj" ]; then echo "PASS apply_output_written"; else echo "FAIL apply_output_written"; fails=$((fails+1)); fi
+printf 'this is not json {{{\n' > "$TMP/badjson.opjl"
+check apply_bad_journal    4 "$OPD" apply "$TMP/ap.opj" "$TMP/badjson.opjl" -o "$TMP/never1.opj"
+if [ ! -e "$TMP/never1.opj" ]; then echo "PASS apply_parse_no_output"; else echo "FAIL apply_parse_no_output"; fails=$((fails+1)); fi
+printf '{"op":"set_bpm","bpm":95.0}\n{"op":"set_bpm","bpm":100.0}\n{"op":"remove_track","index":0}\n' > "$TMP/rej.opjl"
+err="$("$OPD" apply "$TMP/ap.opj" "$TMP/rej.opjl" -o "$TMP/never2.opj" 2>&1 >/dev/null)"; got=$?
+if [ "$got" = 5 ] && [[ "$err" == *"line 3:"* ]]; then echo "PASS apply_rejected_line3 (exit 5, stderr names line)"; else echo "FAIL apply_rejected_line3: exit $got stderr [$err]"; fails=$((fails+1)); fi
+if [ ! -e "$TMP/never2.opj" ]; then echo "PASS apply_reject_output_not_created"; else echo "FAIL apply_reject_output_not_created"; fails=$((fails+1)); fi
+# rejection on an existing output file must leave its bytes untouched
+cp "$TMP/ap_out.opj" "$TMP/keep.opj"
+"$OPD" apply "$TMP/ap.opj" "$TMP/rej.opjl" -o "$TMP/keep.opj" >/dev/null 2>&1; got=$?
+if [ "$got" = 5 ] && cmp -s "$TMP/keep.opj" "$TMP/ap_out.opj"; then echo "PASS apply_reject_output_unmodified"; else echo "FAIL apply_reject_output_unmodified: exit $got"; fails=$((fails+1)); fi
+check apply_missing_proj   3 "$OPD" apply "$TMP/nope.opj" "$TMP/ok.opjl"
+check apply_missing_journal 3 "$OPD" apply "$TMP/ap.opj" "$TMP/nope.opjl"
+check apply_no_args        2 "$OPD" apply
+# determinism: same journal applied to fresh copies → cmp-identical .opj
+printf '{"op":"set_bpm","bpm":133.7}\n{"op":"add_attachment","path":"stems/x.wav","kind":"stem","producer":"cli"}\n' > "$TMP/det.opjl"
+"$OPD" apply "$TMP/ap.opj" "$TMP/det.opjl" -o "$TMP/det1.opj" >/dev/null 2>&1; r1=$?
+"$OPD" apply "$TMP/ap.opj" "$TMP/det.opjl" -o "$TMP/det2.opj" >/dev/null 2>&1; r2=$?
+if [ "$r1" = 0 ] && [ "$r2" = 0 ] && cmp -s "$TMP/det1.opj" "$TMP/det2.opj"; then echo "PASS apply_determinism (identical .opj)"; else echo "FAIL apply_determinism: r1=$r1 r2=$r2"; fails=$((fails+1)); fi
+
 echo "test_cli_errors: $fails failures"
 exit $((fails > 0 ? 1 : 0))

@@ -15,6 +15,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0135 | Model operations + undo/redo history + `opd apply` journal CLI — atomic ops validated via save→parse path, JSON-Lines all-or-nothing journals, snapshot History (cap 256) | **done** | subagent+orchestrator |
 | WP-0001 | Repo scaffold | **done** | orchestrator |
 | WP-0002 | Deterministic render core v0 | **done** | orchestrator |
 | WP-0003 | Golden-file harness | **done** | orchestrator |

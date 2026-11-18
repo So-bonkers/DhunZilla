@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 
+#include "engine/model_json.hpp"
+
 namespace op {
 
 // File-local helper (defined below): shared by the parser and add_attachment.
@@ -30,7 +32,11 @@ bool parse_voice(const json& j, Voice& v, std::string& err) {
     return true;
 }
 
-bool parse_project(const json& j, Project& p, std::string& err) {
+}  // namespace
+
+// Engine-internal (model_json.hpp): the exact parse+validate path load_project uses. May throw
+// nlohmann::json::exception on mistyped fields — callers wrap (load_project, ops.cpp).
+bool project_from_json(const json& j, Project& p, std::string& err) {
     p.format_version = j.value("format_version", -1);
     if (p.format_version != 0) { err = "unsupported format_version: " + std::to_string(p.format_version); return false; }
     p.bpm = j.value("bpm", 120.0);
@@ -129,6 +135,8 @@ bool parse_project(const json& j, Project& p, std::string& err) {
     return true;
 }
 
+namespace {
+
 json voice_to_json(const Voice& v) {
     json j;
     // Stable key order (ordered_json would be needed for byte-stable dumps across nlohmann versions;
@@ -178,11 +186,11 @@ bool load_project(const std::string& path, Project& out, std::string& err) {
     json j;
     try {
         j = json::parse(f);
-        // parse_project's .value() calls throw type_error on mistyped fields (WP-0122 fuzz: 22 such
+        // project_from_json's .value() calls throw type_error on mistyped fields (WP-0122 fuzz: 22 such
         // paths) — same failure contract as a syntax error. Parse into tmp so a throw mid-way can
         // never leave a half-filled project in *out.
         Project tmp;
-        if (!parse_project(j, tmp, err)) return false;
+        if (!project_from_json(j, tmp, err)) return false;
         out = std::move(tmp);
         return true;
     } catch (const json::exception& e) {
@@ -191,7 +199,9 @@ bool load_project(const std::string& path, Project& out, std::string& err) {
     }
 }
 
-bool save_project(const std::string& path, const Project& p, std::string& err) {
+// Engine-internal (model_json.hpp): builds the canonical JSON object save_project writes
+// (stable insertion order, omit-at-default rules). Pure; never throws.
+json project_to_json(const Project& p) {
     json j;
     j["format_version"] = p.format_version;
     j["bpm"] = p.bpm;
@@ -256,7 +266,11 @@ bool save_project(const std::string& path, const Project& p, std::string& err) {
         }
         j["attachments"] = std::move(arr);
     }
+    return j;
+}
 
+bool save_project(const std::string& path, const Project& p, std::string& err) {
+    const json j = project_to_json(p);
     std::ofstream f(path, std::ios::binary);
     if (!f) { err = "cannot write '" + path + "'"; return false; }
     f << j.dump(2) << "\n";

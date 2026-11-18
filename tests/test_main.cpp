@@ -13,6 +13,7 @@
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
+#include "engine/ops.hpp"
 #include "engine/render.hpp"
 #include "engine/rng.hpp"
 #include "engine/wav.hpp"
@@ -1262,6 +1263,276 @@ static void test_arrangement_export() {
     }
 }
 
+// --- model operations + undo/redo (WP-0135): docs/spec/operations.md conformance.
+static std::vector<uint8_t> slurp_bytes(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// apply_op must reject o AND leave the project's saved bytes identical across the attempt.
+static bool rejected_unchanged(op::Project& p, const nlohmann::json& o, std::string& err) {
+    std::string serr;
+    if (!op::save_project("/tmp/op_rej_before.opj", p, serr)) return false;
+    if (op::apply_op(p, o, err)) return false;  // must be rejected
+    if (!op::save_project("/tmp/op_rej_after.opj", p, serr)) return false;
+    return slurp_bytes("/tmp/op_rej_before.opj") == slurp_bytes("/tmp/op_rej_after.opj");
+}
+
+static void test_ops() {
+    std::string err;
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 4.0; p.sample_rate = 48000; p.seed = 5;
+    op::Track t0; t0.name = "Metro"; t0.voice.kind = op::VoiceKind::Metronome;
+    op::Track t1; t1.name = "Sine"; t1.voice.kind = op::VoiceKind::Sine; t1.voice.freq_hz = 220.0f;
+    p.tracks = {t0, t1};
+    op::Pattern pm; pm.track = 0; pm.notes.push_back({0.0, 0.25});
+    op::Pattern ps; ps.track = 1; ps.notes.push_back({0.0, 1.0});
+    p.patterns = {pm, ps};
+    p.arrangement = {{0, 0.0, 2, 0.0}};  // clip references pattern 0
+
+    using nlohmann::json;
+    // set_bpm / set_length_bars
+    CHECK(op::apply_op(p, json{{"op", "set_bpm"}, {"bpm", 95.0}}, err) && p.bpm == 95.0, "ops.set_bpm");
+    CHECK(rejected_unchanged(p, json{{"op", "set_bpm"}, {"bpm", -3.0}}, err) &&
+              err == "set_bpm: bpm must be > 0", "ops.set_bpm_reject_err_format");
+    CHECK(op::apply_op(p, json{{"op", "set_length_bars"}, {"length_bars", 8.0}}, err) &&
+              p.length_bars == 8.0, "ops.set_length_bars");
+    CHECK(rejected_unchanged(p, json{{"op", "set_length_bars"}, {"length_bars", 0.0}}, err),
+          "ops.set_length_bars_reject");
+
+    // add_track / remove_track (in-use + out-of-range)
+    CHECK(op::apply_op(p, json{{"op", "add_track"},
+                               {"track", {{"name", "Extra"}, {"voice", {{"kind", "sine"}, {"freq_hz", 110.0}}}}}},
+                       err) && p.tracks.size() == 3, "ops.add_track");
+    CHECK(rejected_unchanged(p, json{{"op", "add_track"},
+                                     {"track", {{"name", "X"}, {"voice", {{"kind", "koto"}}}}}}, err),
+          "ops.add_track_reject_bad_voice");
+    CHECK(rejected_unchanged(p, json{{"op", "remove_track"}, {"index", 0}}, err) &&
+              err == "remove_track: track in use", "ops.remove_track_in_use");
+    CHECK(op::apply_op(p, json{{"op", "remove_track"}, {"index", 2}}, err) && p.tracks.size() == 2,
+          "ops.remove_track_unreferenced");
+    CHECK(rejected_unchanged(p, json{{"op", "remove_track"}, {"index", 99}}, err),
+          "ops.remove_track_reject_oob");
+
+    // set_track_gain / set_track_pan / rename_track
+    CHECK(op::apply_op(p, json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -12.0}}, err) &&
+              p.tracks[0].gain_db == -12.0f, "ops.set_track_gain");
+    CHECK(rejected_unchanged(p, json{{"op", "set_track_gain"}, {"index", 99}, {"gain_db", 3.0}}, err),
+          "ops.set_track_gain_reject_oob");
+    CHECK(op::apply_op(p, json{{"op", "set_track_pan"}, {"index", 1}, {"pan", -0.5}}, err) &&
+              p.tracks[1].pan == -0.5f, "ops.set_track_pan");
+    CHECK(rejected_unchanged(p, json{{"op", "set_track_pan"}, {"index", 1}, {"pan", "left"}}, err),
+          "ops.set_track_pan_reject_type");
+    CHECK(op::apply_op(p, json{{"op", "rename_track"}, {"index", 0}, {"name", "Click"}}, err) &&
+              p.tracks[0].name == "Click", "ops.rename_track");
+    CHECK(rejected_unchanged(p, json{{"op", "rename_track"}, {"index", 0}, {"name", 42}}, err),
+          "ops.rename_track_reject_type");
+
+    // add_pattern / remove_pattern (in-use via clips)
+    CHECK(op::apply_op(p, json{{"op", "add_pattern"},
+                                {"pattern", {{"track", 1}, {"notes", json::array({{{"t", 0.0}, {"dur", 0.5}}})}}}},
+                       err) && p.patterns.size() == 3, "ops.add_pattern");
+    CHECK(rejected_unchanged(p, json{{"op", "add_pattern"},
+                                     {"pattern", {{"track", 99}, {"notes", json::array()}}}}, err),
+          "ops.add_pattern_reject_track_oob");
+    CHECK(rejected_unchanged(p, json{{"op", "remove_pattern"}, {"index", 0}}, err) &&
+              err == "remove_pattern: pattern in use", "ops.remove_pattern_in_use");
+    CHECK(op::apply_op(p, json{{"op", "remove_pattern"}, {"index", 2}}, err) && p.patterns.size() == 2,
+          "ops.remove_pattern_unreferenced");
+
+    // add_note / remove_note
+    CHECK(op::apply_op(p, json{{"op", "add_note"}, {"pattern", 1},
+                                {"note", {{"t", 1.5}, {"dur", 0.5}}}}, err) &&
+              p.patterns[1].notes.size() == 2, "ops.add_note");
+    CHECK(rejected_unchanged(p, json{{"op", "add_note"}, {"pattern", 1},
+                                     {"note", {{"t", 0.0}, {"dur", -1.0}}}}, err),
+          "ops.add_note_reject_bad_dur");
+    CHECK(rejected_unchanged(p, json{{"op", "remove_note"}, {"pattern", 1}, {"index", 99}}, err),
+          "ops.remove_note_reject_oob");
+    CHECK(op::apply_op(p, json{{"op", "remove_note"}, {"pattern", 1}, {"index", 1}}, err) &&
+              p.patterns[1].notes.size() == 1, "ops.remove_note");
+
+    // add_clip / move_clip / set_clip_gain / remove_clip
+    CHECK(op::apply_op(p, json{{"op", "add_clip"},
+                                {"clip", {{"pattern", 1}, {"start_bar", 2.0}, {"repeats", 1}}}}, err) &&
+              p.arrangement.size() == 2, "ops.add_clip");
+    CHECK(rejected_unchanged(p, json{{"op", "add_clip"},
+                                     {"clip", {{"pattern", 0}, {"start_bar", 0.0}, {"repeats", 0}}}}, err),
+          "ops.add_clip_reject_bad_repeats");
+    CHECK(op::apply_op(p, json{{"op", "move_clip"}, {"index", 1}, {"start_bar", 3.5}}, err) &&
+              p.arrangement[1].start_bar == 3.5, "ops.move_clip");
+    CHECK(rejected_unchanged(p, json{{"op", "move_clip"}, {"index", 1}, {"start_bar", -1.0}}, err),
+          "ops.move_clip_reject_negative");
+    CHECK(op::apply_op(p, json{{"op", "set_clip_gain"}, {"index", 1}, {"gain_db", -6.0}}, err) &&
+              p.arrangement[1].gain_db == -6.0, "ops.set_clip_gain");
+    CHECK(rejected_unchanged(p, json{{"op", "set_clip_gain"}, {"index", 1}, {"gain_db", 30.0}}, err),
+          "ops.set_clip_gain_reject_out_of_range");
+    CHECK(rejected_unchanged(p, json{{"op", "remove_clip"}, {"index", 99}}, err),
+          "ops.remove_clip_reject_oob");
+    CHECK(op::apply_op(p, json{{"op", "remove_clip"}, {"index", 1}}, err) && p.arrangement.size() == 1,
+          "ops.remove_clip");
+
+    // add_attachment: same rules as op::add_attachment (valid + no duplicate path)
+    CHECK(op::apply_op(p, json{{"op", "add_attachment"}, {"path", "stems/x.wav"},
+                                {"kind", "stem"}, {"producer", "wp0135"}}, err) &&
+              p.attachments.size() == 1, "ops.add_attachment");
+    CHECK(rejected_unchanged(p, json{{"op", "add_attachment"}, {"path", "stems/x.wav"},
+                                     {"kind", "stem"}}, err),
+          "ops.add_attachment_reject_duplicate");
+    CHECK(rejected_unchanged(p, json{{"op", "add_attachment"}, {"path", "y.wav"},
+                                     {"kind", "magic"}}, err),
+          "ops.add_attachment_reject_bad_kind");
+
+    // index strictness (spec landmine): floats rejected even when integral; negatives rejected.
+    CHECK(!op::apply_op(p, json{{"op", "set_track_gain"}, {"index", 1.5}, {"gain_db", 0.0}}, err),
+          "ops.reject_float_index");
+    CHECK(!op::apply_op(p, json{{"op", "set_track_gain"}, {"index", 2.0}, {"gain_db", 0.0}}, err),
+          "ops.reject_integral_float_index");
+    CHECK(!op::apply_op(p, json{{"op", "remove_clip"}, {"index", -1}}, err), "ops.reject_negative_index");
+
+    // unknown op / unknown extra key
+    CHECK(rejected_unchanged(p, json{{"op", "frobnicate"}}, err) && err.find("unknown op") != std::string::npos,
+          "ops.reject_unknown_op");
+    CHECK(rejected_unchanged(p, json{{"op", "set_bpm"}, {"bpm", 90.0}, {"extra", 1}}, err),
+          "ops.reject_unknown_extra_key");
+
+    // --- History: apply/undo/redo/clear-redo-on-new-apply/cap-256 drops oldest.
+    {
+        op::Project h = p;
+        op::History hist;
+        CHECK(!hist.can_undo() && !hist.undo(h) && !hist.can_redo() && !hist.redo(h),
+              "hist.empty_noop_unchanged");
+        const double bpm0 = h.bpm;
+        CHECK(hist.apply(h, json{{"op", "set_bpm"}, {"bpm", 90.0}}, err) && h.bpm == 90.0 &&
+                  hist.can_undo() && hist.undo_depth() == 1, "hist.apply");
+        CHECK(hist.apply(h, json{{"op", "set_bpm"}, {"bpm", 100.0}}, err) && h.bpm == 100.0 &&
+                  hist.undo_depth() == 2, "hist.apply2");
+        CHECK(hist.undo(h) && h.bpm == 90.0 && hist.can_redo(), "hist.undo");
+        CHECK(hist.redo(h) && h.bpm == 100.0 && !hist.can_redo(), "hist.redo");
+        CHECK(hist.undo(h), "hist.undo_again");
+        const size_t depth_before = hist.undo_depth();
+        bool redo_before = hist.can_redo();
+        std::string ferr;
+        CHECK(!hist.apply(h, json{{"op", "set_bpm"}, {"bpm", -1.0}}, ferr) &&
+                  hist.undo_depth() == depth_before && hist.can_redo() == redo_before,
+              "hist.failed_apply_touches_nothing");
+        CHECK(hist.apply(h, json{{"op", "set_bpm"}, {"bpm", 110.0}}, err) && !hist.can_redo(),
+              "hist.new_apply_clears_redo");
+
+        op::Project c = p;
+        op::History hc;
+        bool cap_ok = true;
+        for (int i = 1; i <= 300; ++i)
+            if (!hc.apply(c, json{{"op", "set_bpm"}, {"bpm", static_cast<double>(i)}}, err)) cap_ok = false;
+        CHECK(cap_ok && hc.undo_depth() == 256, "hist.cap_256");
+        while (hc.undo(c)) {}
+        CHECK(c.bpm == 44.0, "hist.cap_drops_oldest");  // last 256 of 300 snapshots kept
+        while (hc.redo(c)) {}
+        CHECK(c.bpm == 300.0, "hist.redo_all_after_cap");
+        CHECK(bpm0 > 0.0, "hist.sanity");
+    }
+}
+
+// Property test: seeded random op sequences against the golden demo fixture. After every
+// sequence: undo-all → saved bytes equal the original's; redo-all → equal the forward result's.
+static nlohmann::json random_op(op::rng::Pcg32& rng, const op::Project& p) {
+    using nlohmann::json;
+    const auto pick = [&](size_t n) {
+        return n == 0 ? size_t{0} : static_cast<size_t>(rng.next() % static_cast<uint32_t>(n));
+    };
+    // ~1 in 4 indices are deliberately wild (negative or past the end): clean rejection is part
+    // of the contract being tested. Gains occasionally out of range for the same reason.
+    const bool wild = (rng.next() & 3u) == 0;
+    const auto idx = [&](size_t n) -> long long {
+        if (n == 0) return -1;  // empty array: every index is invalid → clean rejection
+        return wild ? static_cast<long long>(rng.next() % 64u) - 8 : static_cast<long long>(pick(n));
+    };
+    const auto gain_db = [&]() { return (rng.next() & 7u) == 0 ? 1e9 : static_cast<double>(pick(48)) - 24.0; };
+    const static json voices[] = {
+        {{"kind", "metronome"}},
+        {{"kind", "sine"}, {"freq_hz", 110.0}},
+        {{"kind", "synth"}, {"attack_ms", 3.0}, {"release_ms", 20.0}},
+        {{"kind", "sampler"}, {"path", "kits/kick.wav"}},
+    };
+    switch (pick(16)) {
+        case 0: return {{"op", "set_bpm"}, {"bpm", (rng.next() & 7u) == 0 ? 0.0 : 40.0 + pick(200)}};
+        case 1: return {{"op", "set_length_bars"},
+                        {"length_bars", (rng.next() & 7u) == 0 ? -2.0 : 1.0 + pick(64)}};
+        case 2: return {{"op", "add_track"},
+                        {"track", {{"name", "T" + std::to_string(pick(1000))},
+                                   {"gain_db", gain_db()}, {"pan", static_cast<double>(pick(3)) - 1},
+                                   {"voice", voices[pick(4)]}}}};
+        case 3: return {{"op", "remove_track"}, {"index", idx(p.tracks.size())}};
+        case 4: return {{"op", "set_track_gain"}, {"index", idx(p.tracks.size())}, {"gain_db", gain_db()}};
+        case 5: return {{"op", "set_track_pan"}, {"index", idx(p.tracks.size())},
+                        {"pan", static_cast<double>(pick(201)) / 100.0 - 1.0}};
+        case 6: return {{"op", "rename_track"}, {"index", idx(p.tracks.size())},
+                        {"name", "N" + std::to_string(pick(1000))}};
+        case 7: return {{"op", "add_pattern"},
+                        {"pattern", {{"track", static_cast<long long>(pick(p.tracks.size()))},
+                                     {"notes", json::array({{{"t", static_cast<double>(pick(16))},
+                                                             {"dur", 0.25}}})}}}};
+        case 8: return {{"op", "remove_pattern"}, {"index", idx(p.patterns.size())}};
+        case 9: return {{"op", "add_note"}, {"pattern", idx(p.patterns.size())},
+                        {"note", {{"t", static_cast<double>(pick(32))},
+                                  {"dur", (rng.next() & 7u) == 0 ? 0.0 : 0.25}}}};
+        case 10: {
+            if (p.patterns.empty()) return json{{"op", "remove_note"}, {"pattern", -1}, {"index", 0}};
+            const size_t pi = pick(p.patterns.size());
+            return {{"op", "remove_note"}, {"pattern", static_cast<long long>(pi)},
+                    {"index", idx(p.patterns[pi].notes.size())}};
+        }
+        case 11: return {{"op", "add_clip"},
+                         {"clip", {{"pattern", static_cast<long long>(pick(p.patterns.size()))},
+                                   {"start_bar", static_cast<double>(pick(32))},
+                                   {"repeats", 1 + pick(4)}}}};
+        case 12: return {{"op", "move_clip"}, {"index", idx(p.arrangement.size())},
+                         {"start_bar", wild ? -1.0 : static_cast<double>(pick(64))}};
+        case 13: return {{"op", "set_clip_gain"}, {"index", idx(p.arrangement.size())},
+                         {"gain_db", gain_db()}};
+        case 14: return {{"op", "remove_clip"}, {"index", idx(p.arrangement.size())}};
+        default: return {{"op", "add_attachment"}, {"path", "stems/a" + std::to_string(pick(8)) + ".wav"},
+                         {"kind", "stem"}, {"producer", "prop"}};
+    }
+}
+
+static void test_ops_property() {
+    const std::string fix = std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj";
+    std::string err;
+    op::Project orig;
+    CHECK(op::load_project(fix, orig, err), "prop.load_fixture");
+    CHECK(op::save_project("/tmp/op_prop_orig.opj", orig, err), "prop.orig_saved");
+    const auto orig_bytes = slurp_bytes("/tmp/op_prop_orig.opj");
+
+    op::rng::Pcg32 rng(20261118ull);  // fixed seed: the whole suite is reproducible run-to-run
+    long applied_total = 0, rejected_total = 0;
+    bool undo_ok = true, redo_ok = true, save_ok = true;
+    constexpr int kSeqs = 500;
+    for (int trial = 0; trial < kSeqs && undo_ok && redo_ok; ++trial) {
+        op::Project p;
+        if (!op::load_project(fix, p, err)) { save_ok = false; break; }
+        op::History h;
+        const int len = 1 + static_cast<int>(rng.next() % 40u);  // sequence length 1..40 (< cap)
+        for (int k = 0; k < len; ++k) {
+            if (h.apply(p, random_op(rng, p), err)) ++applied_total; else ++rejected_total;
+        }
+        save_ok = save_ok && op::save_project("/tmp/op_prop_fwd.opj", p, err);
+        const auto fwd_bytes = slurp_bytes("/tmp/op_prop_fwd.opj");
+        while (h.undo(p)) {}
+        save_ok = save_ok && op::save_project("/tmp/op_prop_back.opj", p, err);
+        if (slurp_bytes("/tmp/op_prop_back.opj") != orig_bytes) undo_ok = false;
+        while (h.redo(p)) {}
+        save_ok = save_ok && op::save_project("/tmp/op_prop_fwd2.opj", p, err);
+        if (slurp_bytes("/tmp/op_prop_fwd2.opj") != fwd_bytes) redo_ok = false;
+    }
+    CHECK(save_ok, "prop.saves_ok");
+    CHECK(undo_ok, "prop.undo_all_bytes_equal_original");
+    CHECK(redo_ok, "prop.redo_all_bytes_equal_forward");
+    std::printf("INFO ops property: %d sequences (len 1..40), %ld applied, %ld rejected\n",
+                kSeqs, applied_total, rejected_total);
+    CHECK(applied_total >= 2000, "prop.workload_exercises_many_applies");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -1283,6 +1554,8 @@ int main() {
     test_wav_fuzz();
     test_bundle_fuzz();
     test_arrangement_export();
+    test_ops();
+    test_ops_property();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

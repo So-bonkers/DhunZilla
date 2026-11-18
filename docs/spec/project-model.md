@@ -50,6 +50,7 @@ The project file is JSON (v0; SQLite/zip packaging deferred). Field names are st
 opd render <project.opj> -o <out.wav> [--seed N]   # --seed overrides project seed; deterministic
 opd gen-testproject <out.opj>                      # canonical fixture generator (fixed seed)
 opd info <file.wav|project.opj>                    # duration/sample-rate/format dump
+opd apply <proj.opj> <ops.opjl> [-o out.opj]       # apply JSON-Lines ops journal, all-or-nothing (docs/spec/operations.md)
 ```
 Exit codes: 0 ok; 2 bad usage; 3 file not found; 4 parse error; 5 render error. Errors to stderr, machine-parsable single line `error: <code_name>: detail`.
 
