@@ -17,6 +17,7 @@ struct Voice {
     double start_s = 0.0;        // sampler: slice start, seconds on the asset timeline (WP-0156)
     double end_s = 0.0;          // sampler: slice end, seconds; valid only when has_end_s (WP-0156)
     bool has_end_s = false;      // sampler: false = play to end of asset (WP-0156)
+    int root_note = -1;          // sampler: MIDI pitch the asset sounds at; -1 = absent (no repitch, WP-0167)
     float attack_ms = 5.0f;      // synth: linear attack ramp
     float release_ms = 30.0f;    // synth: linear release ramp at note end
 };

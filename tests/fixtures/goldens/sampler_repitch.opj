@@ -1,0 +1,56 @@
+{
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 1.0,
+  "patterns": [
+    {
+      "notes": [
+        {
+          "dur": 0.5,
+          "note": 60,
+          "t": 0.0
+        },
+        {
+          "dur": 0.5,
+          "note": 64,
+          "t": 0.5
+        },
+        {
+          "dur": 0.5,
+          "note": 67,
+          "t": 1.0
+        },
+        {
+          "dur": 0.5,
+          "note": 72,
+          "t": 1.5
+        },
+        {
+          "dur": 0.5,
+          "note": 55,
+          "t": 2.0
+        },
+        {
+          "dur": 0.25,
+          "t": 2.5
+        }
+      ],
+      "track": 0
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 7,
+  "tracks": [
+    {
+      "gain_db": 0.0,
+      "name": "SawMelody",
+      "pan": 0.0,
+      "voice": {
+        "kind": "sampler",
+        "path": "kits/saw48k.wav",
+        "root_note": 60
+      }
+    }
+  ]
+}

@@ -85,6 +85,24 @@ void render_synth(MixTarget& t, long long start, const Note& note, const Voice& 
     }
 }
 
+// Repitch ratio (WP-0167, docs/spec/project-model.md §Sampler repitch): 2^(shift/12) as a double from the
+// correctly-rounded octave-fraction constants T[r] = 2^(r/12), with 2^q applied by exact multiplication or
+// division by 2.0 in a loop — no pow(), no libm (ADR-0004). shift is -127..127, so q is small. Example:
+//   sampler_ratio(12) == 2.0 exactly; sampler_ratio(-5) == T[7] / 2.0.
+static double sampler_ratio(int shift) {
+    constexpr double kT[12] = {1.0,               1.0594630943592953, 1.122462048309373,
+                               1.189207115002721, 1.2599210498948732, 1.3348398541700344,
+                               1.4142135623730951, 1.4983070768766815, 1.5874010519681996,
+                               1.681792830507429, 1.7817974362806785, 1.887748625363387};
+    int q = shift / 12;             // C++ division truncates toward zero...
+    int r = shift - 12 * q;         // ...so correct to floor division for negative shifts
+    if (r < 0) { r += 12; --q; }
+    double ratio = kT[r];
+    for (int i = 0; i < q; ++i) ratio *= 2.0;
+    for (int i = 0; i > q; --i) ratio /= 2.0;
+    return ratio;
+}
+
 bool render_sampler(MixTarget& t, long long start, const Note& note, const Voice& v, const std::string& abs_path,
                     int sr, double spb, std::map<std::string, wav::ReadResult>& cache, std::string& err) {
     auto it = cache.find(abs_path);
@@ -127,6 +145,30 @@ bool render_sampler(MixTarget& t, long long start, const Note& note, const Voice
     }
     long long want = static_cast<long long>(std::llround(note.dur_beats * spb));
     long long slice = i1 - i0;
+    // Sampler repitch (WP-0167, docs/spec/project-model.md §Sampler repitch): applied to the sliced
+    // project-rate buffer. Only a note whose pitch differs from the voice root takes this path —
+    // absent root, absent note pitch or P == root fall through to the untouched loop below (bit-exact).
+    if (v.root_note >= 0 && note.midi_note >= 0 && note.midi_note != v.root_note) {
+        const double ratio = sampler_ratio(note.midi_note - v.root_note);
+        for (long long n = 0; n < want; ++n) {
+            const double pos = static_cast<double>(n) * ratio;  // per-frame multiply, never a running sum
+            const long long k = static_cast<long long>(pos);    // pos >= 0 → truncation IS the floor
+            if (k + 1 >= slice) break;                          // needs x[k+1]: source ran out (L == 1: silence)
+            const double frac = pos - static_cast<double>(k);
+            float l, r;
+            if (rr.channels == 1) {
+                const double a = rr.samples[i0 + k], b = rr.samples[i0 + k + 1];
+                l = r = static_cast<float>(a + frac * (b - a));
+            } else {
+                const long long f = (i0 + k) * 2;
+                const double al = rr.samples[f], ar = rr.samples[f + 1];
+                l = static_cast<float>(al + frac * (rr.samples[f + 2] - al));
+                r = static_cast<float>(ar + frac * (rr.samples[f + 3] - ar));
+            }
+            add_stereo(t, start + n, l, r);
+        }
+        return true;
+    }
     long long len = slice < want ? slice : want;
     for (long long n = 0; n < len; ++n) {
         float l, r;

@@ -52,6 +52,21 @@ bool parse_voice(const json& j, Voice& v, std::string& err) {
             if (v.end_s <= v.start_s) { err = "voice.end_s must be greater than voice.start_s"; return false; }
         }
     }
+    // Sampler repitch root (WP-0167, docs/spec/project-model.md §Sampler repitch): checked only when present.
+    if (j.contains("root_note")) {
+        if (v.kind != VoiceKind::Sampler) { err = "voice.root_note is only valid for sampler voices"; return false; }
+        const json& rn = j.at("root_note");
+        // nlohmann stores any integer literal that fits int64/uint64 as an integer (larger ones as float),
+        // so a value passing is_number_integer() can be read below without overflow.
+        bool in_range = false;
+        if (rn.is_number_integer()) {
+            if (rn.is_number_unsigned()) in_range = rn.get<uint64_t>() <= 127u;
+            else in_range = rn.get<long long>() >= 0 && rn.get<long long>() <= 127;
+        }
+        // A null, a string, a float (60.0, 60.5) or an integer outside 0..127 all give the same message.
+        if (!in_range) { err = "voice.root_note must be an integer 0..127"; return false; }
+        v.root_note = static_cast<int>(rn.get<long long>());
+    }
     return true;
 }
 
@@ -210,6 +225,7 @@ json voice_to_json(const Voice& v) {
             j["path"] = v.path;
             if (v.start_s != 0.0) j["start_s"] = v.start_s;   // WP-0156: default keys omitted
             if (v.has_end_s) j["end_s"] = v.end_s;
+            if (v.root_note >= 0) j["root_note"] = v.root_note;  // WP-0167: absent root omitted
             break;
         case VoiceKind::Synth:     j["kind"] = "synth"; j["attack_ms"] = v.attack_ms; j["release_ms"] = v.release_ms; break;
     }

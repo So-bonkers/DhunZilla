@@ -170,6 +170,18 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             voice["start_s"] = op_json.at("start_s");
             if (end_v.is_null()) voice.erase("end_s");  // null = no end: canonical save omits the key
             else voice["end_s"] = end_v;
+        } else if (name == "set_sampler_root") {  // WP-0167; range checks come from the model parse below
+            if (!check_keys(op_json, {"index", "root_note"}, err)) return false;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err)) return false;
+            if (!op_json.contains("root_note")) { err = "missing argument 'root_note'"; return false; }
+            const json& root_v = op_json.at("root_note");
+            if (!root_v.is_number_integer() && !root_v.is_null()) {
+                err = "'root_note' must be an integer or null"; return false;
+            }
+            json& voice = j["tracks"][idx]["voice"];
+            if (voice.value("kind", std::string{}) != "sampler") { err = "track is not a sampler voice"; return false; }
+            if (root_v.is_null()) voice.erase("root_note");  // null = no root: canonical save omits the key
+            else voice["root_note"] = root_v;
         } else if (name == "set_track_mute") {  // mixer (spec §mixer); audibility rule lives in the model
             if (!check_keys(op_json, {"index", "mute"}, err)) return false;
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
