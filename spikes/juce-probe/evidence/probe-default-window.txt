@@ -30,4 +30,4 @@ current: PipeWire Sound Server @48000 Hz, 128 samples (2.67 ms)
 reported latency: out 8.00 ms, in 0.00 ms
 measured: 1130 callbacks in 3 s, block 128 samples, interval mean 2.65 ms, worst 2.87 ms
 [summary] requested sr=48000 buf=128 -> got 48000 Hz / 128 samples; reported out 8.00 ms; measured block 128, mean 2.65 ms, worst 2.87 ms
-[snapshot] /home/shubhankar_dgx/qwen-scratch/dz-elephant/spikes/juce-probe/evidence/window.png 98505 bytes
+[snapshot] <workspace>/dz-elephant/spikes/juce-probe/evidence/window.png 98505 bytes

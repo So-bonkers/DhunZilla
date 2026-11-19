@@ -98,7 +98,7 @@ Implementation notes (follow the existing code in `src/engine/ops.cpp`):
     `ops.journal_clip_ops_all_or_nothing`, `ops.journal_clip_ops_applied` — all PASS.
   - `harness/run_goldens.sh` → `run_goldens: 8 fixtures, 0 failures`.
   - `harness/test_cli_errors.sh` → `test_cli_errors: 0 failures`.
-  - `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv harness/test_glue_scripts.sh` →
+  - `UV_CACHE_DIR=<workspace>/.cache/uv harness/test_glue_scripts.sh` →
     `test_glue_scripts: 0 failures`.
   - Sanitizers: `cmake .. -DCMAKE_BUILD_TYPE=Debug -DDZ_SANITIZE=ON`, `cmake --build build-san -j4 --target op_tests`
     → built; `./op_tests` → `ALL PASS (0 failures)`, zero `runtime error` / `AddressSanitizer` lines.

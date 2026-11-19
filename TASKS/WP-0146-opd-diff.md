@@ -100,7 +100,7 @@ Exact example (a = `demo.opj`; b = a after `set_bpm 90`, `set_master_gain -3`, `
   - `cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DDZ_SANITIZE=ON && cmake --build build-asan -j4 --target op_tests && ./build-asan/op_tests` → `ALL PASS (0 failures)`, exit 0.
   - `bash harness/run_goldens.sh` → `run_goldens: 8 fixtures, 0 failures`.
   - `bash harness/test_cli_errors.sh` → `PASS diff_no_args (exit 2)`, `PASS diff_missing_out (exit 2)`, `PASS diff_not_found (exit 3)`, `PASS diff_identical_ok (exit 0)`, `PASS diff_identical_zero_bytes`, `PASS diff_ok (exit 0)`, `PASS diff_roundtrip_byte_identical`, `PASS diff_unsupported (exit 5, stderr names field)`, `PASS diff_unsupported_no_output`, `test_cli_errors: 0 failures`.
-  - `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`.
+  - `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`.
   - Manual CLI run (demo.opj vs. demo after the spec's three ops):
     ```
     $ opd diff demo.opj b.opj -o edits.opjl

@@ -99,7 +99,7 @@ Add one new CI step (or job) to `.github/workflows/ci.yml` that, on a fresh chec
 
   Rig: DGX Spark aarch64, g++ 13, Python 3.12.3, uv-managed sidecar, warm `ai-sidecar/.venv`.
   ⚠️ Env note: this agent container mounts `~/.cache` read-only, so every local run below exports
-  `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.uv-cache` (a sandbox artifact — first attempt without
+  `UV_CACHE_DIR=<workspace>/.uv-cache` (a sandbox artifact — first attempt without
   it failed with uv `Read-only file system (os error 30) at ~/.cache/uv/...`, which is NOT a product bug;
   CI runners write to the default cache, and neither the script nor the workflow sets this variable).
 

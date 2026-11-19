@@ -44,7 +44,7 @@ mention JUCE, must not create `_deps`, and builds exactly `opengine dzdoc opd op
 JUCE 9.0.5 sources already exist on this machine. Build with:
 ```
 export DISPLAY=${DISPLAY:-:1}; [ -n "${XAUTHORITY:-}" ] || export XAUTHORITY=/run/user/1000/gdm/Xauthority
-JUCE_SRC=/home/shubhankar_dgx/qwen-scratch/exp-juce/build/_deps/juce-src
+JUCE_SRC=<workspace>/exp-juce/build/_deps/juce-src
 cmake -S . -B build-app -DCMAKE_BUILD_TYPE=Release -DDZ_BUILD_APP=ON -DFETCHCONTENT_SOURCE_DIR_JUCE=$JUCE_SRC
 cmake --build build-app -j4 --target dhunzilla       # cold JUCE build ≈ 3-5 min, ~several GB RAM: -j4 max
 ```
@@ -137,7 +137,7 @@ Parse `getCommandLineParameterArray()` inside `initialise()`. Grammar (options a
 - Branch `wp-0143-app-window-snapshot` from `main`. Commit: `WP-0143: JUCE app window + headless snapshot`.
   Stage explicit paths only (`CMakeLists.txt`, `src/app/*`, this task file); never `git add -A` / `git add .`.
 - **Do not push or merge.** Build with `-j4` at most; wrap every JUCE build in
-  `flock /home/shubhankar_dgx/qwen-scratch/agent-build-kit/.calib.lock <command>` if that file exists.
+  `flock <workspace>/agent-build-kit/.calib.lock <command>` if that file exists.
 
 ---
 ## Handoff report — completed by the agent
@@ -177,7 +177,7 @@ Parse `getCommandLineParameterArray()` inside `initialise()`. Grammar (options a
   3. **Snapshot mode:** `$BIN --snapshot $T/snap-demo.png tests/fixtures/goldens/demo.opj` → exit 0; stdout exactly:
      ```
      title: DhunZilla — demo.opj
-     snapshot: /home/shubhankar_dgx/qwen-scratch/dz-test/snap-demo.png 1100x700
+     snapshot: <workspace>/dz-test/snap-demo.png 1100x700
      ```
      stderr empty. Stdlib-Python IHDR check: `IHDR 1100 x 700 bitdepth 8 colortype 6`.
      *Visual check honesty note:* this harness has no vision-capable model (the Read tool rejects PNG input), so the

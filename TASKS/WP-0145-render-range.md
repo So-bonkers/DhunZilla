@@ -88,12 +88,12 @@ The full normative section is provided in the repo as `docs/spec/project-model.m
   - `harness/test_cli_errors.sh`: +5 checks — exit 2 for `--from-bar abc`, `--from-bar 2 --to-bar 1`, `--to-bar 99`
     (each with a no-output-file check) and exit 0 success `--from-bar 0.5 --to-bar 1.5` on demo.opj.
   - `docs/spec/project-model.md`: runner-installed normative section committed unchanged. No fixtures touched.
-- **How verified:** (all commands run on this aarch64 DGX Spark; scratch outputs under `/home/shubhankar_dgx/qwen-scratch/tmp-wp0145/`)
+- **How verified:** (all commands run on this aarch64 DGX Spark; scratch outputs under `<workspace>/tmp-wp0145/`)
   - Gates: `cmake --build build -j4` → `[100%] Built target op_tests`, **0 warning lines** (`-Werror` ON).
     `./build/op_tests` → `ALL PASS (0 failures)` incl. all 10 new `range.*` checks.
     `bash harness/run_goldens.sh` → `run_goldens: 8 fixtures, 0 failures` (no-flag output byte-identical — goldens gate).
     `bash harness/test_cli_errors.sh` → `test_cli_errors: 0 failures` (incl. the new range cases).
-    `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`.
+    `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`.
     Sanitizers: `cmake --build build-san -j4 && ./build-san/op_tests` (ASAN+UBSAN) → `ALL PASS (0 failures)`.
   - Byte-equality vs full render (python; canonical 44-byte header — all bytes equal except the RIFF/data size fields,
     which verified encode the range file's sizes little-endian; data chunk compared):

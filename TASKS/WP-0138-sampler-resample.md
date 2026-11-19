@@ -117,7 +117,7 @@ Converter (fixed, so renders are bit-exact on every CI arch):
     committed golden (`MATCHES COMMITTED GOLDEN`). Kit generator reproducible: re-run of
     `harness/make_resampled_golden.py` reproduced `kits/kick44k.wav` at sha256
     `8e562a046cce41b14f0477fcb76f4920e31042cedc46ddb9852541837d0e7e1a` (same as committed).
-  - `bash harness/test_glue_scripts.sh` (with `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`) →
+  - `bash harness/test_glue_scripts.sh` (with `UV_CACHE_DIR=<workspace>/.cache/uv`) →
     `test_glue_scripts: 0 failures`, exit 0. Note: the first run on a cold uv cache failed 3 checks with
     "sidecar never announced a port" (venv sync exceeded the startup timeout); warm re-run green twice —
     environmental, unaffected by this package (no sidecar files touched).
