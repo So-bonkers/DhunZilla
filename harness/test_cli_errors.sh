@@ -27,6 +27,18 @@ cat > "$TMP/nokick.opj" <<'EOF'
 EOF
 check sampler_missing      5 "$OPD" render "$TMP/nokick.opj" -o "$TMP/o.wav"
 
+# --- opd render bar range (WP-0145): exit-code contract per docs/spec/project-model.md §Render a bar range
+cp "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/rr.opj"
+cp -R "$ROOT/tests/fixtures/goldens/kits" "$TMP/kits"   # demo.opj samples are relative to the .opj
+check range_bad_value      2 "$OPD" render "$TMP/rr.opj" -o "$TMP/r1.wav" --from-bar abc
+if [ ! -e "$TMP/r1.wav" ]; then echo "PASS range_bad_value_no_output"; else echo "FAIL range_bad_value_no_output"; fails=$((fails+1)); fi
+check range_reversed       2 "$OPD" render "$TMP/rr.opj" -o "$TMP/r2.wav" --from-bar 2 --to-bar 1
+if [ ! -e "$TMP/r2.wav" ]; then echo "PASS range_reversed_no_output"; else echo "FAIL range_reversed_no_output"; fails=$((fails+1)); fi
+check range_too_big        2 "$OPD" render "$TMP/rr.opj" -o "$TMP/r3.wav" --to-bar 99
+if [ ! -e "$TMP/r3.wav" ]; then echo "PASS range_too_big_no_output"; else echo "FAIL range_too_big_no_output"; fails=$((fails+1)); fi
+check range_ok             0 "$OPD" render "$TMP/rr.opj" -o "$TMP/r4.wav" --from-bar 0.5 --to-bar 1.5
+if [ -s "$TMP/r4.wav" ]; then echo "PASS range_ok_output_written"; else echo "FAIL range_ok_output_written"; fails=$((fails+1)); fi
+
 # --- opd apply (WP-0135): journal CLI contract per docs/spec/operations.md §CLI
 cp "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/ap.opj"
 printf '{"op":"set_bpm","bpm":95.0}\n# comment line\n\n{"op":"rename_track","index":0,"name":"Tick"}\n' > "$TMP/ok.opjl"

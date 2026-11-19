@@ -2,7 +2,9 @@
 // Exit codes (spec/project-model.md): 0 ok, 2 usage, 3 not-found, 4 parse, 5 render/write error.
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -24,7 +26,7 @@ namespace fs = std::filesystem;
 static void usage() {
     std::fprintf(stderr,
         "usage:\n"
-        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR]\n"
+        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B]\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
@@ -51,18 +53,40 @@ static std::string sanitize_track_name(const std::string& in) {
     return out;
 }
 
+// WP-0145 (spec "Render a bar range"): a bar value is a finite number and the WHOLE argument must parse.
+// Rejects "", "abc", "1x", "nan", "inf". Example: parse_bar_value("2.5", v) → true, v == 2.5.
+static bool parse_bar_value(const std::string& arg, double& out) {
+    char* end = nullptr;
+    const double v = std::strtod(arg.c_str(), &end);
+    if (end != arg.c_str() + arg.size()) return false;  // nothing consumed or trailing junk
+    if (!std::isfinite(v)) return false;                // nan / inf are not bars
+    out = v;
+    return true;
+}
+
 static int cmd_render(int argc, char** argv) {
     if (argc < 4) { usage(); return fail("usage", "render needs project + -o out"); }
     const std::string proj = argv[1];
     std::string out_path, stems_dir;
     long long seed_override = -1;
+    bool has_from = false, has_to = false;
+    std::string from_arg, to_arg;  // raw strings for error messages ("<B as given>")
+    double bar_a = 0.0, bar_b = 0.0;
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
         else if (!std::strcmp(argv[i], "--stems-dir") && i + 1 < argc) stems_dir = argv[++i];
         else if (!std::strcmp(argv[i], "--seed") && i + 1 < argc) seed_override = std::atoll(argv[++i]);
+        else if (!std::strcmp(argv[i], "--from-bar") && i + 1 < argc) { from_arg = argv[++i]; has_from = true; }
+        else if (!std::strcmp(argv[i], "--to-bar") && i + 1 < argc) { to_arg = argv[++i]; has_to = true; }
         else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
     }
     if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
+
+    // WP-0145 validation order (spec): option syntax → project load → bounds. Nothing is written on error.
+    if (has_from && !parse_bar_value(from_arg, bar_a)) return fail("usage", "bad --from-bar value '" + from_arg + "'");
+    if (has_to && !parse_bar_value(to_arg, bar_b)) return fail("usage", "bad --to-bar value '" + to_arg + "'");
+    if (bar_a < 0.0) return fail("usage", "--from-bar must be >= 0");
+    if (has_from && has_to && bar_a >= bar_b) return fail("usage", "--from-bar must be less than --to-bar");
 
     op::Project p;
     std::string err;
@@ -70,10 +94,29 @@ static int cmd_render(int argc, char** argv) {
     if (!op::load_project(proj, p, err)) return fail("parse", err);
     if (seed_override >= 0) p.seed = static_cast<uint64_t>(seed_override);
 
+    // Bar range [S(A), S(B)); defaults A=0, B=length_bars. Slice after the full render — same frames for
+    // mix and every stem; no partial-render optimization (WP-0145).
+    long long from_frame = 0, to_frame = -1;  // to_frame < 0 → no range requested: write the full render
+    if (has_from || has_to) {
+        const double a = has_from ? bar_a : 0.0;
+        const double b = has_to ? bar_b : p.length_bars;
+        if (b > p.length_bars) return fail("usage", "--to-bar " + to_arg + " exceeds length_bars");
+        if (a >= p.length_bars) return fail("usage", "--from-bar " + from_arg + " is not before the end of the song");
+        from_frame = op::sample_at_bar(p, a);
+        const long long s_b = op::sample_at_bar(p, b);
+        if (s_b <= from_frame) return fail("usage", "bar range is empty");
+        to_frame = s_b;
+    }
+
     const std::string base_dir = fs::path(proj).parent_path().string();
     if (stems_dir.empty()) {
         op::wav::StereoBuffer buf;
         if (!op::render_project(p, base_dir, buf, err)) return fail("render", err);
+        if (to_frame >= 0) {
+            op::wav::StereoBuffer sliced;
+            op::slice_frames(buf, from_frame, to_frame, sliced);
+            buf = std::move(sliced);
+        }
         if (!op::wav::write_pcm16_stereo(out_path, buf, err)) return fail("write", err);
         std::printf("rendered %lld frames @%d Hz -> %s (seed=%llu)\n",
                     static_cast<long long>(buf.frames()), buf.sample_rate, out_path.c_str(),
@@ -82,6 +125,16 @@ static int cmd_render(int argc, char** argv) {
         std::vector<op::wav::StereoBuffer> stems;
         op::wav::StereoBuffer mix;
         if (!op::render_stems(p, base_dir, stems, mix, err)) return fail("render", err);
+        if (to_frame >= 0) {  // same slice for the mix and every stem (spec "Render a bar range")
+            op::wav::StereoBuffer sliced_mix;
+            op::slice_frames(mix, from_frame, to_frame, sliced_mix);
+            mix = std::move(sliced_mix);
+            for (auto& s : stems) {
+                op::wav::StereoBuffer sliced_stem;
+                op::slice_frames(s, from_frame, to_frame, sliced_stem);
+                s = std::move(sliced_stem);
+            }
+        }
         if (!op::wav::write_pcm16_stereo(out_path, mix, err)) return fail("write", err);
         std::error_code ec;
         fs::create_directories(stems_dir, ec);

@@ -216,3 +216,41 @@ Converter (fixed, so renders are bit-exact on every CI arch):
 - sin/cos only via `engine/dsp.hpp` wrappers; double accumulation; result stored as float.
 - Supported input rates: 8000–192000 Hz. Outside that range → render error
   `sampler: unsupported sample rate <n>` (exit 5).
+
+## Render a bar range — additive (WP-0145)
+`opd render <proj.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B]`
+
+**Bar numbering is 0-based**, exactly like `start_bar` and `tempo_map[].bar`: bar 0 is the first bar,
+and bar `length_bars` is the end of the song. A and B are real numbers; **fractional bars are allowed**
+(`--from-bar 1.5` is the middle of the second bar). Defaults: A = 0, B = `length_bars`.
+
+**Bar → sample map `S(bar)`** (engine function `sample_at_bar`, shared by CLI and tests):
+- if `bar >= length_bars`: `S = total_samples_for(project)` (the full render length, spec §1);
+- otherwise `S = min(at(bar · beats_per_bar), total_samples_for(project))`, where `at(beats)` is the
+  same beat→sample conversion the renderer uses to place note starts: constant tempo →
+  `llround(beats · sample_rate · 60 / bpm)`; with a tempo map → the piecewise rule of the Tempo map
+  section (segment base samples accumulated with `llround`, plus `llround(local_beats · spb)` inside
+  the segment). `S` is therefore the exact sample at which an event at that bar would start.
+
+**Output** is exactly samples `[S(A), S(B))` of the full render (same project, same seed): the output
+WAV has `S(B) − S(A)` frames and its data chunk is byte-for-byte equal to bytes
+`[4·S(A), 4·S(B))` of the full render's data chunk (PCM16 stereo = 4 bytes per frame); header is the
+canonical 44-byte header for that frame count. Nothing is re-timed, re-normalised, faded or padded:
+notes that began before A and are still sounding at A are heard exactly as in the full render, and the
+render of a range never differs from the slice. (Implementations may render fully and slice — the
+reference does — or render efficiently, as long as the bytes are identical.) With `--stems-dir`, the
+same `[S(A), S(B))` slice applies to the mix and to every stem file; each stem file is byte-equal to
+the slice of the corresponding full stem.
+
+**Validation** (before any file is written; on failure nothing is created). All errors are
+`error: usage: <detail>` on stderr, exit 2:
+- value not a finite number (whole argument must parse; `abc`, `1x`, empty, `nan`, `inf`) →
+  `bad --from-bar value '<arg>'` / `bad --to-bar value '<arg>'`;
+- `A < 0` → `--from-bar must be >= 0`;
+- `A >= B` (numeric) → `--from-bar must be less than --to-bar`;
+- option given without a value → the existing `unknown arg '<arg>'` message;
+- (after the project is loaded) `B > length_bars` → `--to-bar <B as given> exceeds length_bars`;
+  `A >= length_bars` → `--from-bar <A as given> is not before the end of the song`;
+- `S(B) <= S(A)` (range shorter than one sample) → `bar range is empty`.
+Project-file errors keep their existing codes (3 not found, 4 parse, 5 render) and take precedence in
+that order of discovery: option syntax is checked first, then the project is loaded, then bounds.

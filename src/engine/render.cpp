@@ -1,6 +1,8 @@
 #include "engine/render.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <string>
 #include <vector>
@@ -191,6 +193,24 @@ long long total_samples_for(const Project& p) {
                    static_cast<long long>(std::ceil((beats - tm.segs[i - 1].start_beats) * tm.segs[i - 1].spb));
     const TempoSeg& last = tm.segs.back();
     return last.start_sample + static_cast<long long>(std::ceil((beats - last.start_beats) * last.spb));
+}
+
+long long sample_at_bar(const Project& p, double bar) {
+    // Spec "Render a bar range" (WP-0145): reuse the renderer's own tempo map — never re-implement the math.
+    const long long total = total_samples_for(p);
+    if (bar >= p.length_bars) return total;
+    const TempoMap tm = build_tempo_map(p, p.sample_rate);
+    const long long s = tm.at(bar * static_cast<double>(p.beats_per_bar));
+    return std::min(s, total);
+}
+
+void slice_frames(const wav::StereoBuffer& buf, long long from_frame, long long to_frame, wav::StereoBuffer& out) {
+    // Contract: 0 <= from < to <= buf.frames(); the CLI validates before calling.
+    out.sample_rate = buf.sample_rate;
+    const size_t from = static_cast<size_t>(from_frame) * 2u;
+    const size_t to = static_cast<size_t>(to_frame) * 2u;
+    out.interleaved.assign(buf.interleaved.begin() + static_cast<std::ptrdiff_t>(from),
+                           buf.interleaved.begin() + static_cast<std::ptrdiff_t>(to));
 }
 
 bool render_subset(const Project& p, const std::string& base_dir, const std::vector<size_t>* subset,

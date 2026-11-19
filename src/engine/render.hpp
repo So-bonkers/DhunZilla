@@ -10,6 +10,14 @@ namespace op {
 // Total render length in samples (spec §1). Deterministic from counters only.
 long long total_samples_for(const Project& p);
 
+// Bar -> sample (spec "Render a bar range"). 0-based bar, fractional ok. Uses the renderer's own tempo map.
+// Example: sample_at_bar(p, 1.0) == 96000 for a 120 bpm, 4/4, 48 kHz project; bars >= length_bars clamp
+// to total_samples_for(p).
+long long sample_at_bar(const Project& p, double bar);
+
+// Frames [from_frame, to_frame) of `buf` copied into `out` (same sample_rate). Requires 0 <= from < to <= frames.
+void slice_frames(const wav::StereoBuffer& buf, long long from_frame, long long to_frame, wav::StereoBuffer& out);
+
 // Renders project into `out` (stereo float, project sample_rate). base_dir resolves sampler paths.
 // Returns false + err on any failure (unknown voice params resolved at parse time).
 bool render_project(const Project& p, const std::string& base_dir, wav::StereoBuffer& out, std::string& err);

@@ -514,6 +514,40 @@ static void test_tempo_map() {
           pb.tempo_map.size() == 2 && pb.tempo_map[1].bpm == 60.0, "tempo.save_roundtrip");
 }
 
+// --- render a bar range (WP-0145): sample_at_bar on both tempo paths + clamps, slice_frames contents.
+static void test_render_range() {
+    std::string err;
+    // Constant 120 bpm, 4/4 @48 kHz: spb = 24000 → bar 1 = 96000 samples (spec example).
+    op::Project a;
+    a.bpm = 120.0; a.length_bars = 2.0; a.sample_rate = 48000;
+    op::Track t; t.name = "S"; t.voice.kind = op::VoiceKind::Sine; t.voice.freq_hz = 220.0f;
+    a.tracks = {t};
+    CHECK(op::sample_at_bar(a, 1.0) == 96000, "range.bar1_120bpm_is_96000");
+    CHECK(op::sample_at_bar(a, 0.5) == 48000 && op::sample_at_bar(a, 1.5) == 144000, "range.fractional_bars");
+    CHECK(op::sample_at_bar(a, a.length_bars) == op::total_samples_for(a), "range.bar_at_length_is_total");
+    CHECK(op::sample_at_bar(a, 99.0) == op::total_samples_for(a), "range.bar_past_end_clamps_to_total");
+
+    // tempo.opj fixture (120→72 bpm at bar 4): bar 4 = llround(16*24000) = 384000;
+    // bar 5 = 384000 + llround(4 * 48000*60/72) = 384000 + 160000 = 544000 (spec example).
+    op::Project tp;
+    CHECK(op::load_project(std::string(OP_TEST_DATA) + "/fixtures/goldens/tempo.opj", tp, err), "range.tempo_fixture_loads");
+    CHECK(op::sample_at_bar(tp, 4.0) == 384000, "range.tempo_bar4_is_384000");
+    CHECK(op::sample_at_bar(tp, 5.0) == 544000, "range.tempo_bar5_is_544000");
+
+    // slice_frames: contents + sample_rate copy; full-range slice is the identity.
+    op::wav::StereoBuffer src;
+    src.sample_rate = 44100;
+    for (int i = 0; i < 10; ++i) { src.interleaved.push_back(static_cast<float>(i)); src.interleaved.push_back(-static_cast<float>(i)); }
+    op::wav::StereoBuffer sl;
+    op::slice_frames(src, 2, 5, sl);
+    CHECK(sl.sample_rate == 44100 && sl.frames() == 3, "range.slice_shape");
+    const float want[6] = {2.f, -2.f, 3.f, -3.f, 4.f, -4.f};
+    CHECK(std::equal(sl.interleaved.begin(), sl.interleaved.end(), want), "range.slice_contents");
+    op::wav::StereoBuffer full;
+    op::slice_frames(src, 0, static_cast<long long>(src.frames()), full);
+    CHECK(full.interleaved == src.interleaved && full.sample_rate == src.sample_rate, "range.slice_full_range_identity");
+}
+
 // --- .opd bundles (WP-0110): deterministic pack, verified unpack, render equivalence, guards.
 static void test_bundle() {
     std::string err;
@@ -2266,6 +2300,7 @@ int main() {
     test_synth();
     test_midi();
     test_tempo_map();
+    test_render_range();
     test_bundle();
     test_velocity();
     test_midi_merge();
