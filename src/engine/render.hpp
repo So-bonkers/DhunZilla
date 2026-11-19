@@ -32,4 +32,16 @@ bool render_project(const Project& p, const std::string& base_dir, wav::StereoBu
 bool render_stems(const Project& p, const std::string& base_dir, std::vector<wav::StereoBuffer>& stems,
                   wav::StereoBuffer& mix, std::string& err);
 
+// Beat onsets (spec §Click track render, WP-0148): absolute sample position of every integer beat
+// b = 0, 1, 2, ... via the renderer's own beat→sample mapping, while at(b) < total_samples_for(p).
+// Example: 120 bpm @ 48 kHz → {0, 24000, 48000, ...}. Index i in the returned vector IS beat number b.
+std::vector<long long> beat_onsets(const Project& p);
+
+// Renders a metronome click track for the whole project into `out` (spec §Click track render):
+// total_samples_for(p) frames, stereo (channels bit-identical), bursts only on beats — tracks,
+// patterns, arrangement, mute/solo and gains are ignored. Returns false + err like render_project.
+// Example: op::wav::StereoBuffer buf; std::string err;
+//          if (!op::render_click(p, buf, err)) { /* zero-length or >600s cap */ }
+bool render_click(const Project& p, wav::StereoBuffer& out, std::string& err);
+
 }  // namespace op

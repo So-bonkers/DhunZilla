@@ -547,6 +547,46 @@ static void test_render_range() {
     op::wav::StereoBuffer full;
     op::slice_frames(src, 0, static_cast<long long>(src.frames()), full);
     CHECK(full.interleaved == src.interleaved && full.sample_rate == src.sample_rate, "range.slice_full_range_identity");
+// --- click track render (WP-0148): onsets via the renderer's own beat→sample mapping, bursts per spec.
+static void test_click() {
+    // Demo-like constant tempo: 120 bpm @ 48 kHz → 24000 samples/beat; 4 bars = 16 beats (at(b) < total).
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 4.0; p.beats_per_bar = 4; p.sample_rate = 48000;
+    const std::vector<long long> on = op::beat_onsets(p);
+    bool seq_ok = on.size() == 16;
+    for (size_t b = 0; b < on.size() && seq_ok; ++b)
+        seq_ok = on[b] == static_cast<long long>(b) * 24000;
+    CHECK(seq_ok, "click.onsets_constant_tempo_0_24000_48000");
+
+    // Tempo map (tempo.opj shape): 120 bpm to bar 4, then 72 bpm → beat 16 @ 384000, beat 17 @ 424000.
+    op::Project tm;
+    tm.bpm = 120.0; tm.length_bars = 8.0; tm.beats_per_bar = 4; tm.sample_rate = 48000;
+    tm.tempo_map = {{0.0, 120.0}, {4.0, 72.0}};
+    const std::vector<long long> on2 = op::beat_onsets(tm);
+    CHECK(on2.size() > 17 && on2[16] == 384000 && on2[17] == 424000, "click.onsets_tempo_map_beat16_17");
+
+    op::wav::StereoBuffer a, b;
+    std::string err;
+    CHECK(op::render_click(p, a, err), "click.render_ok");
+    CHECK(static_cast<long long>(a.frames()) == op::total_samples_for(p), "click.length_matches_total_samples");
+    // Onset sample of the first burst (beat 0 = downbeat) is exactly 0.5 in both channels.
+    CHECK(a.interleaved[0] == 0.5f && a.interleaved[1] == 0.5f, "click.onset_sample_is_half_both_channels");
+
+    // Downbeat burst (1500 Hz) differs from a plain beat burst (1000 Hz) at n = 1.
+    const float down_n1 = a.interleaved[2];              // burst @ onset 0, sample n=1 (downbeat)
+    const float beat_n1 = a.interleaved[(24000 + 1) * 2];  // burst @ beat 1, sample n=1
+    CHECK(down_n1 != beat_n1, "click.downbeat_differs_from_beat_at_n1");
+
+    // Everything between bursts is exactly zero (both channels).
+    const long long L = static_cast<long long>(48000) * 30 / 1000;
+    bool gap_zero = true;
+    for (long long i = L; i < 24000 && gap_zero; ++i)
+        gap_zero = a.interleaved[i * 2] == 0.0f && a.interleaved[i * 2 + 1] == 0.0f;
+    CHECK(gap_zero, "click.samples_outside_bursts_exactly_zero");
+
+    // Determinism: two calls produce bit-identical buffers.
+    CHECK(op::render_click(p, b, err), "click.rerender_ok");
+    CHECK(a.interleaved == b.interleaved, "click.determinism_bit_identical_rerun");
 }
 
 // --- .opd bundles (WP-0110): deterministic pack, verified unpack, render equivalence, guards.
@@ -2625,6 +2665,7 @@ int main() {
     test_midi();
     test_tempo_map();
     test_render_range();
+    test_click();
     test_bundle();
     test_velocity();
     test_midi_merge();

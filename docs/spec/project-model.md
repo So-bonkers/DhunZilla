@@ -254,3 +254,24 @@ the slice of the corresponding full stem.
 - `S(B) <= S(A)` (range shorter than one sample) → `bar range is empty`.
 Project-file errors keep their existing codes (3 not found, 4 parse, 5 render) and take precedence in
 that order of discovery: option syntax is checked first, then the project is loaded, then bounds.
+## Click track render — `opd click` (WP-0148)
+`opd click <project.opj> -o <out.wav>` renders a metronome click track for the whole project, ignoring
+tracks, patterns, arrangement, mute/solo, gain and master gain (only timing fields matter: `sample_rate`,
+`bpm`/`tempo_map`, `beats_per_bar`, `length_bars`). Engine API (`engine/render.hpp`):
+`std::vector<long long> beat_onsets(const Project&)` and
+`bool render_click(const Project&, wav::StereoBuffer&, std::string& err)`.
+
+- **Output length** = `total_samples_for(project)` frames, stereo, both channels bit-identical, all
+  samples outside click bursts exactly 0.0. WAV via the canonical writer (same as `opd render`).
+- **Onsets:** beat `b` = 0, 1, 2, ... (integer beats from the project start; absolute, not per bar) starts
+  at sample `at(b)`, the renderer's beat→sample mapping (§Render semantics 2 and §Tempo map):
+  constant tempo `llround(b · sr·60/bpm)`; with a tempo map `segment_base_sample + llround((b −
+  segment_start_beat) · segment_spb)` (`spb = sr·60/bpm`). Beats are emitted while `at(b) < total`.
+- **Accent:** beat `b` is a downbeat iff `b % beats_per_bar == 0`.
+- **Burst:** `L = sr·30/1000` (integer division) samples, truncated at the end of the buffer. For
+  `n = 0 .. L−1`: `x[n] = 0.5 · cos(2π · f · n / sr) · exp(−n / (sr/200.0))`, `f = 1500` Hz downbeat,
+  `1000` Hz otherwise (phase evaluated in double via `dsp::cosd_`, envelope via `dsp::expf_`). `x[0] =
+  0.5` exactly, so the onset sample is the first non-zero sample of the burst. Bursts never overlap
+  (bpm ≤ 1000).
+- Errors: same as `opd render` (exit 2 usage, 3 not found, 4 parse, 5 render error incl.
+  `render_error: zero-length render` and the 600 s cap).

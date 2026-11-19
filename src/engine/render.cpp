@@ -340,4 +340,48 @@ bool render_stems(const Project& p, const std::string& base_dir, std::vector<wav
     return true;
 }
 
+// --- Click track render (WP-0148, spec §Click track render). Timing only: uses the same
+// TempoMap/at() mapping as note placement, so clicks land exactly where notes would.
+
+std::vector<long long> beat_onsets(const Project& p) {
+    std::vector<long long> onsets;
+    const long long total = total_samples_for(p);
+    const TempoMap tm = build_tempo_map(p, p.sample_rate);
+    for (long long b = 0;; ++b) {
+        const long long s = tm.at(static_cast<double>(b));
+        if (s >= total) break;
+        onsets.push_back(s);
+    }
+    return onsets;
+}
+
+bool render_click(const Project& p, wav::StereoBuffer& out, std::string& err) {
+    const int sr = p.sample_rate;
+    const long long total = total_samples_for(p);
+    if (total <= 0) { err = "render_error: zero-length render"; return false; }
+    if (static_cast<double>(total) / static_cast<double>(sr) > kMaxRenderSeconds) {
+        err = "render_error: project exceeds 600s offline cap"; return false;
+    }
+
+    out.sample_rate = sr;
+    out.interleaved.assign(static_cast<size_t>(total) * 2u, 0.0f);
+
+    const long long L = static_cast<long long>(sr) * 30 / 1000;  // burst length (spec: integer division)
+    const double tau = static_cast<double>(sr) / 200.0;          // envelope time constant
+    const std::vector<long long> onsets = beat_onsets(p);
+    for (size_t i = 0; i < onsets.size(); ++i) {
+        const bool downbeat = static_cast<long long>(i) % p.beats_per_bar == 0;
+        const double f = downbeat ? 1500.0 : 1000.0;
+        const long long start = onsets[i];
+        for (long long n = 0; n < L && start + n < total; ++n) {  // truncated at end of buffer
+            const double ph = 2.0 * dsp::kPi_d() * f * static_cast<double>(n) / static_cast<double>(sr);
+            const float env = dsp::expf_(static_cast<float>(-(static_cast<double>(n) / tau)));
+            const float x = 0.5f * static_cast<float>(dsp::cosd_(ph)) * env;
+            out.interleaved[(start + n) * 2 + 0] = x;  // assigned, not added (spec: bursts never overlap)
+            out.interleaved[(start + n) * 2 + 1] = x;
+        }
+    }
+    return true;
+}
+
 }  // namespace op

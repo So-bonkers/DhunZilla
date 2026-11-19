@@ -27,6 +27,8 @@ static void usage() {
     std::fprintf(stderr,
         "usage:\n"
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B]\n"
+        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR]\n"
+        "  opd click <project.opj> -o <out.wav>\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
@@ -150,6 +152,29 @@ static int cmd_render(int argc, char** argv) {
                     static_cast<long long>(mix.frames()), mix.sample_rate, out_path.c_str(), stems.size(),
                     static_cast<unsigned long long>(p.seed));
     }
+    return 0;
+}
+
+// opd click (WP-0148): deterministic metronome track for the project's full length (spec §Click
+// track render). Same exit-code contract as render; prints nothing on stdout on success.
+static int cmd_click(int argc, char** argv) {
+    if (argc < 4) { usage(); return fail("usage", "click needs project + -o out"); }
+    const std::string proj = argv[1];
+    std::string out_path;
+    for (int i = 2; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
+        else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
+    }
+    if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
+
+    op::Project p;
+    std::string err;
+    if (!fs::exists(proj)) return fail("not_found", proj);
+    if (!op::load_project(proj, p, err)) return fail("parse", err);
+
+    op::wav::StereoBuffer buf;
+    if (!op::render_click(p, buf, err)) return fail("render", err);
+    if (!op::wav::write_pcm16_stereo(out_path, buf, err)) return fail("write", err);
     return 0;
 }
 
@@ -447,6 +472,7 @@ int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
     if (cmd == "render") return cmd_render(argc - 1, argv + 1);
+    if (cmd == "click") return cmd_click(argc - 1, argv + 1);
     if (cmd == "gen-testproject") return cmd_gen_testproject(argc - 1, argv + 1);
     if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
     if (cmd == "import-midi") return cmd_import_midi(argc - 1, argv + 1);

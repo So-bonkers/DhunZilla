@@ -38,6 +38,12 @@ check range_too_big        2 "$OPD" render "$TMP/rr.opj" -o "$TMP/r3.wav" --to-b
 if [ ! -e "$TMP/r3.wav" ]; then echo "PASS range_too_big_no_output"; else echo "FAIL range_too_big_no_output"; fails=$((fails+1)); fi
 check range_ok             0 "$OPD" render "$TMP/rr.opj" -o "$TMP/r4.wav" --from-bar 0.5 --to-bar 1.5
 if [ -s "$TMP/r4.wav" ]; then echo "PASS range_ok_output_written"; else echo "FAIL range_ok_output_written"; fails=$((fails+1)); fi
+# --- opd click (WP-0148): same exit-code contract as render (spec §Click track render)
+check click_no_out         2 "$OPD" click "$ROOT/tests/fixtures/goldens/demo.opj"
+check click_missing_proj   3 "$OPD" click "$TMP/nope.opj" -o "$TMP/c.wav"
+check click_parse_error    4 "$OPD" click "$TMP/bad.opj" -o "$TMP/c.wav"
+check click_ok             0 "$OPD" click "$ROOT/tests/fixtures/goldens/demo.opj" -o "$TMP/click.wav"
+if [ -s "$TMP/click.wav" ]; then echo "PASS click_output_written"; else echo "FAIL click_output_written"; fails=$((fails+1)); fi
 
 # --- opd apply (WP-0135): journal CLI contract per docs/spec/operations.md §CLI
 cp "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/ap.opj"
