@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "doc/document.hpp"
+#include "engine/analyze.hpp"
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
@@ -2159,6 +2160,99 @@ static void test_project_bytes() {
         }
         CHECK(ok, "projbytes.document_save_as_agrees");
     }
+// --- WP-0144: objective audio features (docs/spec/analyze.md) ------------------------------------
+
+// Test hook defined in analyze.cpp (deliberately not part of the public header).
+namespace op::analyze { void k_weight_coefficients(int fs, double out[10]); }
+
+static std::vector<float> make_sine_stereo(double amp, double freq_hz, long long frames, double fs) {
+    std::vector<float> x(static_cast<size_t>(frames) * 2u);
+    for (long long i = 0; i < frames; ++i) {
+        const double s = amp * op::dsp::sind_(2.0 * op::dsp::kPi_d() * freq_hz *
+                                              static_cast<double>(i) / fs);
+        x[static_cast<size_t>(i) * 2u] = static_cast<float>(s);
+        x[static_cast<size_t>(i) * 2u + 1u] = static_cast<float>(s);
+    }
+    return x;
+}
+
+static bool near_(double got, double want, double tol) { return got >= want - tol && got <= want + tol; }
+
+static void test_analyze() {
+    using op::analyze::analyze_samples;
+    using op::analyze::to_json;
+    const int fs = 48000;
+
+    // K-weighting coefficients at 48 kHz must reproduce the ITU-R BS.1770-4 table values to 1e-9.
+    double c[10];
+    op::analyze::k_weight_coefficients(48000, c);
+    CHECK(near_(c[0], 1.53512485958697, 1e-9) && near_(c[1], -2.69169618940638, 1e-9) &&
+          near_(c[2], 1.19839281085285, 1e-9) && near_(c[3], -1.69065929318241, 1e-9) &&
+          near_(c[4], 0.73248077421585, 1e-9), "analyze.k_weight_stage1_48k_matches_bs1770");
+    CHECK(c[5] == 1.0 && c[6] == -2.0 && c[7] == 1.0 &&
+          near_(c[8], -1.99004745483398, 1e-9) && near_(c[9], 0.99007225036621, 1e-9),
+          "analyze.k_weight_stage2_48k_matches_bs1770");
+
+    // Sine peak value exact: amplitude 0.5 → peak_dbfs −6.0206 ± 1e-4 (per channel and overall).
+    auto half = make_sine_stereo(0.5, 1000.0, 48000, 48000.0);
+    auto fh = analyze_samples(half, 2, fs);
+    CHECK(fh.peak_dbfs && near_(*fh.peak_dbfs, -6.0206, 1e-4) &&
+          fh.peak_dbfs_per_channel.size() == 2 && fh.peak_dbfs_per_channel[0] &&
+          fh.peak_dbfs_per_channel[1] && near_(*fh.peak_dbfs_per_channel[0], -6.0206, 1e-4) &&
+          near_(*fh.peak_dbfs_per_channel[1], -6.0206, 1e-4), "analyze.sine_peak_amplitude_half_is_minus6_0206");
+
+    // BS.1770 calibration tone: stereo 1 kHz sine at −23 dBFS (10 s, 48 kHz) → −23.0 LUFS ± 0.1.
+    auto s23 = make_sine_stereo(op::dsp::powd_(10.0, -23.0 / 20.0), 1000.0, 480000, 48000.0);
+    auto f23 = analyze_samples(s23, 2, fs);
+    CHECK(f23.integrated_lufs && near_(*f23.integrated_lufs, -23.0, 0.1), "analyze.lufs_stereo_1k_minus23dBFS");
+
+    // Same at −33 dBFS → −33.0 LUFS ± 0.1 (still above the absolute gate; relative gate keeps all).
+    auto s33 = make_sine_stereo(op::dsp::powd_(10.0, -33.0 / 20.0), 1000.0, 480000, 48000.0);
+    auto f33 = analyze_samples(s33, 2, fs);
+    CHECK(f33.integrated_lufs && near_(*f33.integrated_lufs, -33.0, 0.1), "analyze.lufs_stereo_1k_minus33dBFS");
+
+    // Spectral centroid of a pure 1 kHz tone (48 kHz) within ±5 Hz of 1000.
+    CHECK(f23.spectral_centroid_hz && near_(*f23.spectral_centroid_hz, 1000.0, 5.0), "analyze.centroid_1k_tone_within_5hz");
+
+    // Digital silence (1 s stereo zeros): every optional feature is nullopt...
+    std::vector<float> z(96000, 0.0f);
+    auto fz = analyze_samples(z, 2, fs);
+    CHECK(!fz.peak_dbfs && !fz.rms_dbfs && !fz.integrated_lufs && !fz.spectral_centroid_hz &&
+          fz.peak_dbfs_per_channel.size() == 2 && !fz.peak_dbfs_per_channel[0] &&
+          !fz.peak_dbfs_per_channel[1], "analyze.silence_every_optional_is_nullopt");
+    // ...and to_json prints null for each of them.
+    CHECK(to_json(fz) == "{\n"
+                         "  \"sample_rate\": 48000,\n"
+                         "  \"channels\": 2,\n"
+                         "  \"frames\": 48000,\n"
+                         "  \"duration_s\": 1.000000,\n"
+                         "  \"peak_dbfs\": null,\n"
+                         "  \"peak_dbfs_per_channel\": [null, null],\n"
+                         "  \"rms_dbfs\": null,\n"
+                         "  \"integrated_lufs\": null,\n"
+                         "  \"spectral_centroid_hz\": null\n"
+                         "}\n", "analyze.silence_json_prints_null");
+
+    // to_json of a fixed Features matches the spec sample text character for character.
+    op::analyze::Features f;
+    f.sample_rate = 48000; f.channels = 2; f.frames = 480000; f.duration_s = 10.0;
+    f.peak_dbfs = -6.0206;
+    f.peak_dbfs_per_channel = { -6.0206, -9.0309 };
+    f.rms_dbfs = -23.0103; f.integrated_lufs = -23.0021; f.spectral_centroid_hz = 1000.1234;
+    CHECK(to_json(f) == "{\n"
+                        "  \"sample_rate\": 48000,\n"
+                        "  \"channels\": 2,\n"
+                        "  \"frames\": 480000,\n"
+                        "  \"duration_s\": 10.000000,\n"
+                        "  \"peak_dbfs\": -6.0206,\n"
+                        "  \"peak_dbfs_per_channel\": [-6.0206, -9.0309],\n"
+                        "  \"rms_dbfs\": -23.0103,\n"
+                        "  \"integrated_lufs\": -23.0021,\n"
+                        "  \"spectral_centroid_hz\": 1000.1234\n"
+                        "}\n", "analyze.to_json_matches_spec_sample_byte_exact");
+
+    // Determinism: analyzing the same buffer twice yields byte-identical JSON.
+    CHECK(to_json(analyze_samples(s23, 2, fs)) == to_json(f23), "analyze.repeat_analysis_is_byte_identical");
 }
 
 int main() {
@@ -2188,6 +2282,7 @@ int main() {
     test_document();
     test_resample();
     test_project_bytes();
+    test_analyze();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

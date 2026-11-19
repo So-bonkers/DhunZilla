@@ -14,7 +14,7 @@ option(DZ_WERROR "Treat warnings as errors on our targets" ON)
 # WP-0139: ASAN+UBSAN build for the CI sanitizers job. Off by default; determinism flags above stay.
 option(DZ_SANITIZE "Build with ASAN+UBSAN" OFF)
 
-add_library(opengine STATIC src/engine/model.cpp src/engine/ops.cpp src/engine/render.cpp src/engine/resample.cpp src/engine/wav.cpp src/engine/midi.cpp src/engine/bundle.cpp)
+add_library(opengine STATIC src/engine/model.cpp src/engine/ops.cpp src/engine/render.cpp src/engine/resample.cpp src/engine/wav.cpp src/engine/midi.cpp src/engine/bundle.cpp src/engine/analyze.cpp)
 target_include_directories(opengine PUBLIC src third_party)
 
 # WP-0141: JUCE-free document layer (open/save/dirty, undo/redo, gestures) for the app + CLI.

@@ -52,5 +52,22 @@ printf '{"op":"set_bpm","bpm":133.7}\n{"op":"add_attachment","path":"stems/x.wav
 "$OPD" apply "$TMP/ap.opj" "$TMP/det.opjl" -o "$TMP/det2.opj" >/dev/null 2>&1; r2=$?
 if [ "$r1" = 0 ] && [ "$r2" = 0 ] && cmp -s "$TMP/det1.opj" "$TMP/det2.opj"; then echo "PASS apply_determinism (identical .opj)"; else echo "FAIL apply_determinism: r1=$r1 r2=$r2"; fails=$((fails+1)); fi
 
+# --- opd analyze (WP-0144): docs/spec/analyze.md §CLI exit-code contract
+check analyze_no_args       2 "$OPD" analyze
+check analyze_unknown_flag  2 "$OPD" analyze --wat
+check analyze_missing_file  3 "$OPD" analyze "$TMP/nope.wav"
+printf 'this is not a wav at all' > "$TMP/bad.wav"
+check analyze_garbage_wav   4 "$OPD" analyze "$TMP/bad.wav"
+# nothing on stdout for errors (stderr carries the message)
+out="$("$OPD" analyze "$TMP/nope.wav" 2>/dev/null)"; got=$?
+if [ "$got" = 3 ] && [ -z "$out" ]; then echo "PASS analyze_err_stdout_empty (exit 3)"; else echo "FAIL analyze_err_stdout_empty: exit $got stdout [$out]"; fails=$((fails+1)); fi
+# valid generated WAV -> exit 0 with JSON on stdout; two consecutive runs byte-identical
+"$OPD" render "$ROOT/tests/fixtures/goldens/demo.opj" -o "$TMP/ok.wav" --seed 1 >/dev/null 2>&1
+check analyze_ok            0 "$OPD" analyze "$TMP/ok.wav"
+check analyze_ok_json_flag  0 "$OPD" analyze "$TMP/ok.wav" --json
+"$OPD" analyze "$TMP/ok.wav" > "$TMP/a1.json" 2>/dev/null
+"$OPD" analyze "$TMP/ok.wav" > "$TMP/a2.json" 2>/dev/null
+if [ -s "$TMP/a1.json" ] && cmp -s "$TMP/a1.json" "$TMP/a2.json"; then echo "PASS analyze_determinism (byte-identical JSON)"; else echo "FAIL analyze_determinism"; fails=$((fails+1)); fi
+
 echo "test_cli_errors: $fails failures"
 exit $((fails > 0 ? 1 : 0))

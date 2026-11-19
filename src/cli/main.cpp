@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "engine/analyze.hpp"
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
@@ -32,7 +33,8 @@ static void usage() {
         "  opd opj2mid <in.opj> -o <out.mid>\n"
         "  opd pack <in.opj> -o <song.opd>    (project + samples + attachments in one file)\n"
         "  opd unpack <song.opd> -d <out-dir>\n"
-        "  opd info <file>   (.wav | .opj | .opd | .mid)\n");
+        "  opd info <file>   (.wav | .opj | .opd | .mid)\n"
+        "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n");
 }
 
 static int fail(const char* code, const std::string& detail) {
@@ -332,6 +334,31 @@ static int cmd_info(int argc, char** argv) {
     return 0;
 }
 
+// opd analyze <in.wav> [--json] — objective audio features as canonical JSON (docs/spec/analyze.md).
+// --json is accepted for forward-compatibility (JSON is the only output today). Errors: nothing on
+// stdout; exit 2 usage, 3 not-found, 4 parse, 5 analyze error (unsupported sample rate).
+static int cmd_analyze(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "analyze needs <in.wav>"); }
+    std::string path;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--json")) continue;
+        if (!path.empty() || argv[i][0] == '-') { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
+        path = argv[i];
+    }
+    if (path.empty()) { usage(); return fail("usage", "analyze needs <in.wav>"); }
+    if (!fs::exists(path)) return fail("not_found", path);
+
+    op::wav::ReadResult rr = op::wav::read_wav(path);
+    if (!rr.ok) return fail("parse", rr.error);
+    if (rr.sample_rate < 8000 || rr.sample_rate > 192000)
+        return fail("analyze", "unsupported sample rate " + std::to_string(rr.sample_rate));
+
+    const op::analyze::Features f = op::analyze::analyze_samples(rr.samples, rr.channels, rr.sample_rate);
+    const std::string json = op::analyze::to_json(f);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -345,6 +372,7 @@ int main(int argc, char** argv) {
     if (cmd == "pack") return cmd_pack(argc - 1, argv + 1);
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
+    if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
     usage();
     return 2;
 }

@@ -27,6 +27,10 @@ inline float sinf_(float x) { return std::sin(x); }
 inline float cosf_(float x) { return std::cos(x); }
 inline double sind_(double x) { return std::sin(x); }  // double variants: resampler accumulation (WP-0138)
 inline double cosd_(double x) { return std::cos(x); }
+inline double tand_(double x) { return std::tan(x); }  // analyzer (WP-0144): K-weighting bilinear transforms
+inline double powd_(double x, double y) { return std::pow(x, y); }
+inline double log10d_(double x) { return std::log10(x); }
+inline double sqrtd_(double x) { return std::sqrt(x); }
 inline float powf_(float x, float y) { return std::pow(x, y); }  // MIDI pitch conversion (synth voice)
 inline float expf_(float x) { return std::exp(x); }
 inline float sqrtf_(float x) { return std::sqrt(x); }
