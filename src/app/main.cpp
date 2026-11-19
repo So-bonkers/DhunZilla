@@ -37,9 +37,10 @@ void printError(const juce::String& reason) {
 }
 
 // Read `path` as a JSON-lines operations journal (blank lines and '#' comments skipped), parse
-// EVERY line first, then apply the ops to `doc` in order through Document::apply — so a rejected
-// line never leaves earlier lines applied. Returns 0, or the exit code (3 file unreadable,
-// 4 content rejected) with `reason` set for printError().
+// EVERY line first (so malformed JSON is reported before anything is applied), then apply the ops
+// to `doc` in order through Document::apply. A rejected op stops there with earlier ops already
+// applied to `doc` — harmless here because the caller exits 4 without writing a snapshot.
+// Returns 0, or the exit code (3 file unreadable, 4 content rejected) with `reason` set.
 int applyJournal(const juce::String& path, op::Document& doc, juce::String& reason) {
     // JUCE 9 dropped File::readTextFile(String&) — read through an InputStream instead.
     auto stream = juce::File(path).createInputStream();

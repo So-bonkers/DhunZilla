@@ -2364,6 +2364,8 @@ static void test_project_bytes() {
         }
         CHECK(ok, "projbytes.document_save_as_agrees");
     }
+}
+
 // --- WP-0144: objective audio features (docs/spec/analyze.md) ------------------------------------
 
 // Test hook defined in analyze.cpp (deliberately not part of the public header).
@@ -2457,6 +2459,8 @@ static void test_analyze() {
 
     // Determinism: analyzing the same buffer twice yields byte-identical JSON.
     CHECK(to_json(analyze_samples(s23, 2, fs)) == to_json(f23), "analyze.repeat_analysis_is_byte_identical");
+}
+
 // ---- opd diff (WP-0146): diff_projects, docs/spec/operations.md §opd diff ----
 static std::string journal_text(const std::vector<nlohmann::json>& ops) {
     std::string s;

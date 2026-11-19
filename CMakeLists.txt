@@ -60,14 +60,13 @@ endif()
 # never mentions JUCE and builds exactly opengine dzdoc opd op_tests as before. dhunzilla is NOT in
 # DZ_OUR_TARGETS: the -Werror/-fsanitize loops above must not reach it or generated JUCE targets.
 #
-# Local build recipe (JUCE 9.0.5 sources already unpacked on this machine — no network needed):
-#   export DISPLAY=${DISPLAY:-:1}; [ -n "${XAUTHORITY:-}" ] || export XAUTHORITY=/run/user/1000/gdm/Xauthority
-#   JUCE_SRC=/home/shubhankar_dgx/qwen-scratch/exp-juce/build/_deps/juce-src
+# Local build recipe (point FETCHCONTENT_SOURCE_DIR_JUCE at an unpacked JUCE 9.0.5 tree to build offline):
+#   export DISPLAY=${DISPLAY:-:0}   # JUCE needs an X display even for --snapshot (xvfb-run -a in CI)
 #   cmake -S . -B build-app -DCMAKE_BUILD_TYPE=Release -DDZ_BUILD_APP=ON \
-#         -DFETCHCONTENT_SOURCE_DIR_JUCE=$JUCE_SRC
+#         [-DFETCHCONTENT_SOURCE_DIR_JUCE=<path-to-JUCE-9.0.5-source>]
 #   cmake --build build-app -j4 --target dhunzilla    # cold JUCE build ~3-5 min, several GB RAM: -j4 max
-# (If $JUCE_SRC/modules is missing, drop the FETCHCONTENT_SOURCE_DIR_JUCE flag and let FetchContent
-# download the pinned tarball.) Binary lands at build-app/dhunzilla_artefacts/Release/dhunzilla.
+# Without FETCHCONTENT_SOURCE_DIR_JUCE, FetchContent downloads the pinned tarball.
+# Binary lands at build-app/dhunzilla_artefacts/Release/dhunzilla.
 option(DZ_BUILD_APP "Build the JUCE app (dhunzilla)" OFF)
 
 if(DZ_BUILD_APP)

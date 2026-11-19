@@ -15,6 +15,12 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0147 | Clip ops `set_clip_repeats` / `set_clip_pattern` / `duplicate_clip` / `reorder_clip` — validated via the model parse, 32-bit no-wrap, History undo byte-exact | **done** | haiku+orchestrator |
+| WP-0146 | `opd diff a b -o edits.opjl` — journal of existing ops that turns a into b (apply ∘ diff byte-exact; 360 random pairs), fixed op order, unsupported fields named | **done** | haiku+orchestrator |
+| WP-0145 | `opd render --from-bar/--to-bar` — bit-exact slice of the full render via the tempo map, stems too, exact usage errors | **done** | subagent+orchestrator |
+| WP-0144 | `opd analyze <wav>` — peak / RMS / BS.1770-4 integrated LUFS / spectral centroid as canonical JSON (`docs/spec/analyze.md`) | **done** | subagent+orchestrator |
+| WP-0143 | JUCE app window (`DZ_BUILD_APP`, target `dhunzilla`) — transport bar + track list from `Document`, headless `--snapshot` PNG 1100×700 with `--apply` journals (WP-0137b) | **done** | subagent+orchestrator |
+| WP-0142 | `op::project_bytes` — one canonical serializer shared by `save_project` and `Document` | **done** | subagent+orchestrator |
 | WP-0138 | Sampler resamples any WAV rate at load — deterministic windowed-sinc (Blackman, 16 zero-crossings, double accumulation), 8k–192k in-rate policy with exit-5 error, native-rate path bit-identical, golden `resampled.opj` + 44.1 kHz kit generator | **done** | subagent+orchestrator |
 | WP-0141 | GUI-free Document layer (`src/doc/`, new `dzdoc` target) — open/save with byte-exact dirty flag, undo/redo over `op::History`, slider gestures with exactly one undo entry each, revision counter, derived track rows; unit-tested | **done** | subagent |
 | WP-0140 | Glue scripts resolve relative project/audio paths against the caller's cwd (midi + stem fixed; prompt already correct) + relative-path tests; stray `ai-sidecar/ai/transcribed.mid` explained (pre-WP-0133 `cd`) | **done** | orchestrator |
