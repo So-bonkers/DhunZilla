@@ -49,40 +49,103 @@ int16_t float_to_pcm16(float x) {
     return static_cast<int16_t>(q);
 }
 
-bool write_pcm16_stereo(const std::string& path, StereoBuffer& buf, std::string& err) {
-    const uint32_t data_bytes = static_cast<uint32_t>(buf.frames() * 4u);  // 2ch * int16
+int32_t float_to_pcm24(float x) {
+    // Mirrors float_to_pcm16 exactly with scale 8388608 (spec render-harness.md, WP-0149).
+    if (!(x > -1.0f)) {  // handles NaN and <= -1.0 → floor; NaN maps to 0 (documented choice)
+        if (std::isnan(x)) return 0;
+        if (x <= -1.0f) return -8388608;
+    }
+    if (x >= 1.0f) return 8388607;
+    // Round half to even.
+    const float scaled = x * 8388608.0f;
+    const float floorv = std::floor(scaled);
+    const float r = scaled - floorv;
+    int64_t q;
+    if (r > 0.5f) q = static_cast<int64_t>(floorv) + 1;
+    else if (r < 0.5f) q = static_cast<int64_t>(floorv);
+    else {
+        const int64_t f = static_cast<int64_t>(floorv);
+        q = (f & 1) ? f + 1 : f;  // exact .5 → nearest even integer
+    }
+    if (q > 8388607) q = 8388607;
+    if (q < -8388608) q = -8388608;
+    return static_cast<int32_t>(q);
+}
+
+bool write_wav_stereo(const std::string& path, StereoBuffer& buf, SampleFormat fmt, std::string& err) {
+    const uint32_t frame_bytes = (fmt == SampleFormat::Pcm16) ? 4u : (fmt == SampleFormat::Pcm24 ? 6u : 8u);
+    const uint32_t data_bytes = static_cast<uint32_t>(buf.frames() * frame_bytes);  // 2ch interleaved
     std::vector<uint8_t> header;
-    header.reserve(44);
-    const char* riff = "RIFF"; const char* wave = "WAVE"; const char* fmt = "fmt "; const char* data = "data";
+    header.reserve(fmt == SampleFormat::F32 ? 58u : 44u);
+    const char* riff = "RIFF"; const char* wave = "WAVE"; const char* fmt_id = "fmt "; const char* data_id = "data";
     header.insert(header.end(), riff, riff + 4);
-    put_u32_le(header, 36u + data_bytes);
+    put_u32_le(header, (fmt == SampleFormat::F32 ? 50u : 36u) + data_bytes);
     header.insert(header.end(), wave, wave + 4);
-    header.insert(header.end(), fmt, fmt + 4);
-    put_u32_le(header, 16u);              // PCM fmt chunk size
-    put_u16_le(header, 1u);               // audio format = PCM
-    put_u16_le(header, 2u);               // channels
+    header.insert(header.end(), fmt_id, fmt_id + 4);
+    put_u32_le(header, fmt == SampleFormat::F32 ? 18u : 16u);  // fmt chunk size (18 = plain fmt + cbSize)
+    put_u16_le(header, fmt == SampleFormat::F32 ? 3u : 1u);    // audio format: PCM / IEEE_FLOAT (not extensible)
+    put_u16_le(header, 2u);                                    // channels
     put_u32_le(header, static_cast<uint32_t>(buf.sample_rate));
-    put_u32_le(header, static_cast<uint32_t>(buf.sample_rate) * 4u);  // byte rate
-    put_u16_le(header, 4u);               // block align
-    put_u16_le(header, 16u);              // bits
-    header.insert(header.end(), data, data + 4);
+    put_u32_le(header, static_cast<uint32_t>(buf.sample_rate) * frame_bytes);  // byte rate
+    put_u16_le(header, static_cast<uint16_t>(frame_bytes));    // block align
+    put_u16_le(header, fmt == SampleFormat::Pcm16 ? 16u : (fmt == SampleFormat::Pcm24 ? 24u : 32u));
+    if (fmt == SampleFormat::F32) {
+        put_u16_le(header, 0u);                                // cbSize = 0
+        header.insert(header.end(), "fact", "fact" + 4);
+        put_u32_le(header, 4u);                                // fact chunk size
+        put_u32_le(header, static_cast<uint32_t>(buf.frames()));  // dwSampleLength = frames per channel
+    }
+    header.insert(header.end(), data_id, data_id + 4);
     put_u32_le(header, data_bytes);
 
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) { err = "cannot open for write '" + path + "'"; return false; }
     bool ok = std::fwrite(header.data(), 1, header.size(), f) == header.size();
-    // Convert in place to int16 stream (buffer is float interleaved).
+    // Convert and write in chunks (buffer is float interleaved; no giant allocation).
     static constexpr size_t kChunkFrames = 4096;
-    std::vector<int16_t> pcm(kChunkFrames * 2);
     const size_t frames = buf.frames();
-    for (size_t base = 0; ok && base < frames; base += kChunkFrames) {
-        const size_t n = (frames - base < kChunkFrames) ? (frames - base) : kChunkFrames;
-        for (size_t i = 0; i < n * 2; ++i) pcm[i] = float_to_pcm16(buf.interleaved[(base * 2) + i]);
-        ok = std::fwrite(pcm.data(), sizeof(int16_t), n * 2, f) == n * 2;
+    if (fmt == SampleFormat::Pcm16) {
+        std::vector<int16_t> pcm(kChunkFrames * 2);
+        for (size_t base = 0; ok && base < frames; base += kChunkFrames) {
+            const size_t n = (frames - base < kChunkFrames) ? (frames - base) : kChunkFrames;
+            for (size_t i = 0; i < n * 2; ++i) pcm[i] = float_to_pcm16(buf.interleaved[(base * 2) + i]);
+            ok = std::fwrite(pcm.data(), sizeof(int16_t), n * 2, f) == n * 2;
+        }
+    } else if (fmt == SampleFormat::Pcm24) {
+        std::vector<uint8_t> bytes(kChunkFrames * 6);
+        for (size_t base = 0; ok && base < frames; base += kChunkFrames) {
+            const size_t n = (frames - base < kChunkFrames) ? (frames - base) : kChunkFrames;
+            for (size_t i = 0; i < n * 2; ++i) {
+                const int32_t v = float_to_pcm24(buf.interleaved[(base * 2) + i]);
+                bytes[i * 3 + 0] = static_cast<uint8_t>(v & 0xFF);
+                bytes[i * 3 + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);   // arithmetic shift, masked
+                bytes[i * 3 + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+            }
+            ok = std::fwrite(bytes.data(), 1, n * 6, f) == n * 6;
+        }
+    } else {  // F32: bit pattern copied verbatim (no scaling, no clipping, NaN payloads preserved).
+        std::vector<uint8_t> bytes(kChunkFrames * 2 * 4);
+        for (size_t base = 0; ok && base < frames; base += kChunkFrames) {
+            const size_t n = (frames - base < kChunkFrames) ? (frames - base) : kChunkFrames;
+            for (size_t i = 0; i < n * 2; ++i) {
+                const float x = buf.interleaved[(base * 2) + i];
+                uint32_t u;
+                std::memcpy(&u, &x, sizeof(u));
+                bytes[i * 4 + 0] = static_cast<uint8_t>(u & 0xFFu);
+                bytes[i * 4 + 1] = static_cast<uint8_t>((u >> 8) & 0xFFu);
+                bytes[i * 4 + 2] = static_cast<uint8_t>((u >> 16) & 0xFFu);
+                bytes[i * 4 + 3] = static_cast<uint8_t>((u >> 24) & 0xFFu);
+            }
+            ok = std::fwrite(bytes.data(), 1, n * 8, f) == n * 8;
+        }
     }
     if (std::fclose(f) != 0) ok = false;
     if (!ok) err = "write failed '" + path + "'";
     return ok;
+}
+
+bool write_pcm16_stereo(const std::string& path, StereoBuffer& buf, std::string& err) {
+    return write_wav_stereo(path, buf, SampleFormat::Pcm16, err);
 }
 
 ReadResult read_wav(const std::string& path) {
@@ -122,7 +185,7 @@ ReadResult read_wav(const std::string& path) {
     }
     if (!data || fmt_tag == 0) { r.error = "missing fmt/data chunk"; return r; }
     if (channels != 1 && channels != 2) { r.error = "only mono/stereo supported"; return r; }
-    if (fmt_tag == 1 && bits != 16) { r.error = "PCM must be 16-bit in v0"; return r; }
+    if (fmt_tag == 1 && bits != 16 && bits != 24) { r.error = "PCM must be 16- or 24-bit"; return r; }
     // WP-0125 fuzz: without these, tag-3 files with bits∈{8,24} read out of bounds and bits=0
     // divides by zero (silently on aarch64) — strict fmt validation is the whole defense.
     if (fmt_tag == 3 && bits != 32) { r.error = "float WAV must be 32-bit"; return r; }
@@ -135,9 +198,16 @@ ReadResult read_wav(const std::string& path) {
     r.channels = channels;
     r.samples.resize(nframes * channels);
     for (size_t i = 0; i < nframes * channels; ++i) {
-        if (fmt_tag == 1) {
+        if (fmt_tag == 1 && bits == 16) {
             const int16_t v = static_cast<int16_t>(rd_u16_le(data + i * 2));
             r.samples[i] = static_cast<float>(v) * (1.0f / 32768.0f);
+        } else if (fmt_tag == 1) {  // bits == 24 (validated above): explicit 3-byte LE + sign extension,
+                                    // never rd_u32_le here — that would read one byte past the chunk end.
+            const uint8_t* p = data + i * 3;
+            int32_t v = static_cast<int32_t>(p[0]) | (static_cast<int32_t>(p[1]) << 8) |
+                        (static_cast<int32_t>(p[2]) << 16);
+            if (v & 0x800000) v -= 0x1000000;
+            r.samples[i] = static_cast<float>(v) * (1.0f / 8388608.0f);
         } else {  // float32
             uint32_t u = rd_u32_le(data + i * 4);
             float v;

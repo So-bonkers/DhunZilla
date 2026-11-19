@@ -29,6 +29,7 @@ static void usage() {
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B]\n"
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR]\n"
         "  opd click <project.opj> -o <out.wav>\n"
+        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--format pcm16|pcm24|f32]\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
@@ -75,12 +76,20 @@ static int cmd_render(int argc, char** argv) {
     bool has_from = false, has_to = false;
     std::string from_arg, to_arg;  // raw strings for error messages ("<B as given>")
     double bar_a = 0.0, bar_b = 0.0;
+    op::wav::SampleFormat fmt = op::wav::SampleFormat::Pcm16;  // default: existing behavior (WP-0149)
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
         else if (!std::strcmp(argv[i], "--stems-dir") && i + 1 < argc) stems_dir = argv[++i];
         else if (!std::strcmp(argv[i], "--seed") && i + 1 < argc) seed_override = std::atoll(argv[++i]);
         else if (!std::strcmp(argv[i], "--from-bar") && i + 1 < argc) { from_arg = argv[++i]; has_from = true; }
         else if (!std::strcmp(argv[i], "--to-bar") && i + 1 < argc) { to_arg = argv[++i]; has_to = true; }
+        else if (!std::strcmp(argv[i], "--format") && i + 1 < argc) {
+            const std::string f = argv[++i];  // validated here, before the project loads: bad format → nothing written
+            if (f == "pcm16") fmt = op::wav::SampleFormat::Pcm16;
+            else if (f == "pcm24") fmt = op::wav::SampleFormat::Pcm24;
+            else if (f == "f32") fmt = op::wav::SampleFormat::F32;
+            else { usage(); return fail("usage", "unknown format '" + f + "' (expected pcm16, pcm24 or f32)"); }
+        }
         else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
     }
     if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
@@ -121,6 +130,7 @@ static int cmd_render(int argc, char** argv) {
             buf = std::move(sliced);
         }
         if (!op::wav::write_pcm16_stereo(out_path, buf, err)) return fail("write", err);
+        if (!op::wav::write_wav_stereo(out_path, buf, fmt, err)) return fail("write", err);
         std::printf("rendered %lld frames @%d Hz -> %s (seed=%llu)\n",
                     static_cast<long long>(buf.frames()), buf.sample_rate, out_path.c_str(),
                     static_cast<unsigned long long>(p.seed));
@@ -139,13 +149,14 @@ static int cmd_render(int argc, char** argv) {
             }
         }
         if (!op::wav::write_pcm16_stereo(out_path, mix, err)) return fail("write", err);
+        if (!op::wav::write_wav_stereo(out_path, mix, fmt, err)) return fail("write", err);
         std::error_code ec;
         fs::create_directories(stems_dir, ec);
         if (ec) return fail("write", "cannot create stems dir " + stems_dir);
         for (size_t i = 0; i < stems.size(); ++i) {
             const std::string name = sanitize_track_name(p.tracks[i].name);
             const std::string path = stems_dir + "/" + std::to_string(i) + "_" + (name.empty() ? "track" : name) + ".wav";
-            if (!op::wav::write_pcm16_stereo(path, stems[i], err)) return fail("write", err);
+            if (!op::wav::write_wav_stereo(path, stems[i], fmt, err)) return fail("write", err);
             std::printf("stem %zu -> %s\n", i, path.c_str());
         }
         std::printf("rendered mix %lld frames @%d Hz -> %s (+%zu stems, seed=%llu)\n",

@@ -164,6 +164,87 @@ static void test_wav_roundtrip() {
     CHECK(close, "wav.readback_within_1_5_lsb");
 }
 
+// WP-0149: pcm24/f32 writers + 24-bit reader (spec render-harness.md "Render output sample formats").
+static void test_wav_formats() {
+    using op::wav::float_to_pcm24;
+    using op::wav::SampleFormat;
+
+    // float_to_pcm24 table — mirrors the pcm16 half-even tests with scale 8388608.
+    CHECK(float_to_pcm24(0.0f) == 0, "pcm24.zero");
+    CHECK(float_to_pcm24(-1.0f) == -8388608, "pcm24.floor");
+    CHECK(float_to_pcm24(1.0f) == 8388607 && float_to_pcm24(2.0f) == 8388607, "pcm24.saturation");
+    CHECK(float_to_pcm24(std::nanf("")) == 0, "pcm24.nan_maps_zero");
+    // half-to-even: scaled exactly .5 cases (x * 8388608.0f is exact for these inputs)
+    CHECK(float_to_pcm24(0.5f / 8388608.0f) == 0, "pcm24.half_even_down_to_0");   // 0.5 → 0 (even)
+    CHECK(float_to_pcm24(1.5f / 8388608.0f) == 2, "pcm24.half_even_up_to_2");     // 1.5 → 2 (even)
+    CHECK(float_to_pcm24(2.5f / 8388608.0f) == 2, "pcm24.half_even_down_to_2");   // 2.5 → 2 (even)
+    CHECK(float_to_pcm24(-0.5f / 8388608.0f) == 0 && float_to_pcm24(-1.5f / 8388608.0f) == -2,
+          "pcm24.negative_ties");                                                  // −0.5 → 0, −1.5 → −2 (even)
+
+    op::wav::StereoBuffer buf;
+    buf.sample_rate = 48000;
+    const float vals[] = {0.0f, -1.0f, 0.9999f, 2.5f, -3.0f, 0.5f / 8388608.0f};
+    for (float v : vals) buf.interleaved.push_back(v), buf.interleaved.push_back(-v);
+    const size_t frames = buf.frames();
+    std::string err;
+
+    auto file_bytes = [](const std::string& p) {
+        std::ifstream f(p, std::ios::binary);
+        return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    auto rd32 = [](const std::vector<uint8_t>& v, size_t o) {
+        return static_cast<uint32_t>(v[o]) | (static_cast<uint32_t>(v[o + 1]) << 8) |
+               (static_cast<uint32_t>(v[o + 2]) << 16) | (static_cast<uint32_t>(v[o + 3]) << 24);
+    };
+
+    // pcm24: 44-byte header, tag 1 / bits 24 / align 6 / byte rate SR*6, data F*6, RIFF 36+F*6.
+    CHECK(op::wav::write_wav_stereo("/tmp/op_fmt_p24.wav", buf, SampleFormat::Pcm24, err), "fmt.pcm24_write_ok");
+    {
+        const auto h = file_bytes("/tmp/op_fmt_p24.wav");
+        bool ok = h.size() == 44 + frames * 6 && std::memcmp(h.data(), "RIFF", 4) == 0 &&
+                  std::memcmp(h.data() + 8, "WAVE", 4) == 0 && rd32(h, 16) == 16 &&
+                  (h[20] | (h[21] << 8)) == 1 && h[34] == 24 && (h[32] | (h[33] << 8)) == 6 &&
+                  rd32(h, 28) == 48000u * 6u && rd32(h, 4) == 36u + static_cast<uint32_t>(frames * 6) &&
+                  std::memcmp(h.data() + 36, "data", 4) == 0 && rd32(h, 40) == frames * 6;
+        CHECK(ok, "fmt.pcm24_header_bytes_exact");
+    }
+    auto r24 = op::wav::read_wav("/tmp/op_fmt_p24.wav");
+    bool ok24 = r24.ok && r24.samples.size() == frames * 2;
+    for (size_t i = 0; ok24 && i < r24.samples.size(); ++i) {
+        const float expect = static_cast<float>(float_to_pcm24(buf.interleaved[i])) * (1.0f / 8388608.0f);
+        if (r24.samples[i] != expect) ok24 = false;
+    }
+    CHECK(ok24, "fmt.pcm24_roundtrip_exact");
+
+    // f32: 58-byte header per the spec offset table; samples bit-for-bit, no clipping.
+    CHECK(op::wav::write_wav_stereo("/tmp/op_fmt_f32.wav", buf, SampleFormat::F32, err), "fmt.f32_write_ok");
+    {
+        const auto h = file_bytes("/tmp/op_fmt_f32.wav");
+        bool ok = h.size() == 58 + frames * 8 && std::memcmp(h.data(), "RIFF", 4) == 0 &&
+                  std::memcmp(h.data() + 8, "WAVE", 4) == 0 && rd32(h, 4) == 50u + static_cast<uint32_t>(frames * 8) &&
+                  rd32(h, 16) == 18 && (h[20] | (h[21] << 8)) == 3 && h[22] == 2 && rd32(h, 24) == 48000u &&
+                  rd32(h, 28) == 48000u * 8u && (h[32] | (h[33] << 8)) == 8 && (h[34] | (h[35] << 8)) == 32 &&
+                  (h[36] | (h[37] << 8)) == 0 && std::memcmp(h.data() + 38, "fact", 4) == 0 && rd32(h, 42) == 4 &&
+                  rd32(h, 46) == frames && std::memcmp(h.data() + 50, "data", 4) == 0 && rd32(h, 54) == frames * 8;
+        CHECK(ok, "fmt.f32_header_bytes_exact");
+    }
+    auto rf = op::wav::read_wav("/tmp/op_fmt_f32.wav");
+    bool okf = rf.ok && rf.samples.size() == frames * 2;
+    for (size_t i = 0; okf && i < rf.samples.size(); ++i) {
+        uint32_t a, b;
+        std::memcpy(&a, &buf.interleaved[i], sizeof(a));
+        std::memcpy(&b, &rf.samples[i], sizeof(b));
+        if (a != b) okf = false;  // bit-exact: 2.5 and −3.0 survive unclipped
+    }
+    CHECK(okf, "fmt.f32_roundtrip_bitexact_no_clipping");
+
+    // write_pcm16_stereo ≡ write_wav_stereo(Pcm16): byte-for-byte identical files.
+    bool w1 = op::wav::write_wav_stereo("/tmp/op_fmt_p16_new.wav", buf, SampleFormat::Pcm16, err);
+    bool w2 = op::wav::write_pcm16_stereo("/tmp/op_fmt_p16_old.wav", buf, err);
+    CHECK(w1 && w2 && file_bytes("/tmp/op_fmt_p16_new.wav") == file_bytes("/tmp/op_fmt_p16_old.wav"),
+          "fmt.pcm16_wrapper_byte_identical");
+}
+
 static void test_render() {
     op::Project p;
     p.bpm = 120.0; p.length_bars = 4.0; p.beats_per_bar = 4; p.sample_rate = 48000;
@@ -2659,6 +2740,7 @@ int main() {
     test_dsp();
     test_model();
     test_wav_roundtrip();
+    test_wav_formats();
     test_render();
     test_arrangement();
     test_synth();
