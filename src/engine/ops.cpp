@@ -251,6 +251,16 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             json moved = arr[idx];
             arr.erase(idx);  // n_clips - 1 remain; `sub` <= n_clips - 1 is a valid final index
             arr.insert(arr.begin() + static_cast<std::ptrdiff_t>(sub), std::move(moved));
+        } else if (name == "set_loop") {  // WP-0155: range rules come from the model parse below
+            if (!check_keys(op_json, {"start_bar", "end_bar"}, err) ||
+                !has_number(op_json, "start_bar", err) || !has_number(op_json, "end_bar", err)) return false;
+            json loop = json::object();
+            loop["start_bar"] = op_json.at("start_bar");
+            loop["end_bar"] = op_json.at("end_bar");
+            j["loop"] = std::move(loop);
+        } else if (name == "clear_loop") {
+            if (!check_keys(op_json, {}, err)) return false;
+            j.erase("loop");  // no-op when absent; still a successful (undoable) apply
         } else if (name == "add_attachment") {
             // Same rules as op::add_attachment: valid_attachment (enforced by the parse below)
             // plus duplicate-path rejection (the only rule load_project does not enforce).
@@ -473,6 +483,11 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
         ops.push_back({{"op", "remove_pattern"}, {"index", i}});
     for (std::size_t i = tracks_a.size(); i-- > tracks_b.size();)
         ops.push_back({{"op", "remove_track"}, {"index", i}});
+    // Loop region (WP-0155): absent counts as a distinct value, so any difference is emitted.
+    const bool loop_differs = ja.contains("loop") != jb.contains("loop") ||
+                              (ja.contains("loop") && ja.at("loop") != jb.at("loop"));
+    // Step 3b: a loop is cleared before the length can change, then the target loop is set in 4b.
+    if (loop_differs && ja.contains("loop")) ops.push_back({{"op", "clear_loop"}});
 
     static const json kZeroDb = 0.0;   // canonical default of master/clip gain_db
     static const json kFalse = false;  // canonical default of mute/solo (omitted at false)
@@ -482,6 +497,11 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
     const json& mg_a = field_or(ja, "master_gain_db", kZeroDb);
     const json& mg_b = field_or(jb, "master_gain_db", kZeroDb);
     if (mg_a != mg_b) ops.push_back({{"op", "set_master_gain"}, {"gain_db", mg_b}});
+    // Step 4b: set the target loop after length changes (only when the loops differ).
+    if (loop_differs && jb.contains("loop"))
+        ops.push_back({{"op", "set_loop"},
+                       {"start_bar", jb.at("loop").at("start_bar")},
+                       {"end_bar", jb.at("loop").at("end_bar")}});
 
     for (std::size_t i = 0; i < std::min(tracks_a.size(), tracks_b.size()); ++i) {
         const json& ta = tracks_a[i];

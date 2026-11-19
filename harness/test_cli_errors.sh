@@ -118,5 +118,26 @@ printf '{"op":"set_step","pattern":0,"step":0,"on":true}\n{"op":"set_step","patt
 out="$("$OPD" steps "$TMP/st.opj" 0 2>/dev/null)"; got=$?
 if [ "$got" = 0 ] && [ "$out" = "x...x...x...x..." ]; then echo "PASS steps_ok (exit 0, x...x...x...x...)"; else echo "FAIL steps_ok: exit $got out [$out]"; fails=$((fails+1)); fi
 
+# --- opd render --loop / opd info loop (WP-0155): docs/spec/project-model.md §CLI additions
+cp "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/lp_noloop.opj"
+cp -R "$ROOT/tests/fixtures/goldens/kits" "$TMP/kits"   # demo.opj samples are relative to the .opj
+check loop_no_loop_usage   2 "$OPD" render "$TMP/lp_noloop.opj" -o "$TMP/lp0.wav" --loop
+if [ ! -e "$TMP/lp0.wav" ]; then echo "PASS loop_no_loop_no_output"; else echo "FAIL loop_no_loop_no_output"; fails=$((fails+1)); fi
+check loop_with_from       2 "$OPD" render "$TMP/lp_noloop.opj" -o "$TMP/lp1.wav" --loop --from-bar 0
+check loop_with_to         2 "$OPD" render "$TMP/lp_noloop.opj" -o "$TMP/lp2.wav" --to-bar 1 --loop
+if [ ! -e "$TMP/lp1.wav" ] && [ ! -e "$TMP/lp2.wav" ]; then echo "PASS loop_combined_no_output"; else echo "FAIL loop_combined_no_output"; fails=$((fails+1)); fi
+printf '{"op":"set_loop","start_bar":0.5,"end_bar":1.5}\n' > "$TMP/setloop.opjl"
+"$OPD" apply "$TMP/lp_noloop.opj" "$TMP/setloop.opjl" -o "$TMP/lp.opj" >/dev/null 2>&1; got=$?
+if [ "$got" = 0 ]; then echo "PASS loop_apply_set (exit 0)"; else echo "FAIL loop_apply_set: exit $got"; fails=$((fails+1)); fi
+check loop_ok              0 "$OPD" render "$TMP/lp.opj" -o "$TMP/lp_loop.wav" --loop
+"$OPD" render "$TMP/lp.opj" -o "$TMP/lp_range.wav" --from-bar 0.5 --to-bar 1.5 >/dev/null 2>&1
+if cmp -s "$TMP/lp_loop.wav" "$TMP/lp_range.wav"; then echo "PASS loop_bytes_equal_from_to"; else echo "FAIL loop_bytes_equal_from_to"; fails=$((fails+1)); fi
+"$OPD" render "$TMP/lp.opj" -o "$TMP/lp_full.wav" >/dev/null 2>&1
+"$OPD" render "$TMP/lp_noloop.opj" -o "$TMP/lp_noloop.wav" >/dev/null 2>&1
+if cmp -s "$TMP/lp_full.wav" "$TMP/lp_noloop.wav"; then echo "PASS loop_render_without_flag_unchanged"; else echo "FAIL loop_render_without_flag_unchanged"; fails=$((fails+1)); fi
+out="$("$OPD" info "$TMP/lp.opj" | grep '^loop: ')"
+if [ "$out" = "loop: 0.5-1.5" ]; then echo "PASS loop_info_line"; else echo "FAIL loop_info_line: [$out]"; fails=$((fails+1)); fi
+out="$("$OPD" info "$TMP/lp_noloop.opj" | grep -c '^loop')"
+if [ "$out" = 0 ]; then echo "PASS loop_info_absent"; else echo "FAIL loop_info_absent: [$out]"; fails=$((fails+1)); fi
 echo "test_cli_errors: $fails failures"
 exit $((fails > 0 ? 1 : 0))

@@ -27,7 +27,7 @@ namespace fs = std::filesystem;
 static void usage() {
     std::fprintf(stderr,
         "usage:\n"
-        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B]\n"
+        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B] [--loop]\n"
         "             [--format pcm16|pcm24|f32]\n"
         "  opd click <project.opj> -o <out.wav>\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
@@ -75,6 +75,7 @@ static int cmd_render(int argc, char** argv) {
     std::string out_path, stems_dir;
     long long seed_override = -1;
     bool has_from = false, has_to = false;
+    bool want_loop = false;  // WP-0155: --loop renders the project's loop region (= --from-bar/--to-bar)
     std::string from_arg, to_arg;  // raw strings for error messages ("<B as given>")
     double bar_a = 0.0, bar_b = 0.0;
     op::wav::SampleFormat fmt = op::wav::SampleFormat::Pcm16;  // default: existing behavior (WP-0149)
@@ -84,6 +85,7 @@ static int cmd_render(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--seed") && i + 1 < argc) seed_override = std::atoll(argv[++i]);
         else if (!std::strcmp(argv[i], "--from-bar") && i + 1 < argc) { from_arg = argv[++i]; has_from = true; }
         else if (!std::strcmp(argv[i], "--to-bar") && i + 1 < argc) { to_arg = argv[++i]; has_to = true; }
+        else if (!std::strcmp(argv[i], "--loop")) want_loop = true;  // takes no value
         else if (!std::strcmp(argv[i], "--format") && i + 1 < argc) {
             const std::string f = argv[++i];  // validated here, before the project loads: bad format → nothing written
             if (f == "pcm16") fmt = op::wav::SampleFormat::Pcm16;
@@ -94,6 +96,8 @@ static int cmd_render(int argc, char** argv) {
         else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
     }
     if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
+    if (want_loop && (has_from || has_to))
+        return fail("usage", "--loop cannot be combined with --from-bar/--to-bar");
 
     // WP-0145 validation order (spec): option syntax → project load → bounds. Nothing is written on error.
     if (has_from && !parse_bar_value(from_arg, bar_a)) return fail("usage", "bad --from-bar value '" + from_arg + "'");
@@ -106,6 +110,17 @@ static int cmd_render(int argc, char** argv) {
     if (!fs::exists(proj)) return fail("not_found", proj);
     if (!op::load_project(proj, p, err)) return fail("parse", err);
     if (seed_override >= 0) p.seed = static_cast<uint64_t>(seed_override);
+    if (want_loop) {  // WP-0155: identical to --from-bar <start> --to-bar <end> (same path below)
+        if (!p.loop) { usage(); return fail("usage", "project has no loop region"); }
+        has_from = has_to = true;
+        bar_a = p.loop->start_bar;
+        bar_b = p.loop->end_bar;
+        char buf_a[64], buf_b[64];
+        std::snprintf(buf_a, sizeof buf_a, "%g", bar_a);
+        std::snprintf(buf_b, sizeof buf_b, "%g", bar_b);
+        from_arg = buf_a;
+        to_arg = buf_b;
+    }
 
     // Bar range [S(A), S(B)); defaults A=0, B=length_bars. Slice after the full render — same frames for
     // mix and every stem; no partial-render optimization (WP-0145).
@@ -439,6 +454,8 @@ static int cmd_info(int argc, char** argv) {
                 static_cast<unsigned long long>(p.seed));
     if (p.master_gain_db != 0.0f)  // mixer state (WP-0136): markers per track, master when non-default
         std::printf("master_gain_db=%.2f\n", static_cast<double>(p.master_gain_db));
+    if (p.loop)  // WP-0155: printed only when a loop region is set
+        std::printf("loop: %g-%g\n", p.loop->start_bar, p.loop->end_bar);
     for (size_t i = 0; i < p.tracks.size(); ++i) {
         const op::Track& t = p.tracks[i];
         std::printf("  [%zu] %s%s%s\n", i, t.name.c_str(), t.mute ? " [mute]" : "",

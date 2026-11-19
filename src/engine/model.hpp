@@ -1,6 +1,7 @@
 // engine/model.hpp — project data model (spec/project-model.md v0). Parse/validate only; rendering lives in render.hpp.
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,13 @@ struct Attachment {
     std::string producer;  // free-form provenance: tool name/version/job id, e.g. "demucs ht-demucs"
 };
 
+// Transport loop region (WP-0155, spec project-model.md §Loop region): bars [start_bar, end_bar),
+// 0-based, fractional allowed. Live playback only; offline render ignores it.
+struct LoopRegion {
+    double start_bar = 0.0;
+    double end_bar = 0.0;
+};
+
 struct Project {
     int format_version = 0;
     double bpm = 120.0;
@@ -79,6 +87,7 @@ struct Project {
     std::vector<Clip> arrangement;  // empty = legacy semantics: every pattern once, at bar 0
     std::vector<TempoPoint> tempo_map;  // empty = constant bpm (legacy bit-exact); else first bar must be 0
     std::vector<Attachment> attachments;  // empty when absent (legacy byte-stable); informational only
+    std::optional<LoopRegion> loop;  // absent = no loop region (WP-0155); saved only when set
 };
 
 // Model-driven mutation op: validate and append an attachment. Rejects blank/absolute/escaping

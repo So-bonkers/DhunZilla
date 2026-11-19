@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -2958,6 +2959,128 @@ static void test_step_sequencer() {
               std::memcmp(ra.interleaved.data(), rb.interleaved.data(),
                           ra.interleaved.size() * sizeof(float)) == 0,
           "step.render_byte_identical_to_handwritten");
+// --- WP-0155: transport loop region (docs/spec/project-model.md §Loop region, operations.md) ------
+
+// Minimal valid project text; `extra` is spliced in before the closing brace (e.g. a "loop" member).
+static std::string loop_project_text(const std::string& extra, double length_bars = 4.0) {
+    return std::string(R"({"format_version":0,"bpm":120,"length_bars":)") + std::to_string(length_bars) +
+           R"(,"tracks":[{"name":"T","voice":{"kind":"sine","freq_hz":220.0}}],)" +
+           R"("patterns":[{"track":0,"notes":[{"t":0.0,"dur":1.0}]}])" + extra + "}";
+}
+
+// Parse text → Project; returns the load error (empty on success) through `err_out`.
+static bool parse_text(const std::string& text, op::Project& p, std::string& err_out) {
+    write_text("/tmp/op_loop_in.opj", text);
+    return op::load_project("/tmp/op_loop_in.opj", p, err_out);
+}
+
+static void test_loop_region() {
+    using nlohmann::json;
+    std::string err;
+
+    // Parse/save round trip with a fractional loop: values kept, second save byte-identical.
+    op::Project p;
+    const bool parsed = parse_text(loop_project_text(R"(,"loop":{"start_bar":0.5,"end_bar":2.5})"), p, err);
+    CHECK(parsed && p.loop && p.loop->start_bar == 0.5 && p.loop->end_bar == 2.5, "loop.parse_fractional");
+    const std::string b1 = op::project_bytes(p);
+    op::Project back;
+    CHECK(parse_text(b1, back, err) && back.loop && back.loop->start_bar == 0.5 && back.loop->end_bar == 2.5 &&
+              op::project_bytes(back) == b1,
+          "loop.roundtrip_byte_identical");
+    CHECK(b1.find("\"loop\": {\n    \"end_bar\": 2.5,\n    \"start_bar\": 0.5\n  }") != std::string::npos,
+          "loop.canonical_key_order");
+
+    // No loop → no key in the saved bytes, and identical to the same project parsed without a loop.
+    op::Project nl;
+    CHECK(parse_text(loop_project_text(""), nl, err) && !nl.loop && op::project_bytes(nl).find("loop") == std::string::npos,
+          "loop.absent_not_saved");
+
+    // Each validation error, verbatim, first failure wins (spec order 1..7).
+    auto expect_err = [&](const std::string& text, const std::string& want, const char* name) {
+        op::Project q;
+        std::string e;
+        const bool ok = parse_text(text, q, e);
+        CHECK(!ok && e == want, name);
+    };
+    expect_err(loop_project_text(R"(,"loop":[1,2])"), "loop must be an object", "loop.err_not_object");
+    expect_err(loop_project_text(R"(,"loop":{"start_bar":"1","end_bar":2})"),
+               "loop.start_bar and loop.end_bar must be numbers", "loop.err_not_number");
+    expect_err(loop_project_text(R"(,"loop":{"end_bar":2})"),
+               "loop.start_bar and loop.end_bar must be numbers", "loop.err_missing_start");
+    expect_err(loop_project_text(R"(,"loop":{"start_bar":-0.5,"end_bar":2})"),
+               "loop.start_bar must be a finite number >= 0", "loop.err_start_negative");
+    // JSON text cannot spell inf (nlohmann rejects 1e999 at parse), so feed an infinite double to the
+    // engine-internal parse directly: that is the only way check 4 can be reached.
+    {
+        json jinf = json::parse(loop_project_text(R"(,"loop":{"start_bar":1,"end_bar":2})"));
+        jinf["loop"]["end_bar"] = std::numeric_limits<double>::infinity();
+        op::Project q;
+        std::string e;
+        CHECK(!op::project_from_json(jinf, q, e) && e == "loop.end_bar must be a finite number",
+              "loop.err_end_not_finite");
+    }
+    expect_err(loop_project_text(R"(,"loop":{"start_bar":2,"end_bar":2})"),
+               "loop.end_bar must be greater than loop.start_bar", "loop.err_end_not_after_start");
+    expect_err(loop_project_text(R"(,"loop":{"start_bar":1,"end_bar":5})"),
+               "loop.end_bar must be <= length_bars", "loop.err_end_past_length");
+    expect_err(loop_project_text(R"(,"loop":{"start_bar":1,"end_bar":2,"extra":1})"),
+               "loop has unknown key 'extra'", "loop.err_unknown_key");
+
+    // set_loop / clear_loop through apply_op; undo restores the prior bytes exactly.
+    op::Project q;
+    CHECK(parse_text(loop_project_text(""), q, err), "loop.ops_base_parse");
+    const std::string base_bytes = op::project_bytes(q);
+    op::History h;
+    CHECK(h.apply(q, json{{"op", "set_loop"}, {"start_bar", 1.0}, {"end_bar", 3.0}}, err) && q.loop &&
+              q.loop->start_bar == 1.0 && q.loop->end_bar == 3.0, "loop.op_set");
+    const std::string with_loop = op::project_bytes(q);
+    CHECK(h.apply(q, json{{"op", "clear_loop"}}, err) && !q.loop, "loop.op_clear");
+    CHECK(op::project_bytes(q) == base_bytes, "loop.op_clear_bytes_match_no_loop");
+    CHECK(h.undo(q) && op::project_bytes(q) == with_loop, "loop.undo_clear_restores_loop");
+    CHECK(h.undo(q) && op::project_bytes(q) == base_bytes, "loop.undo_set_restores_bytes");
+    CHECK(h.redo(q) && op::project_bytes(q) == with_loop, "loop.redo_set");
+
+    // Argument rules and range rules come from the parse (exact op error strings).
+    op::Project r;
+    CHECK(parse_text(loop_project_text(""), r, err), "loop.ops_rules_parse");
+    CHECK(!op::apply_op(r, json{{"op", "set_loop"}, {"start_bar", 1.0}}, err) &&
+              err == "set_loop: missing argument 'end_bar'", "loop.op_set_missing_end");
+    CHECK(!op::apply_op(r, json{{"op", "set_loop"}, {"start_bar", "x"}, {"end_bar", 2.0}}, err) &&
+              err == "set_loop: 'start_bar' must be a number", "loop.op_set_not_number");
+    CHECK(!op::apply_op(r, json{{"op", "set_loop"}, {"start_bar", 3.0}, {"end_bar", 2.0}}, err) &&
+              err == "set_loop: loop.end_bar must be greater than loop.start_bar", "loop.op_set_reversed");
+    CHECK(!op::apply_op(r, json{{"op", "clear_loop"}, {"x", 1}}, err) &&
+              err == "clear_loop: unknown argument 'x'", "loop.op_clear_unknown_arg");
+    CHECK(op::apply_op(r, json{{"op", "clear_loop"}}, err) && !r.loop, "loop.op_clear_noop_ok");
+
+    // set_length_bars below an existing loop end is rejected and leaves the project untouched.
+    op::Project s;
+    CHECK(parse_text(loop_project_text(R"(,"loop":{"start_bar":1,"end_bar":3})"), s, err), "loop.len_parse");
+    CHECK(!op::apply_op(s, json{{"op", "set_length_bars"}, {"length_bars", 2.0}}, err) &&
+              err == "set_length_bars: loop.end_bar must be <= length_bars" && s.length_bars == 4.0 && s.loop,
+          "loop.set_length_below_end_rejected");
+
+    // opd diff with a loop on one side: journal reproduces the target exactly.
+    op::Project none = s, with = s, moved = s, cleared = s;
+    none.loop.reset();
+    with.loop = op::LoopRegion{0.5, 2.5};
+    moved.loop = op::LoopRegion{1.0, 2.0};
+    cleared.loop.reset();
+    auto round_trip = [&](const op::Project& a, const op::Project& b, const char* name) {
+        std::vector<json> ops;
+        std::string e;
+        if (!op::diff_projects(a, b, ops, e)) { CHECK(false, name); return; }
+        op::Project work = a;
+        bool ok = true;
+        for (const json& o : ops) ok = ok && op::apply_op(work, o, e);
+        CHECK(ok && op::project_bytes(work) == op::project_bytes(b), name);
+    };
+    round_trip(none, with, "loop.diff_add_loop");
+    round_trip(with, none, "loop.diff_remove_loop");
+    round_trip(with, moved, "loop.diff_change_loop");
+    round_trip(moved, cleared, "loop.diff_change_then_clear");
+    std::vector<json> same_ops;
+    CHECK(op::diff_projects(with, with, same_ops, err) && same_ops.empty(), "loop.diff_same_loop_no_ops");
 }
 
 int main() {
@@ -2994,6 +3117,7 @@ int main() {
     test_opd_diff();
     test_resample_polyphase();
     test_step_sequencer();
+    test_loop_region();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

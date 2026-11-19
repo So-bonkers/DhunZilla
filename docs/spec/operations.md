@@ -251,3 +251,31 @@ Then: project file missing → exit 3 (`not_found`); fails to parse → exit 4 (
 count → exit 2, `error: usage: pattern index <n> out of range (project has <m> patterns)`.
 Option syntax is checked before the project is loaded. Example: a pattern with kick notes at beats
 0, 1, 2, 3 prints `x...x...x...x...`.
+## Loop region operations — additive (WP-0155)
+Two more operations, same Apply semantics (copy → JSON edit → save→parse validation → commit) and strict
+argument rules (`check_keys`, missing/mistyped rejection). Error strings are `<op>: <reason>`.
+
+| op | arguments | effect |
+|---|---|---|
+| `set_loop` | `start_bar`, `end_bar` (numbers) | sets `Project::loop` (replacing any existing loop) |
+| `clear_loop` | none | removes `Project::loop`; succeeds as a no-op when none is set |
+
+- `set_loop`: absent argument → `set_loop: missing argument 'start_bar'` / `'end_bar'` (start checked
+  first); non-number → `set_loop: 'start_bar' must be a number` / `'end_bar' must be a number`. Range rules
+  are NOT re-implemented: they come from the model parse (project-model.md §Loop region), e.g.
+  `set_loop: loop.end_bar must be greater than loop.start_bar`,
+  `set_loop: loop.end_bar must be <= length_bars`,
+  `set_loop: loop.start_bar must be a finite number >= 0`.
+- `clear_loop` with any argument → `clear_loop: unknown argument '<key>'`.
+- A successful `clear_loop` on a project without a loop still pushes an undo snapshot (like `reorder_clip`
+  with `to == index`).
+- Undo/redo: no new mechanism; byte-exact per the invariant above.
+
+### `opd diff` and loops (WP-0155 amendment)
+`loop` is expressible, so it is never an "unsupported difference". Two emission steps are added to the fixed
+order of §`opd diff`, and only when `a.loop != b.loop` (absent counts as a distinct value):
+- step **3b**, after step 3 (`remove_track`) and before step 4: `clear_loop` if `a` has a loop;
+- step **4b**, after step 4 (`set_bpm`, `set_length_bars`, `set_master_gain`) and before step 5: `set_loop`
+  (`start_bar`, `end_bar` from b's canonical JSON) if `b` has a loop.
+This order is always valid (the old loop is gone before the length changes; the new one is set after).
+Projects without loops produce exactly the same journals as before.

@@ -285,3 +285,47 @@ sample. Output is bit-identical to the direct method above for every rate pair; 
   accumulation order are unchanged.
 - Memory bound: the table holds phases × (2·(ceil(half_w)+2)+1) doubles, at most 2^20 doubles (8 MiB).
   Above that the direct method is used instead (same bits).
+
+
+## Loop region — additive (WP-0155)
+A project may carry one optional transport **loop region**, used by live playback (a later work package) to
+repeat a span of the song. Offline rendering is **unaffected**: `opd render` without `--loop` always renders
+the whole song, and `render_project` / `render_stems` / MIDI export / `.opd` packing ignore the field.
+
+```jsonc
+"loop": { "start_bar": 1.0, "end_bar": 3.0 }   // optional; absent = no loop region
+```
+- Bars are **0-based** like `clip.start_bar` and `tempo_map[].bar`; **fractional bars are allowed**
+  (`"start_bar": 0.5`). `end_bar` is exclusive: the region is `[start_bar, end_bar)`.
+- Model: `struct LoopRegion { double start_bar = 0.0; double end_bar = 0.0; };` and
+  `std::optional<LoopRegion> loop;` on `op::Project` (`engine/model.hpp`, empty = no loop).
+- **Canonical save** writes the key only when set, as an object with keys `end_bar`, `start_bar`. (Canonical
+  JSON dumps all object keys in alphabetical order, so `loop` lands between `length_bars` and `patterns`,
+  and inside it `end_bar` precedes `start_bar`; no key-order code is needed.) When absent the key is omitted, so every project without a
+  loop saves byte-for-byte as before (all goldens unchanged).
+- **Validation** at parse (`load_project`), checked in this order, first failure wins; each is the whole
+  error string:
+  1. `loop` is not a JSON object → `loop must be an object`
+  2. `start_bar` or `end_bar` missing or not a JSON number → `loop.start_bar and loop.end_bar must be numbers`
+  3. `!(start_bar >= 0)` or start not finite → `loop.start_bar must be a finite number >= 0`
+  4. end not finite → `loop.end_bar must be a finite number`
+  5. `end_bar <= start_bar` → `loop.end_bar must be greater than loop.start_bar`
+  6. `end_bar > length_bars` → `loop.end_bar must be <= length_bars`
+  7. any other key inside `loop` → `loop has unknown key '<key>'`
+  So `0 <= start_bar < end_bar <= length_bars`, all finite. Because ops validate through the same parse,
+  `set_length_bars` to a value below `loop.end_bar` is rejected with
+  `set_length_bars: loop.end_bar must be <= length_bars`.
+- `Document` (`src/doc/document.hpp`) needs no change: `doc.project().loop` is the read accessor.
+
+### CLI additions (WP-0155)
+- `opd info <file.opj>` prints one extra line, only when a loop is set, directly after the `project:` line
+  (and after `master_gain_db=` when that line is present, before the track rows):
+  `loop: <A>-<B>` where A and B are `start_bar` and `end_bar` printed with C `printf("%g")`
+  (`loop: 1-3`, `loop: 0.5-2.5`). Nothing is printed when absent.
+- `opd render <proj.opj> -o <out.wav> --loop [other options]` renders exactly the loop region. **Defined as
+  identical output** to `--from-bar <start_bar> --to-bar <end_bar>` with the loop's values: same WAV bytes
+  (and, with `--stems-dir`, the same stem files). Rules, all `error: usage: <detail>`, exit 2, nothing written:
+  - `--loop` combined with `--from-bar` or `--to-bar` (either order) → `--loop cannot be combined with --from-bar/--to-bar`
+    (checked with the option syntax, before the project is loaded);
+  - project has no loop (checked after load) → `project has no loop region`.
+  `--loop` takes no value. Project-file errors keep their codes (3 / 4 / 5) and precedence.

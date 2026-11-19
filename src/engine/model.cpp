@@ -1,6 +1,7 @@
 #include "engine/model.hpp"
 
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <fstream>
 
 #include "engine/model_json.hpp"
@@ -135,6 +136,29 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
         if (!p.tempo_map.empty() && p.tempo_map[0].bar != 0.0) {
             err = "tempo_map must start at bar 0 — prepend {\"bar\": 0, \"bpm\": <initial>}"; return false;
         }
+    }
+    if (j.contains("loop")) {  // WP-0155: optional transport loop region (spec project-model.md §Loop region)
+        const json& lj = j["loop"];
+        if (!lj.is_object()) { err = "loop must be an object"; return false; }
+        if (!lj.contains("start_bar") || !lj.contains("end_bar") ||
+            !lj["start_bar"].is_number() || !lj["end_bar"].is_number()) {
+            err = "loop.start_bar and loop.end_bar must be numbers"; return false;
+        }
+        LoopRegion lr;
+        lr.start_bar = lj["start_bar"].get<double>();
+        lr.end_bar = lj["end_bar"].get<double>();
+        if (!(lr.start_bar >= 0.0) || !std::isfinite(lr.start_bar)) {  // NaN-safe
+            err = "loop.start_bar must be a finite number >= 0"; return false;
+        }
+        if (!std::isfinite(lr.end_bar)) { err = "loop.end_bar must be a finite number"; return false; }
+        if (lr.end_bar <= lr.start_bar) { err = "loop.end_bar must be greater than loop.start_bar"; return false; }
+        if (lr.end_bar > p.length_bars) { err = "loop.end_bar must be <= length_bars"; return false; }
+        for (auto it = lj.begin(); it != lj.end(); ++it) {
+            if (it.key() != "start_bar" && it.key() != "end_bar") {
+                err = "loop has unknown key '" + it.key() + "'"; return false;
+            }
+        }
+        p.loop = lr;
     }
     if (j.contains("attachments")) {  // WP-0116: informational AI-artifact references
         if (!j["attachments"].is_array()) { err = "attachments must be an array"; return false; }
@@ -281,6 +305,9 @@ json project_to_json(const Project& p) {
         json tm = json::array();
         for (const auto& tp : p.tempo_map) tm.push_back({{"bar", tp.bar}, {"bpm", tp.bpm}});
         j["tempo_map"] = std::move(tm);
+    }
+    if (p.loop) {  // WP-0155: omitted when absent → legacy canonical bytes unchanged
+        j["loop"] = json{{"start_bar", p.loop->start_bar}, {"end_bar", p.loop->end_bar}};
     }
     if (!p.attachments.empty()) {  // omitted when empty → legacy canonical bytes unchanged
         json arr = json::array();
