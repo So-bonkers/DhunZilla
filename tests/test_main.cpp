@@ -630,6 +630,8 @@ static void test_render_range() {
     op::wav::StereoBuffer full;
     op::slice_frames(src, 0, static_cast<long long>(src.frames()), full);
     CHECK(full.interleaved == src.interleaved && full.sample_rate == src.sample_rate, "range.slice_full_range_identity");
+}
+
 // --- click track render (WP-0148): onsets via the renderer's own beat→sample mapping, bursts per spec.
 static void test_click() {
     // Demo-like constant tempo: 120 bpm @ 48 kHz → 24000 samples/beat; 4 bars = 16 beats (at(b) < total).
@@ -2734,6 +2736,8 @@ static void test_opd_diff() {
     y.seed = base.seed + 1;
     y.beats_per_bar = 3;
     CHECK(expect_unsupported(y, "seed"), "diff.unsupported_seed_before_beats");
+}
+
 // WP-0150: the polyphase tap table must be bit-identical to the frozen direct reference for every
 // rate pair / length / channel count, including the over-budget fallback (44101 → 48000).
 static void test_resample_polyphase() {

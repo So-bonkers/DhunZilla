@@ -61,7 +61,7 @@ implement, with the exact names:
 ## Acceptance criteria
 - [x] Behavior exactly as in the spec section (state machine table, HTTP codes, bodies, cleanup, listing).
 - [x] `cd ai-sidecar && uv run pytest -q` green (all existing tests plus ≥ 6 new). Run uv with
-      `export UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`.
+      `export UV_CACHE_DIR=<workspace>/.cache/uv`.
 - [x] `uv run ruff check src backends` and `uv run mypy src` (in `ai-sidecar/`) clean.
 - [x] Existing `test_cancel_queued_and_running` still passes unmodified.
 - [x] No C++ changes: `git diff --quiet main -- src tests CMakeLists.txt` is clean. (The standard C++ gates

@@ -27,9 +27,8 @@ static void usage() {
     std::fprintf(stderr,
         "usage:\n"
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B]\n"
-        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR]\n"
+        "             [--format pcm16|pcm24|f32]\n"
         "  opd click <project.opj> -o <out.wav>\n"
-        "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--format pcm16|pcm24|f32]\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
@@ -129,7 +128,6 @@ static int cmd_render(int argc, char** argv) {
             op::slice_frames(buf, from_frame, to_frame, sliced);
             buf = std::move(sliced);
         }
-        if (!op::wav::write_pcm16_stereo(out_path, buf, err)) return fail("write", err);
         if (!op::wav::write_wav_stereo(out_path, buf, fmt, err)) return fail("write", err);
         std::printf("rendered %lld frames @%d Hz -> %s (seed=%llu)\n",
                     static_cast<long long>(buf.frames()), buf.sample_rate, out_path.c_str(),
@@ -148,7 +146,6 @@ static int cmd_render(int argc, char** argv) {
                 s = std::move(sliced_stem);
             }
         }
-        if (!op::wav::write_pcm16_stereo(out_path, mix, err)) return fail("write", err);
         if (!op::wav::write_wav_stereo(out_path, mix, fmt, err)) return fail("write", err);
         std::error_code ec;
         fs::create_directories(stems_dir, ec);

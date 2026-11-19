@@ -15,6 +15,10 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0151 | Sidecar job cancellation — `cancelling` state, cooperative cancel in mock backends, cancelled jobs leave no artifacts, `GET /jobs` listing, job_client support | **done** | subagent+orchestrator |
+| WP-0150 | Resampler polyphase tap table — bit-identical to the direct method (1,014-case matrix), ≥8× faster, bounded table with direct fallback | **done** | subagent+orchestrator |
+| WP-0149 | `opd render --format pcm16|pcm24|f32` (mix + stems) — pcm16 default byte-identical, exact pcm24 rounding rule, IEEE-float WAV; reader accepts 24-bit | **done** | subagent+orchestrator |
+| WP-0148 | `opd click` — tempo-map-aware metronome track (accented downbeats), onsets from the renderer's own beat→sample mapping | **done** | subagent+orchestrator |
 | WP-0147 | Clip ops `set_clip_repeats` / `set_clip_pattern` / `duplicate_clip` / `reorder_clip` — validated via the model parse, 32-bit no-wrap, History undo byte-exact | **done** | haiku+orchestrator |
 | WP-0146 | `opd diff a b -o edits.opjl` — journal of existing ops that turns a into b (apply ∘ diff byte-exact; 360 random pairs), fixed op order, unsupported fields named | **done** | haiku+orchestrator |
 | WP-0145 | `opd render --from-bar/--to-bar` — bit-exact slice of the full render via the tempo map, stems too, exact usage errors | **done** | subagent+orchestrator |

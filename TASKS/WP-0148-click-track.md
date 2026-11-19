@@ -120,7 +120,7 @@ tracks, patterns, arrangement, mute/solo, gain and master gain (only timing fiel
   - `bash harness/test_cli_errors.sh` → `test_cli_errors: 0 failures`, incl.
     `PASS click_no_out (exit 2)`, `PASS click_missing_proj (exit 3)`, `PASS click_parse_error (exit 4)`,
     `PASS click_ok (exit 0)`, `PASS click_output_written`.
-  - `bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures` (with `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`).
+  - `bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures` (with `UV_CACHE_DIR=<workspace>/.cache/uv`).
   - ASAN+UBSAN: `cmake -S . -B build-san -DDZ_SANITIZE=ON && cmake --build build-san -j4 && ./build-san/op_tests` → `ALL PASS (0 failures)`.
   - Fixture-level spec check (python3 + wave, both fixtures): exit 0 with empty stdout; rerun byte-identical;
     frames == `total_samples_for` (`demo.opj: 192000`, `tempo.opj: 1024000`); L/R bit-identical; every sample
