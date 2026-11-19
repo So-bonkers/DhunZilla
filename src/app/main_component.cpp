@@ -1,8 +1,11 @@
-// src/app/main_component.cpp — see main_component.hpp for the contract (WP-0143).
+// src/app/main_component.cpp — see main_component.hpp for the contract (WP-0143, WP-0153).
 
 #include "main_component.hpp"
 
 #include <algorithm>
+
+#include "playback_controller.hpp"
+#include "render_playback.hpp"
 
 namespace {
 
@@ -40,14 +43,24 @@ struct dz::MainComponent::RowWidgets {
 
 dz::MainComponent::~MainComponent() = default;  // RowWidgets complete here (see header note)
 
-dz::MainComponent::MainComponent(const op::Document& doc) : doc_(doc) {
-    // --- transport bar: inert for this package (playback is a later WP) ---
+dz::MainComponent::MainComponent(const op::Document& doc, PlaybackController* playback)
+    : doc_(doc), playback_(playback) {
+    // --- transport bar: inert without a controller (snapshot mode == WP-0143), live with one ---
     play_.setButtonText(String::fromUTF8("Play"));
     stop_.setButtonText(String::fromUTF8("Stop"));
     for (auto* button : {&play_, &stop_}) {
-        button->setEnabled(false);  // no transport state exists yet — nothing to act on
+        button->setEnabled(playback_ != nullptr);  // snapshot mode: nothing to act on (spec)
         button->setColour(juce::TextButton::buttonColourId, kButtonOff);
         button->setColour(juce::TextButton::textColourOffId, kText);
+    }
+    if (playback_ != nullptr) {  // live transport: Play starts + renders, Stop silences + parks
+        play_.onClick = [this] {
+            playback_->play(doc_);
+            requested_revision_ = doc_.revision();  // the click's render covers today's model
+        };
+        stop_.onClick = [this] { playback_->stop(); };
+        requested_revision_ = doc.revision();
+        startTimerHz(30);  // reclaim + position/status refresh (spec: 30 Hz)
     }
 
     bpm_.setColour(juce::Label::textColourId, kText);
@@ -55,10 +68,14 @@ dz::MainComponent::MainComponent(const op::Document& doc) : doc_(doc) {
     position_.setColour(juce::Label::textColourId, kText);
     position_.setJustificationType(juce::Justification::centredRight);
 
+    status_.setColour(juce::Label::textColourId, kCaption);  // empty in snapshot mode: paints nothing
+    status_.setJustificationType(juce::Justification::centredLeft);
+
     addAndMakeVisible(play_);
     addAndMakeVisible(stop_);
     addAndMakeVisible(bpm_);
     addAndMakeVisible(position_);
+    addAndMakeVisible(status_);
 
     // --- one strictly read-only row per track, in Document order ---
     const auto tracks = doc.track_rows();
@@ -116,8 +133,11 @@ dz::MainComponent::MainComponent(const op::Document& doc) : doc_(doc) {
 
 void dz::MainComponent::refresh() {
     bpm_.setText(String::fromUTF8("BPM ") + String(doc_.project().bpm, 1), juce::dontSendNotification);
-    // No transport yet: bar.beat is always the home position. Exact literal (spec).
-    position_.setText(String::fromUTF8("1.1"), juce::dontSendNotification);
+    // bar.beat from the Player's counter — which reads 0 at home, so stopped (or snapshot mode)
+    // formats to exactly "1.1" (spec: refresh() formats the position this way too).
+    const long long frame = playback_ != nullptr ? playback_->player().position_frames() : 0;
+    position_.setText(String::fromUTF8(format_position(doc_.project(), frame).c_str()),
+                      juce::dontSendNotification);
 
     const auto tracks = doc_.track_rows();
     for (std::size_t i = 0; i < rows_.size() && i < tracks.size(); ++i) {
@@ -134,6 +154,27 @@ void dz::MainComponent::refresh() {
     }
 
     repaint();  // row dimming depends on track_rows() too, not just widget values
+}
+
+void dz::MainComponent::timerCallback() {
+    if (playback_ == nullptr) return;  // defensive: the timer only starts with a controller
+    auto& player = playback_->player();
+
+    // Collect buffers the audio callback retired (control-thread ownership rule, player.hpp).
+    player.reclaim();
+
+    // "After any model change while playing": re-render so the audible buffer follows the edit.
+    if (player.playing() && doc_.revision() != requested_revision_) {
+        requested_revision_ = doc_.revision();
+        playback_->requestRender(doc_);
+    }
+
+    position_.setText(String::fromUTF8(format_position(doc_.project(), player.position_frames()).c_str()),
+                      juce::dontSendNotification);
+
+    const std::string& error = playback_->lastError();  // a failed render outranks the device line
+    status_.setText(String::fromUTF8((error.empty() ? playback_->deviceDescription() : error).c_str()),
+                    juce::dontSendNotification);
 }
 
 void dz::MainComponent::paint(juce::Graphics& g) {
@@ -177,6 +218,8 @@ void dz::MainComponent::resized() {
     bpm_.setBounds(x, transport.getY(), 200, kTransportHeight);
 
     position_.setBounds(transport.getRight() - 16 - 72, transport.getY(), 72, kTransportHeight);
+
+    status_.setBounds(16, getHeight() - 28, getWidth() - 32, 24);  // bottom status line (spec)
 
     row_rects_.assign(rows_.size(), {});
     for (std::size_t i = 0; i < rows_.size(); ++i) {

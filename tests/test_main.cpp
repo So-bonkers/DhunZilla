@@ -23,6 +23,9 @@
 #include "engine/rng.hpp"
 #include "engine/wav.hpp"
 
+#include "player.hpp"             // WP-0153: dz::Player (dzplayer, JUCE-free)
+#include "render_playback.hpp"    // WP-0153: dz::format_position
+
 #include "resample_reference.hpp"  // frozen pre-WP-0150 direct algorithm (bit-compare target)
 
 static int g_failures = 0;
@@ -3822,6 +3825,117 @@ static void test_aiff() {
     }
 }
 
+// WP-0153: dz::Player driven by a fake device (plain process() calls on this thread) plus
+// dz::format_position on the engine's tempo map. Buffers are ramps so copy/position bugs show up.
+static std::unique_ptr<op::wav::StereoBuffer> make_ramp_buffer(long long frames, float base) {
+    auto buf = std::make_unique<op::wav::StereoBuffer>();
+    buf->interleaved.resize(static_cast<size_t>(frames) * 2);
+    for (long long i = 0; i < frames; ++i) {
+        buf->interleaved[static_cast<size_t>(2 * i)] = base + static_cast<float>(i);
+        buf->interleaved[static_cast<size_t>(2 * i + 1)] = -base - static_cast<float>(i);
+    }
+    return buf;
+}
+
+static bool all_zero(const float* a, int n) {
+    for (int i = 0; i < n; ++i) if (a[i] != 0.0f) return false;
+    return true;
+}
+
+static void test_player() {
+    using dz::Player;
+    constexpr int kBlock = 64;
+    float left[kBlock], right[kBlock];
+
+    // Silence without a buffer, even while playing; position stays home.
+    Player p;
+    p.play();
+    std::fill(left, left + kBlock, 1.0f);
+    std::fill(right, right + kBlock, 1.0f);
+    p.process(left, right, kBlock);
+    CHECK(all_zero(left, kBlock) && all_zero(right, kBlock) && p.position_frames() == 0 &&
+              p.frames_played() == 0,
+          "player.silence_without_buffer");
+
+    // Silence when not playing (buffer submitted but play() never called).
+    Player q;
+    q.submit(make_ramp_buffer(200, 1.0f));
+    std::fill(left, left + kBlock, 1.0f);
+    std::fill(right, right + kBlock, 1.0f);
+    q.process(left, right, kBlock);
+    CHECK(all_zero(left, kBlock) && all_zero(right, kBlock) && !q.playing() &&
+              q.position_frames() == 0,
+          "player.silence_when_not_playing");
+
+    // Copy + position advance: block 1 adopts the buffer and plays frames 0..63.
+    q.play();
+    q.process(left, right, kBlock);
+    bool copy_ok = true;
+    for (int i = 0; i < kBlock; ++i) {
+        if (left[i] != 1.0f + static_cast<float>(i) || right[i] != -1.0f - static_cast<float>(i)) copy_ok = false;
+    }
+    CHECK(copy_ok && q.position_frames() == kBlock && q.frames_played() == kBlock, "player.copy_and_position_advance");
+
+    // Buffer swap keeps the position: this block adopts the second buffer and continues at 64.
+    q.submit(make_ramp_buffer(200, 1000.0f));
+    q.process(left, right, kBlock);
+    bool swap_ok = true;
+    for (int i = 0; i < kBlock; ++i) {
+        if (left[i] != 1064.0f + static_cast<float>(i) || right[i] != -1064.0f - static_cast<float>(i)) swap_ok = false;
+    }
+    CHECK(swap_ok && q.position_frames() == 2 * kBlock, "player.swap_keeps_position");
+
+    // Stop resets the position (immediately visible) and silences output.
+    q.stop();
+    const bool stopped_state = !q.playing() && q.position_frames() == 0;
+    std::fill(left, left + kBlock, 1.0f);
+    std::fill(right, right + kBlock, 1.0f);
+    q.process(left, right, kBlock);
+    CHECK(stopped_state && all_zero(left, kBlock) && all_zero(right, kBlock) && q.position_frames() == 0,
+          "player.stop_resets_position_and_silences");
+
+    // Restart from zero: play() after stop() starts at frame 0 of the current buffer.
+    q.play();
+    q.process(left, right, 16);
+    CHECK(left[0] == 1000.0f && left[15] == 1015.0f && q.position_frames() == 16, "player.restart_from_zero");
+
+    // End of song: partial block then zeros; playing() false and position parked at 0.
+    Player e;
+    e.submit(make_ramp_buffer(10, 5.0f));
+    e.play();
+    float el[8], er[8];
+    e.process(el, er, 8);  // frames 0..7, song not over yet
+    bool partial_ok = el[0] == 5.0f && el[7] == 12.0f && er[0] == -5.0f && e.position_frames() == 8 && e.playing();
+    std::fill(el, el + 8, 1.0f);
+    std::fill(er, er + 8, 1.0f);
+    e.process(el, er, 8);  // frames 8..9 then zeros; end of song fires
+    bool end_ok = partial_ok && el[0] == 13.0f && el[1] == 14.0f && el[2] == 0.0f && el[7] == 0.0f &&
+                  er[0] == -13.0f && er[2] == 0.0f && !e.playing() && e.position_frames() == 0 &&
+                  e.frames_played() == 10;
+    CHECK(end_ok, "player.end_of_song_partial_then_zeros");
+
+    // right == nullptr: mono output still copies the left channel and advances.
+    Player m;
+    m.submit(make_ramp_buffer(32, 7.0f));
+    m.play();
+    std::fill(left, left + kBlock, 1.0f);
+    m.process(left, nullptr, 16);
+    bool mono_ok = true;
+    for (int i = 0; i < 16; ++i) if (left[i] != 7.0f + static_cast<float>(i)) mono_ok = false;
+    CHECK(mono_ok && m.position_frames() == 16, "player.right_null_mono_output");
+
+    // format_position on the default Project (120 bpm, 4/4, 48 kHz → 96000 frames/bar, 4 bars).
+    const op::Project proj;
+    CHECK(dz::format_position(proj, 0) == "1.1", "format_position.frame_0_is_1.1");
+    CHECK(dz::format_position(proj, 23999) == "1.1" && dz::format_position(proj, 24000) == "1.2",
+          "format_position.beat_boundary");
+    CHECK(dz::format_position(proj, 95999) == "1.4" && dz::format_position(proj, 96000) == "2.1",
+          "format_position.bar_boundary");
+    CHECK(dz::format_position(proj, 4 * 96000LL - 1) == "4.4" && dz::format_position(proj, 1LL << 40) == "4.4" &&
+              dz::format_position(proj, -7) == "1.1",
+          "format_position.clamps_past_end");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -3860,6 +3974,7 @@ int main() {
     test_step_sequencer();
     test_loop_region();
     test_sampler_trim();
+    test_player();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

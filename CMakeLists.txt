@@ -24,14 +24,20 @@ target_link_libraries(dzdoc PUBLIC opengine)
 add_executable(opd src/cli/main.cpp)
 target_link_libraries(opd PRIVATE opengine)
 
+# WP-0153: JUCE-free playback core (Player + bar.beat formatting + --render-playback driver).
+# Lives in src/app/ but includes no JUCE, so the default build and op_tests exercise it headless.
+add_library(dzplayer STATIC src/app/player.cpp src/app/player_rt.cpp src/app/render_playback.cpp)
+target_include_directories(dzplayer PUBLIC src/app)
+target_link_libraries(dzplayer PUBLIC opengine)
+
 enable_testing()
 add_executable(op_tests tests/test_main.cpp)
-target_link_libraries(op_tests PRIVATE opengine dzdoc)
+target_link_libraries(op_tests PRIVATE opengine dzdoc dzplayer)
 target_compile_definitions(op_tests PRIVATE OP_TEST_DATA="${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME unit COMMAND op_tests)
 
 # Our targets only — list explicitly so third_party/ can never trip these gates.
-set(DZ_OUR_TARGETS opengine dzdoc opd op_tests)
+set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
@@ -57,8 +63,8 @@ endif()
 
 # ---------------------------------------------------------------------------
 # WP-0143: JUCE app window + headless snapshot (dhunzilla). OFF by default, so a default configure
-# never mentions JUCE and builds exactly opengine dzdoc opd op_tests as before. dhunzilla is NOT in
-# DZ_OUR_TARGETS: the -Werror/-fsanitize loops above must not reach it or generated JUCE targets.
+# never mentions JUCE and builds exactly opengine dzdoc dzplayer opd op_tests as before. dhunzilla is
+# NOT in DZ_OUR_TARGETS: the -Werror/-fsanitize loops above must not reach it or generated JUCE targets.
 #
 # Local build recipe (point FETCHCONTENT_SOURCE_DIR_JUCE at an unpacked JUCE 9.0.5 tree to build offline):
 #   export DISPLAY=${DISPLAY:-:0}   # JUCE needs an X display even for --snapshot (xvfb-run -a in CI)
@@ -81,21 +87,21 @@ if(DZ_BUILD_APP)
       VERSION 0.1.0
       PRODUCT_NAME "dhunzilla"
       COMPANY_NAME "DhunZilla")
-  target_sources(dhunzilla PRIVATE src/app/main.cpp src/app/main_component.cpp)
+  target_sources(dhunzilla PRIVATE src/app/main.cpp src/app/main_component.cpp src/app/playback_controller.cpp)
   target_compile_definitions(dhunzilla PRIVATE
       JUCE_WEB_BROWSER=0
       JUCE_USE_CURL=0
       JUCE_APPLICATION_NAME_STRING="dhunzilla"
       JUCE_APPLICATION_VERSION_STRING="0.1.0")
   target_include_directories(dhunzilla PRIVATE src/app)
-  target_link_libraries(dhunzilla PRIVATE dzdoc juce::juce_gui_basics
+  target_link_libraries(dhunzilla PRIVATE dzdoc dzplayer juce::juce_gui_basics juce::juce_audio_devices
       PUBLIC juce::juce_recommended_config_flags
              juce::juce_recommended_warning_flags)
 
-  # Upstream JUCE warnings are not ours to fix: -Werror applies to our two app sources only, via
+  # Upstream JUCE warnings are not ours to fix: -Werror applies to our app sources only, via
   # source-file property — never by adding dhunzilla to DZ_OUR_TARGETS.
   if(DZ_WERROR)
-    set_source_files_properties(src/app/main.cpp src/app/main_component.cpp
+    set_source_files_properties(src/app/main.cpp src/app/main_component.cpp src/app/playback_controller.cpp
         PROPERTIES COMPILE_OPTIONS -Werror)
   endif()
 endif()
