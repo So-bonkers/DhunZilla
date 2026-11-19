@@ -103,5 +103,20 @@ err="$("$OPD" diff "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/seed43.opj" -o 
 if [ "$got" = 5 ] && [ "$err" = "error: diff: unsupported difference: seed" ]; then echo "PASS diff_unsupported (exit 5, stderr names field)"; else echo "FAIL diff_unsupported: exit $got stderr [$err]"; fails=$((fails+1)); fi
 if [ ! -e "$TMP/never_d.opjl" ]; then echo "PASS diff_unsupported_no_output"; else echo "FAIL diff_unsupported_no_output"; fails=$((fails+1)); fi
 
+# --- opd steps (WP-0154): docs/spec/operations.md §Engine view and CLI exit-code contract
+cat > "$TMP/st_base.opj" <<'EOF'
+{"format_version":0,"bpm":120,"sample_rate":48000,"seed":1,"length_bars":1,"beats_per_bar":4,
+ "tracks":[{"name":"K","voice":{"kind":"sine","freq_hz":220}}],
+ "patterns":[{"track":0,"notes":[]}]}
+EOF
+check steps_bad_index      2 "$OPD" steps "$TMP/st_base.opj" x
+check steps_steps_zero     2 "$OPD" steps "$TMP/st_base.opj" 0 --steps 0
+check steps_missing_file   3 "$OPD" steps "$TMP/nope.opj" 0
+check steps_index_range    2 "$OPD" steps "$TMP/st_base.opj" 1
+printf '{"op":"set_step","pattern":0,"step":0,"on":true}\n{"op":"set_step","pattern":0,"step":4,"on":true}\n{"op":"set_step","pattern":0,"step":8,"on":true}\n{"op":"set_step","pattern":0,"step":12,"on":true}\n' > "$TMP/st.opjl"
+"$OPD" apply "$TMP/st_base.opj" "$TMP/st.opjl" -o "$TMP/st.opj" >/dev/null 2>&1
+out="$("$OPD" steps "$TMP/st.opj" 0 2>/dev/null)"; got=$?
+if [ "$got" = 0 ] && [ "$out" = "x...x...x...x..." ]; then echo "PASS steps_ok (exit 0, x...x...x...x...)"; else echo "FAIL steps_ok: exit $got out [$out]"; fails=$((fails+1)); fi
+
 echo "test_cli_errors: $fails failures"
 exit $((fails > 0 ? 1 : 0))

@@ -2824,6 +2824,142 @@ static void test_resample_polyphase() {
                 scalars_compared);
 }
 
+// WP-0154 step sequencer (docs/spec/operations.md §Step sequencer): set_step / clear_steps / step_grid.
+static void test_step_sequencer() {
+    using nlohmann::json;
+    auto base = []() {
+        op::Project p;
+        p.bpm = 120.0; p.length_bars = 4.0; p.sample_rate = 48000; p.seed = 7;
+        op::Track t0; t0.name = "Kick"; t0.voice.kind = op::VoiceKind::Sine; t0.voice.freq_hz = 220.0f;
+        p.tracks = {t0};
+        op::Pattern pt; pt.track = 0;
+        p.patterns = {pt};
+        return p;
+    };
+    auto set_step = [](long long s, bool on) {
+        return json{{"op", "set_step"}, {"pattern", 0}, {"step", s}, {"on", on}};
+    };
+    auto dump = [](const op::Project& p) { return op::project_to_json(p).dump(); };
+    auto note = [](double t, double dur) { op::Note n; n.t_beats = t; n.dur_beats = dur; return n; };
+
+    // (1) default step note: no pitch key, no vel key, t = s*0.25, dur = 0.25
+    op::Project p1 = base();
+    std::string e1;
+    CHECK(op::apply_op(p1, set_step(0, true), e1) && p1.patterns[0].notes.size() == 1 &&
+              p1.patterns[0].notes[0].t_beats == 0.0 && p1.patterns[0].notes[0].dur_beats == 0.25 &&
+              p1.patterns[0].notes[0].midi_note == -1 && p1.patterns[0].notes[0].velocity == 1.0,
+          "step.set_on_default_note");
+
+    // (2) with velocity + pitch: appended note carries both, t/dur still on the grid
+    op::Project p2 = base();
+    std::string e2;
+    CHECK(op::apply_op(p2, json{{"op", "set_step"}, {"pattern", 0}, {"step", 4}, {"on", true},
+                                {"velocity", 0.5}, {"pitch", 36}}, e2) &&
+              p2.patterns[0].notes.size() == 1 && p2.patterns[0].notes[0].t_beats == 1.0 &&
+              p2.patterns[0].notes[0].dur_beats == 0.25 && p2.patterns[0].notes[0].midi_note == 36 &&
+              p2.patterns[0].notes[0].velocity == 0.5,
+          "step.set_on_velocity_pitch");
+
+    // (3) set_step twice -> identical canonical bytes after the second application
+    op::Project p3 = base();
+    std::string e3;
+    bool twice = op::apply_op(p3, set_step(8, true), e3);
+    const std::string once_bytes = dump(p3);
+    twice = twice && op::apply_op(p3, set_step(8, true), e3);
+    CHECK(twice && dump(p3) == once_bytes, "step.set_twice_identical_bytes");
+
+    // (4) on:false removes every note on the step, keeps off-grid t=0.3 and another step's note
+    op::Project p4 = base();
+    p4.patterns[0].notes = {note(1.0, 0.25), note(0.3, 0.25), note(1.0, 0.5), note(2.0, 0.25)};
+    std::string e4;
+    CHECK(op::apply_op(p4, set_step(4, false), e4) && p4.patterns[0].notes.size() == 2 &&
+              p4.patterns[0].notes[0].t_beats == 0.3 && p4.patterns[0].notes[1].t_beats == 2.0,
+          "step.off_removes_all_on_step_keeps_offgrid");
+
+    // (5) on:true on an existing long note: only vel/pitch may change, dur stays 2.0
+    op::Project p5 = base();
+    p5.patterns[0].notes = {note(0.0, 2.0)};
+    std::string e5;
+    CHECK(op::apply_op(p5, json{{"op", "set_step"}, {"pattern", 0}, {"step", 0}, {"on", true},
+                                {"velocity", 0.25}}, e5) &&
+              p5.patterns[0].notes.size() == 1 && p5.patterns[0].notes[0].dur_beats == 2.0 &&
+              p5.patterns[0].notes[0].velocity == 0.25,
+          "step.on_existing_keeps_dur");
+
+    // (6) clear_steps keeps off-grid notes, removes on-grid ones (including step 30 = beat 7.5)
+    op::Project p6 = base();
+    p6.patterns[0].notes = {note(0.0, 0.25), note(0.3, 0.25), note(1.0, 0.25), note(7.5, 0.25)};
+    std::string e6;
+    CHECK(op::apply_op(p6, json{{"op", "clear_steps"}, {"pattern", 0}}, e6) &&
+              p6.patterns[0].notes.size() == 1 && p6.patterns[0].notes[0].t_beats == 0.3,
+          "step.clear_keeps_offgrid");
+
+    // (7) rejection classes leave the project byte-for-byte unchanged
+    op::Project fx = base();
+    fx.patterns[0].notes = {note(0.0, 0.25)};
+    const std::string before = dump(fx);
+    auto rejects = [&](const json& o, const char* want, const char* name) {
+        op::Project q = fx;
+        std::string e;
+        const bool ok = op::apply_op(q, o, e);
+        CHECK(!ok && e == want && dump(q) == before, name);
+    };
+    rejects(set_step(4096, true), "set_step: 'step' out of range", "step.reject_step_4096");
+    rejects(set_step(-1, true), "set_step: 'step' out of range", "step.reject_step_minus1");
+    rejects(json{{"op", "set_step"}, {"pattern", 0}, {"step", 1.0}, {"on", true}},
+            "set_step: 'step' must be an integer", "step.reject_step_float");
+    rejects(json{{"op", "set_step"}, {"pattern", 0}, {"step", 0}, {"on", true}, {"pitch", 128}},
+            "set_step: 'pitch' out of range", "step.reject_pitch_128");
+    rejects(json{{"op", "set_step"}, {"pattern", 0}, {"step", 4}, {"on", true}, {"velocity", 0}},
+            "set_step: note.vel must be in (0, 1]", "step.reject_vel_zero");
+    rejects(json{{"op", "set_step"}, {"pattern", 0}, {"step", 0}, {"on", true}, {"velocity", 1.5}},
+            "set_step: note.vel must be in (0, 1]", "step.reject_vel_above_one");
+    rejects(json{{"op", "set_step"}, {"pattern", 0}, {"step", 0}, {"on", true}, {"foo", 1}},
+            "set_step: unknown argument 'foo'", "step.reject_unknown_argument");
+    rejects(json{{"op", "set_step"}, {"pattern", 0}, {"step", 0}, {"on", false}, {"velocity", 0.5}},
+            "set_step: 'velocity' not allowed when 'on' is false", "step.reject_velocity_on_false");
+
+    // (8) step_grid: 16 steps, 8 steps, 0 steps; off-grid and beyond-range notes are not shown
+    op::Project g = base();
+    g.patterns[0].notes = {note(0.0, 0.25), note(1.0, 0.25), note(2.0, 0.25), note(3.0, 0.25),
+                           note(0.3, 0.25), note(5.0, 0.25)};
+    CHECK(op::step_grid(g.patterns[0], 16) == "x...x...x...x...", "step.grid_16");
+    CHECK(op::step_grid(g.patterns[0], 8) == "x...x...", "step.grid_8");
+    CHECK(op::step_grid(g.patterns[0], 0).empty(), "step.grid_0_empty");
+
+    // (9) History undo/redo restores the bytes exactly
+    op::History h;
+    op::Project hp = base();
+    std::string eh;
+    const std::string b0 = dump(hp);
+    bool hok = h.apply(hp, set_step(0, true), eh);
+    const std::string b1 = dump(hp);
+    hok = hok && h.apply(hp, set_step(4, true), eh);
+    const std::string b2 = dump(hp);
+    hok = hok && h.undo(hp) && dump(hp) == b1;
+    hok = hok && h.undo(hp) && dump(hp) == b0;
+    hok = hok && h.redo(hp) && dump(hp) == b1;
+    hok = hok && h.redo(hp) && dump(hp) == b2;
+    CHECK(hok, "step.history_undo_redo_bytes");
+
+    // (10) determinism: four set_step ops render byte-identically to hand-written notes at beats 0..3
+    op::Project sq = base();
+    sq.length_bars = 1.0;
+    std::string es;
+    bool sok = true;
+    for (long long s : {0LL, 4LL, 8LL, 12LL}) sok = sok && op::apply_op(sq, set_step(s, true), es);
+    op::Project hand = base();
+    hand.length_bars = 1.0;
+    hand.patterns[0].notes = {note(0.0, 0.25), note(1.0, 0.25), note(2.0, 0.25), note(3.0, 0.25)};
+    op::wav::StereoBuffer ra, rb;
+    std::string er;
+    sok = sok && op::render_project(sq, "", ra, er) && op::render_project(hand, "", rb, er);
+    CHECK(sok && !ra.interleaved.empty() && ra.interleaved.size() == rb.interleaved.size() &&
+              std::memcmp(ra.interleaved.data(), rb.interleaved.data(),
+                          ra.interleaved.size() * sizeof(float)) == 0,
+          "step.render_byte_identical_to_handwritten");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -2857,6 +2993,7 @@ int main() {
     test_analyze();
     test_opd_diff();
     test_resample_polyphase();
+    test_step_sequencer();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

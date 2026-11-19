@@ -161,3 +161,93 @@ Rules:
   undone/redone by `History::undo`/`redo` byte-exactly (invariant above).
 - `set_clip_gain` setting `0` makes the saved clip omit `gain_db` (existing canonical-save rule);
   `duplicate_clip` of a clip without `gain_db` yields a copy without `gain_db`.
+
+## Step sequencer — additive (WP-0154)
+A **step grid** is a *view* over the existing notes of one pattern; no model field is added and no
+new file format exists. Everything is expressed with ordinary `Note`s.
+
+**Definitions.** One step = 1/4 beat (a 16th note), so 16 steps = one 4/4 bar. Step `s` (integer
+`s >= 0`) is at beat `s * 0.25`. A note **is on step `s`** iff its `t` equals `s * 0.25` *exactly*
+(double equality; `s * 0.25` is exactly representable, so `1.0`, `0.25` and `3.75` qualify while
+`0.3` or `0.30000000000000004` or `1.0000001` do not). A missing `t` counts as `0.0` (the model's
+default). Pitch, `dur` and `vel` of the note are irrelevant to *being on a step*: a step is **on**
+iff at least one note is on it. A note is **on the grid** iff it is on some step (`t >= 0` and
+`t * 4` is an integer, i.e. `std::floor(t * 4.0) == t * 4.0`); every other note is **off-grid**.
+Off-grid notes are never read, changed, moved or removed by any step operation or by `step_grid`.
+
+**Default step note** (created by `set_step` when the step is off): `{"t": s*0.25, "dur": 0.25}` —
+no `"note"` key (pitch absent → the voice's own pitch/sample, which is what drum tracks want) and no
+`"vel"` key (velocity 1.0), unless `pitch` / `velocity` arguments are given.
+
+### Operations
+Both follow Apply semantics unchanged (copy → JSON edit → save→parse validation → commit) and the
+strict-argument rules (`check_keys`, missing/mistyped rejection, integer-only indices, `<op>: <reason>`
+errors). Neither may create a `notes` key on a pattern that lacks one as a side effect of a failed or
+no-op call (read with `const` access).
+
+| op | arguments | effect |
+|---|---|---|
+| `set_step` | `pattern`, `step`, `on`, optional `velocity`, optional `pitch` | see below |
+| `clear_steps` | `pattern` | erase every on-grid note of the pattern |
+
+**`set_step`** — argument validation, in exactly this order (first failure wins):
+1. keys: only `op, pattern, step, on, velocity, pitch` → else `unknown argument '<key>'`;
+2. `pattern`: integer in `[0, patterns.size())` → `missing argument 'pattern'` / `'pattern' must be an
+   integer` / `'pattern' out of range`;
+3. `step`: integer in `[0, 4096)` → `missing argument 'step'` / `'step' must be an integer` (also for
+   `2.0`) / `'step' out of range` (negative, `>= 4096`, or beyond 64 bits);
+4. `on`: boolean → `missing argument 'on'` / `'on' must be a boolean`;
+5. `velocity` (if present): JSON number → `'velocity' must be a number`; its range `(0, 1]` is NOT
+   re-implemented: out of range is rejected by the model parse, giving `set_step: note.vel must be in
+   (0, 1]`;
+6. `pitch` (if present): JSON integer → `'pitch' must be an integer`; must be in `[0, 127]` →
+   `'pitch' out of range` (`-1` is rejected even though the model treats -1 as "absent");
+7. if `on` is `false` and `velocity` or `pitch` is present → `'velocity' not allowed when 'on' is
+   false` (checked for `velocity` first, then `'pitch' not allowed when 'on' is false`).
+
+Effect, with `t = step * 0.25`:
+- **`on: true`, no note is on the step:** append the default step note (with `"note": pitch` and/or
+  `"vel": velocity` if given) at the **end** of `notes`. Other notes keep their order and are not
+  re-sorted.
+- **`on: true`, one or more notes are on the step:** only the note with the **lowest index** among
+  them is touched: `velocity` (if given) replaces its `vel`, `pitch` (if given) replaces its `note`;
+  its `t` and `dur` are never changed (a long note stays long). Arguments not given leave the
+  field as it was (velocity is *not* reset to 1.0). No note is added, removed or reordered; other
+  notes on the same step are untouched. With neither `velocity` nor `pitch` the state does not change.
+- **`on: false`:** erase **every** note on the step (whatever pitch/dur/vel); remaining notes keep their
+  relative order. If none exists the state does not change.
+
+**Idempotence:** applying the same `set_step` twice leaves the project (canonical save bytes) exactly as
+after the first application. A call that leaves the state unchanged (turning an on step on again with
+no arguments, turning an off step off) is still a **successful operation** and `History` pushes an undo
+snapshot for it (same rule as `reorder_clip` with `to == index`).
+
+**`clear_steps`:** erases every on-grid note of `patterns[pattern]` (any `t = k*0.25`, `k >= 0`, even
+beyond step 4095), preserving the order of the rest. Off-grid notes are untouched. Empty or all-off-grid
+pattern: success, no change. Validation order: keys (`op, pattern` only), then `pattern` as for
+`set_step`. Idempotent.
+
+Undo/redo: no new mechanism — `History` snapshots the whole project, so both ops undo/redo byte-exactly.
+
+### Engine view and CLI
+```cpp
+// engine/ops.hpp, namespace op
+std::string step_grid(const Pattern& pattern, int steps);
+```
+Returns a string of exactly `max(steps, 0)` characters; character `i` is `'x'` if step `i` is on, else
+`'.'`. Notes at steps `>= steps` and all off-grid notes are ignored. `steps <= 0` → `""`.
+Pure function (no I/O, no allocation beyond the result).
+
+```
+opd steps <proj.opj> <pattern-index> [--steps N]
+```
+Prints `step_grid(pattern, N)` followed by one `\n` to stdout and nothing else; `N` defaults to 16.
+Argument errors are `error: usage: <detail>` on stderr, exit 2:
+- fewer than two positional arguments → `steps needs <proj.opj> <pattern-index>`;
+- `<pattern-index>` not entirely decimal digits (`x`, `-1`, `1.0`, empty) → `bad pattern index '<arg>'`;
+- `--steps` value not entirely decimal digits or outside `[1, 256]` → `bad --steps value '<arg>'`;
+  `--steps` without a value or any other extra argument → `unknown arg '<arg>'`.
+Then: project file missing → exit 3 (`not_found`); fails to parse → exit 4 (`parse`); index `>=` pattern
+count → exit 2, `error: usage: pattern index <n> out of range (project has <m> patterns)`.
+Option syntax is checked before the project is loaded. Example: a pattern with kick notes at beats
+0, 1, 2, 3 prints `x...x...x...x...`.

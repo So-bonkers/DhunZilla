@@ -58,6 +58,13 @@ bool apply_journal(Project& p, const std::string& jsonl_text, std::string& err,
 bool diff_projects(const Project& a, const Project& b, std::vector<nlohmann::json>& ops,
                    std::string& err);
 
+// Step-sequencer view (WP-0154, docs/spec/operations.md §Step sequencer): one character per 16th
+// step, 'x' when some note of `pattern` sits exactly at beat step*0.25, '.' otherwise. Notes at
+// steps >= `steps` and off-grid notes are ignored; steps <= 0 gives "". Pure, no I/O. Example:
+//   // kick notes at beats 0, 1, 2, 3 -> steps 0, 4, 8, 12
+//   std::string g = op::step_grid(proj.patterns[0], 16);  // "x...x...x...x..."
+std::string step_grid(const Pattern& pattern, int steps);
+
 // Undo/redo over apply_op using whole-project snapshots (spec §Undo/redo): projects are small,
 // snapshots are boring and obviously correct. Cap 256 undo entries — the oldest is dropped.
 // Failed applies touch neither stack. Example:

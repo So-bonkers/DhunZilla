@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -39,7 +40,8 @@ static void usage() {
         "  opd pack <in.opj> -o <song.opd>    (project + samples + attachments in one file)\n"
         "  opd unpack <song.opd> -d <out-dir>\n"
         "  opd info <file>   (.wav | .opj | .opd | .mid)\n"
-        "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n");
+        "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
+        "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n");
 }
 
 static int fail(const char* code, const std::string& detail) {
@@ -476,6 +478,55 @@ static int cmd_analyze(int argc, char** argv) {
     return 0;
 }
 
+// Parse a decimal argument that must be all digits and fit in [0, max]. Rejects "", "-1", "1.0",
+// "x" and anything that would overflow. Example: parse_decimal("16", 256, v) → true, v == 16.
+static bool parse_decimal(const std::string& s, long long max, long long& out) {
+    if (s.empty() || s.size() > 18) return false;
+    for (char c : s)
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    out = std::stoll(s);
+    return out <= max;
+}
+
+// opd steps (WP-0154, docs/spec/operations.md §Engine view and CLI): print a pattern's step grid.
+// Option syntax is checked before the project is loaded. Exit 2 usage, 3 not-found, 4 parse.
+static int cmd_steps(int argc, char** argv) {
+    std::vector<std::string> pos;
+    long long steps = 16;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--steps") && i + 1 < argc) {
+            long long v = 0;
+            if (!parse_decimal(argv[i + 1], 256, v) || v < 1)
+                { usage(); return fail("usage", std::string("bad --steps value '") + argv[i + 1] + "'"); }
+            steps = v;
+            ++i;
+        } else if (!std::strncmp(argv[i], "--", 2)) {  // includes a valueless `--steps`
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        } else if (pos.size() < 2) {
+            pos.push_back(argv[i]);
+        } else {
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        }
+    }
+    if (pos.size() < 2) { usage(); return fail("usage", "steps needs <proj.opj> <pattern-index>"); }
+    long long idx = 0;
+    if (!parse_decimal(pos[1], std::numeric_limits<long long>::max(), idx))
+        { usage(); return fail("usage", "bad pattern index '" + pos[1] + "'"); }
+
+    const std::string& proj = pos[0];
+    if (!fs::exists(proj)) return fail("not_found", proj);
+    op::Project p;
+    std::string err;
+    if (!op::load_project(proj, p, err)) return fail("parse", err);
+    if (idx >= static_cast<long long>(p.patterns.size())) {
+        usage();
+        return fail("usage", "pattern index " + std::to_string(idx) + " out of range (project has " +
+                                 std::to_string(p.patterns.size()) + " patterns)");
+    }
+    std::printf("%s\n", op::step_grid(p.patterns[static_cast<std::size_t>(idx)], static_cast<int>(steps)).c_str());
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -492,6 +543,7 @@ int main(int argc, char** argv) {
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
+    if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     usage();
     return 2;
 }

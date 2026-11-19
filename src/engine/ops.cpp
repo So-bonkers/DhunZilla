@@ -6,6 +6,7 @@
 #include "engine/ops.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -88,6 +89,24 @@ bool fits_int(const json& v) {
     if (v.is_number_unsigned()) return v.get<uint64_t>() <= static_cast<uint64_t>(kMax);
     const long long iv = v.get<long long>();
     return iv >= kMin && iv <= kMax;
+}
+
+// Step-sequencer limits (WP-0154): step index range [0, 4096), MIDI pitch range [0, 127].
+constexpr std::size_t kStepLimit = 4096;
+
+// True when the integer JSON value v lies in [lo, hi]. Caller has checked is_number_integer().
+// Unsigned values above the signed range are out of range for any hi < 2^63.
+bool int_in_range(const json& v, long long lo, long long hi) {
+    if (v.is_number_unsigned()) return v.get<uint64_t>() <= static_cast<uint64_t>(hi);
+    const long long iv = v.get<long long>();
+    return iv >= lo && iv <= hi;
+}
+
+// A note time is on the step grid iff it is a non-negative multiple of 0.25. Multiplying by 4 is
+// exact (power-of-two scale), so `t * 4` integral <=> `t == s * 0.25` for some integer s >= 0.
+bool on_grid(double t) {
+    const double q = t * 4.0;
+    return t >= 0.0 && std::isfinite(q) && std::floor(q) == q;
 }
 
 // Keys other than "op" and those listed → reject (spec §Operation: keys not listed → reject).
@@ -249,6 +268,65 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             aj["kind"] = op_json.at("kind");
             if (op_json.contains("producer")) aj["producer"] = op_json.at("producer");
             j["attachments"].push_back(std::move(aj));
+        } else if (name == "set_step") {  // WP-0154, spec §Step sequencer: validation order is normative
+            if (!check_keys(op_json, {"pattern", "step", "on", "velocity", "pitch"}, err)) return false;
+            if (!arg_index(op_json, "pattern", j["patterns"].size(), idx, err) ||
+                !arg_index(op_json, "step", kStepLimit, sub, err) ||
+                !has_bool(op_json, "on", err)) return false;
+            const bool has_vel = op_json.contains("velocity");
+            const bool has_pitch = op_json.contains("pitch");
+            if (has_vel && !op_json.at("velocity").is_number()) { err = "'velocity' must be a number"; return false; }
+            if (has_pitch) {
+                if (!op_json.at("pitch").is_number_integer()) { err = "'pitch' must be an integer"; return false; }
+                if (!int_in_range(op_json.at("pitch"), 0, 127)) { err = "'pitch' out of range"; return false; }
+            }
+            const bool on = op_json.at("on").get<bool>();
+            if (!on && has_vel) { err = "'velocity' not allowed when 'on' is false"; return false; }
+            if (!on && has_pitch) { err = "'pitch' not allowed when 'on' is false"; return false; }
+
+            // Step s is at beat s*0.25; "on" means t == s*0.25 exactly. The pattern is read through
+            // a const reference so a no-op call never creates a `notes` key.
+            const double t = static_cast<double>(sub) * 0.25;
+            json& pj = j["patterns"][idx];
+            const json empty_notes = json::array();
+            const json& cur = pj.contains("notes") ? pj.at("notes") : empty_notes;
+            std::size_t first_on = cur.size();  // index of the lowest-index note on this step
+            for (std::size_t i = 0; i < cur.size(); ++i)
+                if (cur[i].value("t", 0.0) == t) { first_on = i; break; }
+
+            if (on && first_on == cur.size()) {  // append the default step note (spec §Default step note)
+                if (!pj.contains("notes")) pj["notes"] = json::array();
+                json nn = json::object();
+                nn["t"] = t;
+                nn["dur"] = 0.25;
+                if (has_pitch) nn["note"] = op_json.at("pitch");
+                if (has_vel) nn["vel"] = op_json.at("velocity");
+                pj["notes"].push_back(std::move(nn));
+            } else if (on) {  // edit only the lowest-index note; t and dur are never changed
+                if (has_vel) pj["notes"][first_on]["vel"] = op_json.at("velocity");
+                if (has_pitch) pj["notes"][first_on]["note"] = op_json.at("pitch");
+            } else {  // on:false — erase every note on the step, keep the rest in order
+                json kept = json::array();
+                bool any = false;
+                for (const auto& n : cur) {
+                    if (n.value("t", 0.0) == t) any = true;
+                    else kept.push_back(n);
+                }
+                if (any) pj["notes"] = std::move(kept);
+            }
+        } else if (name == "clear_steps") {
+            if (!check_keys(op_json, {"pattern"}, err)) return false;
+            if (!arg_index(op_json, "pattern", j["patterns"].size(), idx, err)) return false;
+            json& pj = j["patterns"][idx];
+            const json empty_notes = json::array();
+            const json& cur = pj.contains("notes") ? pj.at("notes") : empty_notes;
+            json kept = json::array();
+            bool any = false;
+            for (const auto& n : cur) {
+                if (on_grid(n.value("t", 0.0))) any = true;  // off-grid notes are never touched
+                else kept.push_back(n);
+            }
+            if (any) pj["notes"] = std::move(kept);
         } else {
             err = "unknown op"; return false;
         }
@@ -467,6 +545,18 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
     }
     if (project_to_json(work) != jb) return unsupported("(journal does not reproduce target)");
     return true;
+}
+
+// ---- step_grid (WP-0154): see engine/ops.hpp / docs/spec/operations.md §Engine view and CLI. ----
+std::string step_grid(const Pattern& pattern, int steps) {
+    if (steps <= 0) return std::string();
+    std::string grid(static_cast<std::size_t>(steps), '.');
+    for (const Note& n : pattern.notes) {
+        if (!on_grid(n.t_beats)) continue;  // off-grid: never shown
+        const double s = n.t_beats * 4.0;   // exact integral step index for on-grid notes
+        if (s < static_cast<double>(steps)) grid[static_cast<std::size_t>(s)] = 'x';
+    }
+    return grid;
 }
 
 bool History::apply(Project& p, const json& op_json, std::string& err) {
