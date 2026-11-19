@@ -275,3 +275,13 @@ tracks, patterns, arrangement, mute/solo, gain and master gain (only timing fiel
   (bpm ≤ 1000).
 - Errors: same as `opd render` (exit 2 usage, 3 not found, 4 parse, 5 render error incl.
   `render_error: zero-length render` and the 600 s cap).
+### Polyphase tap table — additive (WP-0150)
+The converter evaluates taps from a per-call polyphase table instead of recomputing sin/cos per output
+sample. Output is bit-identical to the direct method above for every rate pair; the public API is unchanged.
+- rem = (k × in_rate) mod out_rate is a multiple of g = gcd(in_rate, out_rate), so there are only
+  out_rate / g distinct fractions. Table entry (phase, m) holds the tap for input offset m = ip − i, built
+  lazily with the same expressions and operation order as the direct method.
+- Window bounds (lo/hi), clipping at the input edges, the normalising sum (summed in ascending i) and the
+  accumulation order are unchanged.
+- Memory bound: the table holds phases × (2·(ceil(half_w)+2)+1) doubles, at most 2^20 doubles (8 MiB).
+  Above that the direct method is used instead (same bits).

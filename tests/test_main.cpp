@@ -22,6 +22,8 @@
 #include "engine/rng.hpp"
 #include "engine/wav.hpp"
 
+#include "resample_reference.hpp"  // frozen pre-WP-0150 direct algorithm (bit-compare target)
+
 static int g_failures = 0;
 #define CHECK(cond, name)                                                              \
     do {                                                                               \
@@ -2732,6 +2734,90 @@ static void test_opd_diff() {
     y.seed = base.seed + 1;
     y.beats_per_bar = 3;
     CHECK(expect_unsupported(y, "seed"), "diff.unsupported_seed_before_beats");
+// WP-0150: the polyphase tap table must be bit-identical to the frozen direct reference for every
+// rate pair / length / channel count, including the over-budget fallback (44101 → 48000).
+static void test_resample_polyphase() {
+    // Fixed-seed LCG (no rand): deterministic pseudo-random input.
+    struct Lcg {
+        unsigned long long s;
+        explicit Lcg(unsigned long long seed) : s(seed) {}
+        unsigned long long next() {
+            s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+            return s >> 32;
+        }
+        float unit() {  // 24-bit mantissa → [-1, 1]
+            const float u = static_cast<float>(next() >> 8) * (1.0f / 16777215.0f);
+            return 2.0f * u - 1.0f;
+        }
+    };
+
+    unsigned long long scalars_compared = 0;
+    auto bit_identical_case = [&scalars_compared](int in_rate, int out_rate, int channels,
+                                                  long long frames) -> bool {
+        Lcg rng(0x9E3779B97F4A7C15ULL ^ (static_cast<unsigned long long>(in_rate) << 8) ^
+                (static_cast<unsigned long long>(out_rate) << 20) ^
+                (static_cast<unsigned long long>(channels) << 33) ^
+                static_cast<unsigned long long>(frames));
+        std::vector<float> x(static_cast<size_t>(frames) * static_cast<size_t>(channels));
+        for (float& v : x) v = rng.unit();
+        std::vector<float> ref_out, new_out;
+        const bool rr = op_test_ref::windowsinc_direct_ref(x, channels, in_rate, out_rate, ref_out);
+        const bool rn = op::resample::windowsinc(x, channels, in_rate, out_rate, new_out);
+        if (rr != rn) return false;
+        if (ref_out.size() != new_out.size()) return false;
+        if (!ref_out.empty() &&
+            std::memcmp(ref_out.data(), new_out.data(), ref_out.size() * sizeof(float)) != 0)
+            return false;
+        scalars_compared += static_cast<unsigned long long>(ref_out.size());
+        return true;
+    };
+
+    const int rates_in[] = {8000, 11025, 22050, 32000, 44100, 88200, 96000, 192000};
+    const long long lengths[] = {0, 1, 2, 17, 100, 4801};
+    for (int in_rate : rates_in) {
+        bool all_ok = true;
+        for (int channels : {1, 2})
+            for (long long frames : lengths)
+                if (!bit_identical_case(in_rate, 48000, channels, frames)) all_ok = false;
+        const std::string name =
+            "resample.polyphase_bit_identical_" + std::to_string(in_rate) + "_to_48000";
+        CHECK(all_ok, name.c_str());
+    }
+    // 44101 → 48000: gcd = 1 → phases × W exceeds the table budget → over-budget fallback path.
+    {
+        bool all_ok = true;
+        for (int channels : {1, 2})
+            for (long long frames : lengths)
+                if (!bit_identical_case(44101, 48000, channels, frames)) all_ok = false;
+        CHECK(all_ok, "resample.polyphase_bit_identical_44101_to_48000_over_budget");
+    }
+    // Downsampling pair: 48000 → 44100.
+    {
+        bool all_ok = true;
+        for (int channels : {1, 2})
+            for (long long frames : lengths)
+                if (!bit_identical_case(48000, 44100, channels, frames)) all_ok = false;
+        CHECK(all_ok, "resample.polyphase_bit_identical_48000_to_44100");
+    }
+
+    // The output vector is fully overwritten (assign) even when pre-filled with garbage of a
+    // different size.
+    {
+        Lcg rng(0xDEADBEEFCAFEBABEULL);
+        std::vector<float> x(static_cast<size_t>(4801) * 2);
+        for (float& v : x) v = rng.unit();
+        std::vector<float> ref_out;
+        op_test_ref::windowsinc_direct_ref(x, 2, 44100, 48000, ref_out);
+        std::vector<float> out(99997, 1.2345e30f);  // pre-filled garbage, wrong size
+        const bool ok = op::resample::windowsinc(x, 2, 44100, 48000, out);
+        bool clean = ok && out.size() == ref_out.size();
+        if (clean && !ref_out.empty())
+            clean = std::memcmp(ref_out.data(), out.data(), ref_out.size() * sizeof(float)) == 0;
+        CHECK(clean, "resample.polyphase_prefilled_garbage_overwritten");
+    }
+
+    std::printf("INFO resample polyphase: %llu float scalars bit-compared vs reference\n",
+                scalars_compared);
 }
 
 int main() {
@@ -2766,6 +2852,7 @@ int main() {
     test_project_bytes();
     test_analyze();
     test_opd_diff();
+    test_resample_polyphase();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
