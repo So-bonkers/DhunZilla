@@ -409,15 +409,26 @@ static int cmd_diff(int argc, char** argv) {
     return 0;
 }
 
+// WP-0158: extensions routed to the audio reader in `opd info` (lowercase, as for .wav before).
+static bool has_audio_ext(const std::string& path) {
+    for (const char* ext : {".wav", ".aif", ".aiff", ".aifc"}) {
+        const std::string e(ext);
+        if (path.size() > e.size() && path.compare(path.size() - e.size(), e.size(), e) == 0) return true;
+    }
+    return false;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
     if (!fs::exists(path)) return fail("not_found", path);
-    if (path.size() > 4 && path.substr(path.size() - 4) == ".wav") {
-        auto rr = op::wav::read_wav(path);
+    // WP-0158: WAV and AIFF/AIFF-C audio. read_audio picks the reader by file signature; the label
+    // follows the content (rr.format), so an AIFF saved as x.wav prints "aiff:".
+    if (has_audio_ext(path)) {
+        auto rr = op::wav::read_audio(path);
         if (!rr.ok) return fail("parse", rr.error);
-        std::printf("wav: %s rate=%d ch=%d frames=%zu duration=%.3fs\n", path.c_str(), rr.sample_rate,
-                    rr.channels, rr.samples.size() / static_cast<size_t>(rr.channels),
+        std::printf("%s: %s rate=%d ch=%d frames=%zu duration=%.3fs\n", rr.format.c_str(), path.c_str(),
+                    rr.sample_rate, rr.channels, rr.samples.size() / static_cast<size_t>(rr.channels),
                     static_cast<double>(rr.samples.size() / rr.channels) / rr.sample_rate);
         return 0;
     }

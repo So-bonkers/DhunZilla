@@ -3400,6 +3400,326 @@ static void test_sampler_trim() {
               err == "set_sampler_trim: 'end_s' must be a number or null", "ops.set_sampler_trim_reject_end_type");
 
     std::printf("INFO sampler trim: slice frames [96,480) checked against untrimmed reference\n");
+// --- AIFF / AIFF-C reader (WP-0158): test-side byte builders (big-endian, explicit assembly).
+namespace aiff_t {
+using Bytes = std::vector<uint8_t>;
+
+void app(Bytes& v, const char* s4) { v.insert(v.end(), s4, s4 + 4); }
+void app_u16(Bytes& v, uint32_t x) {
+    v.push_back(static_cast<uint8_t>(x >> 8));
+    v.push_back(static_cast<uint8_t>(x));
+}
+void app_u32(Bytes& v, uint32_t x) {
+    for (int s = 24; s >= 0; s -= 8) v.push_back(static_cast<uint8_t>(x >> s));
+}
+void app_bytes(Bytes& v, const Bytes& b) { v.insert(v.end(), b.begin(), b.end()); }
+
+// 80-bit extended encoding of an integer rate (normalised: explicit integer bit set).
+Bytes ext80(uint64_t rate) {
+    int p = 0;
+    while ((rate >> p) > 1) ++p;                      // highest set bit position
+    const uint64_t m = rate << (63 - p);
+    const uint32_t exp = static_cast<uint32_t>(p) + 16383u;
+    Bytes out;
+    app_u16(out, exp);
+    app_u32(out, static_cast<uint32_t>(m >> 32));
+    app_u32(out, static_cast<uint32_t>(m));
+    return out;
+}
+
+Bytes chunk(const char* id, const Bytes& body) {
+    Bytes out;
+    app(out, id);
+    app_u32(out, static_cast<uint32_t>(body.size()));
+    app_bytes(out, body);
+    if (body.size() & 1u) out.push_back(0);           // pad byte for odd sizes
+    return out;
+}
+
+// COMM body. aifc_comp == nullptr writes a plain AIFF COMM (18 bytes).
+Bytes comm_body(uint32_t channels, uint32_t frames, uint32_t sample_size, const Bytes& rate10,
+                const char* aifc_comp = nullptr) {
+    Bytes b;
+    app_u16(b, channels);
+    app_u32(b, frames);
+    app_u16(b, sample_size);
+    app_bytes(b, rate10);
+    if (aifc_comp) {
+        app(b, aifc_comp);
+        b.push_back(3);                                // pascal string "abc" (ignored by the reader)
+        b.push_back('a'); b.push_back('b'); b.push_back('c');
+    }
+    return b;
+}
+
+// SSND body: offset, blockSize (0), `offset` zero bytes, then the sample data.
+Bytes ssnd_body(uint32_t offset, const Bytes& pcm) {
+    Bytes b;
+    app_u32(b, offset);
+    app_u32(b, 0);
+    b.insert(b.end(), offset, 0);
+    app_bytes(b, pcm);
+    return b;
+}
+
+// Whole file: "FORM" size (ignored by the reader) + form type + chunks.
+Bytes file(const char* form, const std::vector<Bytes>& chunks) {
+    Bytes body;
+    app(body, form);
+    for (const Bytes& c : chunks) app_bytes(body, c);
+    Bytes out;
+    app(out, "FORM");
+    app_u32(out, static_cast<uint32_t>(body.size()));  // FORM size: bytes after the size field
+    app_bytes(out, body);
+    return out;
+}
+
+// Plain AIFF with sample data already in big-endian order.
+Bytes aiff_file(uint32_t channels, uint32_t frames, uint32_t bits, uint64_t rate, const Bytes& pcm,
+                uint32_t offset = 0) {
+    return file("AIFF", {chunk("COMM", comm_body(channels, frames, bits, ext80(rate))),
+                         chunk("SSND", ssnd_body(offset, pcm))});
+}
+
+void put(const std::string& path, const Bytes& b) {
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+}
+
+op::wav::ReadResult load(const Bytes& b) {
+    put("/tmp/op_aiff_case.aiff", b);
+    return op::wav::read_aiff("/tmp/op_aiff_case.aiff");
+}
+
+// Expected float for a 16-bit / 24-bit sample value (same expressions as the reader).
+float f16(int v) { return static_cast<float>(v) * (1.0f / 32768.0f); }
+float f24(int v) { return static_cast<float>(v) * (1.0f / 8388608.0f); }
+
+Bytes be16(int v) { Bytes b; app_u16(b, static_cast<uint16_t>(v)); return b; }
+Bytes le16(int v) { Bytes b; b.push_back(static_cast<uint8_t>(v)); b.push_back(static_cast<uint8_t>(v >> 8)); return b; }
+Bytes be24(int v) { Bytes b; for (int s = 16; s >= 0; s -= 8) b.push_back(static_cast<uint8_t>(v >> s)); return b; }
+Bytes le24(int v) { Bytes b; for (int s = 0; s <= 16; s += 8) b.push_back(static_cast<uint8_t>(v >> s)); return b; }
+
+bool same_floats(const std::vector<float>& a, const std::vector<float>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0) return false;
+    return true;
+}
+
+}  // namespace aiff_t
+
+static void test_aiff() {
+    using namespace aiff_t;
+    const int st16[] = {1000, -1000, 32767, -32768, 0, 1, -1, 12345};
+    Bytes pcm16;
+    std::vector<float> want16;
+    for (int v : st16) { app_bytes(pcm16, be16(v)); want16.push_back(f16(v)); }
+
+    // (a) 16-bit stereo and mono.
+    {
+        auto r = load(aiff_file(2, 4, 16, 48000, pcm16));
+        CHECK(r.ok && r.sample_rate == 48000 && r.channels == 2 && r.format == "aiff" && same_floats(r.samples, want16),
+              "aiff.16bit_stereo_exact");
+        Bytes mono;
+        for (int v : st16) app_bytes(mono, be16(v));
+        auto m = load(aiff_file(1, 8, 16, 44100, mono));
+        CHECK(m.ok && m.sample_rate == 44100 && m.channels == 1 && m.format == "aiff" && same_floats(m.samples, want16),
+              "aiff.16bit_mono_exact");
+    }
+    // (b) 24-bit stereo, sign-extended.
+    {
+        const int st24[] = {0x123456, -0x123456, 8388607, -8388608, 0, 256, -256, 1};
+        Bytes pcm24;
+        std::vector<float> want24;
+        for (int v : st24) { app_bytes(pcm24, be24(v)); want24.push_back(f24(v)); }
+        auto r = load(aiff_file(2, 4, 24, 96000, pcm24));
+        CHECK(r.ok && r.sample_rate == 96000 && r.channels == 2 && same_floats(r.samples, want24),
+              "aiff.24bit_stereo_exact");
+    }
+    // (c) AIFF-C NONE (big-endian) and sowt (little-endian), 16 and 24-bit.
+    {
+        auto nb = load(file("AIFC", {chunk("COMM", comm_body(2, 4, 16, ext80(48000), "NONE")),
+                                     chunk("SSND", ssnd_body(0, pcm16))}));
+        CHECK(nb.ok && nb.format == "aiff" && same_floats(nb.samples, want16), "aiff.aifc_none_16");
+        Bytes le;
+        for (int v : st16) app_bytes(le, le16(v));
+        auto sw = load(file("AIFC", {chunk("COMM", comm_body(2, 4, 16, ext80(48000), "sowt")),
+                                     chunk("SSND", ssnd_body(0, le))}));
+        CHECK(sw.ok && same_floats(sw.samples, want16), "aiff.aifc_sowt_16");
+        const int st24[] = {0x7FFFFF, -0x7FFFFF, 0x000100, -0x000100, 0, 1, -1, 5};
+        Bytes be24s, le24s;
+        std::vector<float> want24;
+        for (int v : st24) { app_bytes(be24s, be24(v)); app_bytes(le24s, le24(v)); want24.push_back(f24(v)); }
+        auto n24 = load(file("AIFC", {chunk("COMM", comm_body(2, 4, 24, ext80(44100), "NONE")),
+                                      chunk("SSND", ssnd_body(0, be24s))}));
+        auto s24 = load(file("AIFC", {chunk("COMM", comm_body(2, 4, 24, ext80(44100), "sowt")),
+                                      chunk("SSND", ssnd_body(0, le24s))}));
+        CHECK(n24.ok && same_floats(n24.samples, want24) && s24.ok && same_floats(s24.samples, want24),
+              "aiff.aifc_none_and_sowt_24");
+    }
+    // (d) 80-bit rate decode is exact for common rates.
+    {
+        const uint64_t rates[] = {8000, 11025, 22050, 44100, 48000, 88200, 96000, 192000};
+        bool all = true;
+        for (uint64_t hz : rates) {
+            auto r = load(aiff_file(1, 1, 16, hz, be16(7)));
+            all = all && r.ok && r.sample_rate == static_cast<int>(hz);
+        }
+        CHECK(all, "aiff.rate_decode_exact_common_rates");
+        // Spec examples, byte-for-byte.
+        CHECK(ext80(44100) == Bytes({0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0}),
+              "aiff.ext80_encoder_matches_spec_44100");
+    }
+    // (e) one CHECK per error row (2-12), exact text.
+    {
+        const std::string nope = "/tmp/op_aiff_does_not_exist.aiff";
+        auto r1 = op::wav::read_aiff(nope);
+        CHECK(!r1.ok && r1.error == "cannot open '" + nope + "'" && r1.format == "aiff", "aiff.err_cannot_open");
+
+        auto r2 = load(Bytes({'F', 'O', 'R', 'M', 0, 0, 0, 4, 'A', 'I', 'F'}));
+        CHECK(!r2.ok && r2.error == "file too small for AIFF", "aiff.err_file_too_small");
+
+        auto r3 = load(file("AIFF", {}));  // header only: no chunks
+        Bytes bad_magic = aiff_file(1, 1, 16, 44100, be16(1));
+        bad_magic[0] = 'X';
+        Bytes bad_type = aiff_file(1, 1, 16, 44100, be16(1));
+        bad_type[8] = 'W';
+        auto r3a = load(bad_magic);
+        auto r3b = load(bad_type);
+        CHECK(!r3a.ok && r3a.error == "not a FORM/AIFF file" && !r3b.ok && r3b.error == "not a FORM/AIFF file" &&
+                  r3.error == "missing COMM/SSND chunk",
+              "aiff.err_not_form_aiff");
+
+        auto r4 = load(file("AIFF", {chunk("COMM", Bytes(17, 0)), chunk("SSND", ssnd_body(0, be16(1)))}));
+        auto r4c = load(file("AIFC", {chunk("COMM", Bytes(21, 0)), chunk("SSND", ssnd_body(0, be16(1)))}));
+        CHECK(!r4.ok && r4.error == "COMM chunk too short" && !r4c.ok && r4c.error == "COMM chunk too short",
+              "aiff.err_comm_too_short");
+
+        auto r5 = load(file("AIFF", {chunk("COMM", comm_body(1, 1, 16, ext80(44100))), chunk("SSND", Bytes(7, 0))}));
+        CHECK(!r5.ok && r5.error == "SSND chunk too short", "aiff.err_ssnd_too_short");
+
+        auto r6 = load(aiff_file(1, 1, 16, 44100, be16(1), 0));
+        // Offset one past the available bytes: body = 8 + 2 data bytes, offset 3 > 2.
+        auto r6b = load(file("AIFF", {chunk("COMM", comm_body(1, 1, 16, ext80(44100))),
+                                      chunk("SSND", [] { Bytes b; app_u32(b, 3); app_u32(b, 0); app_bytes(b, be16(1)); return b; }())}));
+        CHECK(r6.ok && !r6b.ok && r6b.error == "truncated sound data", "aiff.err_truncated_offset");
+
+        auto r7 = load(file("AIFF", {chunk("COMM", comm_body(1, 1, 16, ext80(44100)))}));
+        Bytes cut = aiff_file(1, 1, 16, 44100, be16(1));
+        cut.resize(cut.size() - 1);  // SSND declared size runs past EOF: scan stops, SSND not found
+        auto r7b = load(cut);
+        CHECK(!r7.ok && r7.error == "missing COMM/SSND chunk" && !r7b.ok && r7b.error == "missing COMM/SSND chunk",
+              "aiff.err_missing_chunk");
+
+        auto r8 = load(aiff_file(3, 1, 16, 44100, Bytes(6, 0)));
+        auto r8b = load(aiff_file(0, 1, 16, 44100, be16(0)));
+        CHECK(!r8.ok && r8.error == "only mono/stereo supported" && !r8b.ok && r8b.error == "only mono/stereo supported",
+              "aiff.err_channels");
+
+        auto r9 = load(file("AIFC", {chunk("COMM", comm_body(1, 1, 16, ext80(44100), "ULAW")),
+                                     chunk("SSND", ssnd_body(0, be16(1)))}));
+        CHECK(!r9.ok && r9.error == "unsupported AIFF-C compression", "aiff.err_aifc_compression");
+
+        auto r10 = load(aiff_file(1, 1, 8, 44100, Bytes(1, 0)));
+        auto r10b = load(aiff_file(1, 1, 32, 44100, Bytes(4, 0)));
+        CHECK(!r10.ok && r10.error == "AIFF must be 16 or 24-bit" && !r10b.ok && r10b.error == "AIFF must be 16 or 24-bit",
+              "aiff.err_sample_size");
+
+        Bytes neg = ext80(44100);
+        neg[0] |= 0x80;                                     // sign bit set
+        Bytes inf = ext80(44100);
+        inf[0] = 0x7F; inf[1] = 0xFF;                       // exponent 0x7FFF
+        Bytes frac = {0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0x01};  // 44100 with a fractional low bit
+        Bytes big = ext80(1000001);
+        Bytes zero = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        const Bytes bad_rates[] = {neg, inf, frac, big, zero};
+        bool rates_bad = true;
+        for (const Bytes& rb : bad_rates) {
+            auto r = load(file("AIFF", {chunk("COMM", comm_body(1, 1, 16, rb)), chunk("SSND", ssnd_body(0, be16(1)))}));
+            rates_bad = rates_bad && !r.ok && r.error == "implausible sample rate";
+        }
+        CHECK(rates_bad, "aiff.err_implausible_rate");
+
+        auto r12 = load(aiff_file(2, 100, 16, 44100, Bytes(4, 0)));
+        CHECK(!r12.ok && r12.error == "truncated sound data", "aiff.err_truncated_sound_data");
+
+        auto empty = load(aiff_file(2, 0, 16, 44100, Bytes()));
+        CHECK(empty.ok && empty.samples.empty() && empty.channels == 2, "aiff.zero_frames_valid");
+    }
+    // (f) read_audio dispatches by signature, not extension.
+    {
+        put("/tmp/op_aiff_sig_a.wav", aiff_file(2, 4, 16, 48000, pcm16));
+        auto a = op::wav::read_audio("/tmp/op_aiff_sig_a.wav");
+        CHECK(a.ok && a.format == "aiff" && same_floats(a.samples, want16), "aiff.dispatch_aiff_in_wav_name");
+
+        op::wav::StereoBuffer buf;
+        buf.sample_rate = 44100;
+        for (int i = 0; i < 64; ++i) buf.interleaved.push_back(static_cast<float>(i - 32) / 40.0f);
+        std::string err;
+        CHECK(op::wav::write_pcm16_stereo("/tmp/op_aiff_sig_b.aiff", buf, err), "aiff.dispatch_wav_write_ok");
+        auto w = op::wav::read_audio("/tmp/op_aiff_sig_b.aiff");
+        auto wd = op::wav::read_wav("/tmp/op_aiff_sig_b.aiff");
+        CHECK(w.ok && w.format == "wav" && wd.ok && w.error == wd.error && w.sample_rate == wd.sample_rate &&
+                  w.channels == wd.channels && same_floats(w.samples, wd.samples),
+              "aiff.dispatch_wav_in_aiff_name_identical_to_read_wav");
+        auto none = op::wav::read_audio("/tmp/op_aiff_does_not_exist.wav");
+        auto none_wav = op::wav::read_wav("/tmp/op_aiff_does_not_exist.wav");
+        CHECK(!none.ok && none.error == none_wav.error && none.format == "wav", "aiff.dispatch_unopenable_is_wav_error");
+    }
+    // (g) odd-sized unknown chunk (pad byte) before SSND, non-zero SSND offset.
+    {
+        const Bytes data = pcm16;
+        Bytes name = chunk("NAME", Bytes({'x', 'y', 'z'}));  // size 3 → one pad byte
+        Bytes ssnd = chunk("SSND", ssnd_body(6, data));     // 6 bytes of skipped data before the samples
+        auto r = load(file("AIFF", {name, chunk("COMM", comm_body(2, 4, 16, ext80(48000))), ssnd}));
+        CHECK(r.ok && same_floats(r.samples, want16), "aiff.odd_chunk_pad_and_ssnd_offset");
+    }
+    // (h) seeded structural fuzz, like test_wav_fuzz.
+    {
+        const Bytes seed = aiff_file(2, 16, 16, 48000, Bytes(64, 0x21));
+        op::rng::Pcg32 prng(20261120ull);
+        int survived = 0;
+        bool sane = true;
+        for (int trial = 0; trial < 400; ++trial) {
+            Bytes m = seed;
+            if (trial % 3 == 0) {
+                m.resize(static_cast<size_t>(prng.next() % m.size()));
+            } else {
+                const int n_edits = 1 + static_cast<int>(prng.next() % 5);
+                for (int e = 0; e < n_edits && !m.empty(); ++e) {
+                    const size_t pos = static_cast<size_t>(prng.next() % m.size());
+                    m[pos] = static_cast<uint8_t>(prng.next() % 256u);
+                }
+            }
+            op::wav::ReadResult r;
+            try {
+                r = load(m);
+            } catch (...) { r.ok = false; sane = false; }
+            if (r.ok) {
+                for (float s : r.samples)
+                    if (!std::isfinite(s) || std::fabs(s) > 1.0f) sane = false;
+                // Frames from the mutated COMM: walk chunks the way the reader does (first COMM).
+                size_t frames = 0;
+                bool found = false;
+                size_t pos = 12;
+                while (!found && pos + 8 <= m.size()) {
+                    const uint32_t sz = (static_cast<uint32_t>(m[pos + 4]) << 24) | (static_cast<uint32_t>(m[pos + 5]) << 16) |
+                                        (static_cast<uint32_t>(m[pos + 6]) << 8) | static_cast<uint32_t>(m[pos + 7]);
+                    if (pos + 8 + static_cast<size_t>(sz) > m.size()) break;
+                    if (std::memcmp(&m[pos], "COMM", 4) == 0) {
+                        frames = (static_cast<size_t>(m[pos + 10]) << 24) | (static_cast<size_t>(m[pos + 11]) << 16) |
+                                 (static_cast<size_t>(m[pos + 12]) << 8) | static_cast<size_t>(m[pos + 13]);
+                        found = true;
+                    }
+                    pos += 8 + sz + (sz & 1u);
+                }
+                if (!found || r.samples.size() != frames * static_cast<size_t>(r.channels)) sane = false;
+            }
+            ++survived;
+        }
+        CHECK(survived == 400 && sane, "aiff.random_fuzz_survives_and_sane");
+    }
 }
 
 int main() {
@@ -3425,6 +3745,7 @@ int main() {
     test_mixer();
     test_json_fuzz();
     test_wav_fuzz();
+    test_aiff();
     test_bundle_fuzz();
     test_arrangement_export();
     test_ops();

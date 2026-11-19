@@ -89,7 +89,7 @@ bool render_sampler(MixTarget& t, long long start, const Note& note, const Voice
                     int sr, double spb, std::map<std::string, wav::ReadResult>& cache, std::string& err) {
     auto it = cache.find(abs_path);
     if (it == cache.end()) {
-        wav::ReadResult rr = wav::read_wav(abs_path);
+        wav::ReadResult rr = wav::read_audio(abs_path);
         if (!rr.ok) { err = "sampler: " + rr.error; return false; }
         if (rr.sample_rate != sr) {
             // WP-0138: convert once at load into the cache entry; playback then takes the exact

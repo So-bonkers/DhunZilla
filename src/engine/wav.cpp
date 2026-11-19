@@ -25,6 +25,40 @@ uint16_t rd_u16_le(const uint8_t* p) {
     return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
 }
 
+// WP-0158: big-endian helpers for AIFF (explicit byte assembly, no struct casts).
+uint32_t rd_u32_be(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+}
+uint16_t rd_u16_be(const uint8_t* p) {
+    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1]));
+}
+
+// WP-0158: decodes the 10-byte IEEE 754 extended (80-bit) sample rate with integer arithmetic only.
+// Returns false (invalid) for a set sign bit, exponent 0x7FFF, zero mantissa, a non-integer rate,
+// or a value outside [1, 1000000]. Non-normalised encodings of an integer rate decode fine.
+bool decode_ext80_rate(const uint8_t* p, uint32_t& out) {
+    const uint16_t se = rd_u16_be(p);
+    const uint64_t m = (static_cast<uint64_t>(rd_u32_be(p + 2)) << 32) | rd_u32_be(p + 6);
+    if (se & 0x8000u) return false;
+    const uint32_t exp = se & 0x7FFFu;
+    if (exp == 0x7FFFu || m == 0) return false;
+    const long long e = static_cast<long long>(exp) - 16383 - 63;  // value = m * 2^e
+    uint64_t v;
+    if (e >= 0) {
+        if (e >= 20 || m > (1000000ull >> e)) return false;
+        v = m << e;
+    } else {
+        const long long s = -e;
+        if (s >= 64) return false;                              // value < 1
+        if (m & ((1ull << s) - 1ull)) return false;             // non-integer rate
+        v = m >> s;
+    }
+    if (v < 1 || v > 1000000ull) return false;
+    out = static_cast<uint32_t>(v);
+    return true;
+}
+
 }  // namespace
 
 int16_t float_to_pcm16(float x) {
@@ -217,6 +251,109 @@ ReadResult read_wav(const std::string& path) {
     }
     r.ok = true;
     return r;
+}
+
+ReadResult read_aiff(const std::string& path) {
+    ReadResult r;
+    r.format = "aiff";
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { r.error = "cannot open '" + path + "'"; return r; }
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size < 12) { std::fclose(f); r.error = "file too small for AIFF"; return r; }
+    std::vector<uint8_t> all(static_cast<size_t>(size));
+    const bool read_ok = std::fread(all.data(), 1, all.size(), f) == all.size();
+    std::fclose(f);
+    if (!read_ok) { r.error = "short read"; return r; }
+
+    const bool aifc = std::memcmp(all.data() + 8, "AIFC", 4) == 0;
+    if (std::memcmp(all.data(), "FORM", 4) != 0 || (!aifc && std::memcmp(all.data() + 8, "AIFF", 4) != 0)) {
+        r.error = "not a FORM/AIFF file";
+        return r;
+    }
+    const size_t comm_min = aifc ? 22u : 18u;  // AIFC COMM carries compressionType + pascal name
+
+    // Walk chunks from offset 12. The FORM size field is ignored. A chunk whose declared size runs
+    // past EOF stops the scan. The first COMM and first SSND win; later duplicates are ignored.
+    bool have_comm = false, have_ssnd = false;
+    size_t comm_body = 0, ssnd_body = 0;
+    uint32_t ssnd_size = 0, ssnd_offset = 0;
+    size_t pos = 12;
+    while (pos + 8 <= all.size()) {
+        const uint32_t sz = rd_u32_be(all.data() + pos + 4);
+        if (pos + 8 + static_cast<size_t>(sz) > all.size()) break;
+        const size_t body = pos + 8;
+        if (!have_comm && std::memcmp(all.data() + pos, "COMM", 4) == 0) {
+            if (sz < comm_min) { r.error = "COMM chunk too short"; return r; }
+            have_comm = true;
+            comm_body = body;
+        } else if (!have_ssnd && std::memcmp(all.data() + pos, "SSND", 4) == 0) {
+            if (sz < 8) { r.error = "SSND chunk too short"; return r; }
+            const uint32_t off = rd_u32_be(all.data() + body);
+            if (off > sz - 8u) { r.error = "truncated sound data"; return r; }
+            have_ssnd = true;
+            ssnd_body = body;
+            ssnd_size = sz;
+            ssnd_offset = off;
+        }
+        pos = body + sz + (sz & 1u);  // chunks are word-aligned
+    }
+    if (!have_comm || !have_ssnd) { r.error = "missing COMM/SSND chunk"; return r; }
+
+    const uint8_t* c = all.data() + comm_body;
+    const uint16_t channels = rd_u16_be(c);
+    const uint32_t frames = rd_u32_be(c + 2);
+    const uint16_t bits = rd_u16_be(c + 6);
+    if (channels != 1 && channels != 2) { r.error = "only mono/stereo supported"; return r; }
+    const bool sowt = aifc && std::memcmp(c + 18, "sowt", 4) == 0;
+    if (aifc && !sowt && std::memcmp(c + 18, "NONE", 4) != 0) {
+        r.error = "unsupported AIFF-C compression";
+        return r;
+    }
+    if (bits != 16 && bits != 24) { r.error = "AIFF must be 16 or 24-bit"; return r; }
+    uint32_t rate = 0;
+    if (!decode_ext80_rate(c + 8, rate)) { r.error = "implausible sample rate"; return r; }
+
+    const uint8_t* sd = all.data() + ssnd_body + 8 + ssnd_offset;
+    const uint64_t avail = static_cast<uint64_t>(ssnd_size) - 8u - ssnd_offset;
+    const uint64_t bytes_per_sample = bits / 8u;
+    if (static_cast<uint64_t>(frames) * channels * bytes_per_sample > avail) {
+        r.error = "truncated sound data";
+        return r;
+    }
+
+    const size_t n = static_cast<size_t>(frames) * channels;
+    r.samples.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (bits == 16) {
+            const uint8_t* p = sd + i * 2;
+            const int16_t v = static_cast<int16_t>(sowt ? rd_u16_le(p) : rd_u16_be(p));
+            r.samples[i] = static_cast<float>(v) * (1.0f / 32768.0f);  // same expression as read_wav
+        } else {  // 24-bit (validated above): 3 bytes, sign-extended
+            const uint8_t* p = sd + i * 3;
+            int32_t v = sowt ? (static_cast<int32_t>(p[0]) | (static_cast<int32_t>(p[1]) << 8) |
+                                (static_cast<int32_t>(p[2]) << 16))
+                             : (static_cast<int32_t>(p[2]) | (static_cast<int32_t>(p[1]) << 8) |
+                                (static_cast<int32_t>(p[0]) << 16));
+            if (v & 0x800000) v -= 0x1000000;
+            r.samples[i] = static_cast<float>(v) * (1.0f / 8388608.0f);
+        }
+    }
+    r.sample_rate = static_cast<int>(rate);
+    r.channels = channels;
+    r.ok = true;
+    return r;
+}
+
+ReadResult read_audio(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return read_wav(path);  // unopenable: read_wav reports "cannot open"
+    char sig[4] = {};
+    const size_t got = std::fread(sig, 1, sizeof(sig), f);
+    std::fclose(f);
+    if (got == sizeof(sig) && std::memcmp(sig, "FORM", 4) == 0) return read_aiff(path);
+    return read_wav(path);
 }
 
 }  // namespace op::wav

@@ -37,9 +37,23 @@ struct ReadResult {
     int channels = 0;
     std::vector<float> samples;  // interleaved float [-1,1]
     std::string error;
+    std::string format = "wav";  // WP-0158: "wav" or "aiff" (set by the reader that ran, also on failure)
 };
 
 // Reads canonical PCM16 or float32 WAV (fmt chunk 1 or 3), mono or stereo. Used by sampler voice.
 ReadResult read_wav(const std::string& path);
+
+// WP-0158: reads AIFF and AIFF-C (compression NONE or sowt; 16- or 24-bit PCM; mono or stereo).
+// Strict validation; the rate is decoded from the 80-bit extended field with integer arithmetic.
+// Sets format = "aiff". Usage:
+//   auto rr = op::wav::read_aiff("kick.aif");
+//   if (rr.ok) use(rr.samples, rr.channels, rr.sample_rate);
+ReadResult read_aiff(const std::string& path);
+
+// WP-0158: dispatches by file signature, never by extension: first 4 bytes "FORM" -> read_aiff,
+// anything else (including unopenable or short files) -> read_wav, unchanged.
+// Usage:
+//   auto rr = op::wav::read_audio("sample.aiff");  // rr.format says which reader ran
+ReadResult read_audio(const std::string& path);
 
 }  // namespace op::wav

@@ -367,3 +367,15 @@ clips and the tempo map apply exactly as for an untrimmed sampler.
 ## Sampler trim — operation and diff (WP-0156)
 See `docs/spec/operations.md` (`set_sampler_trim`). `opd diff` is unchanged: a trim difference is a
 `tracks[i].voice` difference and is reported as `unsupported difference: tracks[i].voice` (as any voice change).
+## AIFF input — additive (WP-0158)
+Sampler assets and `opd info` accept AIFF in addition to WAV. The format is chosen by the file's first
+bytes, not its extension: `FORM` → AIFF reader, anything else → the WAV reader (behaviour and error
+strings unchanged). Supported: AIFF and AIFF-C (`NONE`, `sowt`), 16- or 24-bit integer PCM, mono or
+stereo, any sample rate 1–1000000 Hz that is an exact integer in the 80-bit extended field (the sampler
+still accepts 8000–192000 Hz and resamples as for WAV). 16-bit samples convert with the same expression as
+WAV, so an AIFF and a WAV with the same samples render byte-identically. Strict validation: error texts
+`file too small for AIFF`, `not a FORM/AIFF file`, `COMM chunk too short`, `SSND chunk too short`,
+`truncated sound data`, `missing COMM/SSND chunk`, `only mono/stereo supported`,
+`unsupported AIFF-C compression`, `AIFF must be 16 or 24-bit`, `implausible sample rate`. `opd info`
+reports them as `error: parse: <text>` (exit 4); the sampler reports `sampler: <text>` (render exit 5).
+`opd info` prints `aiff: <path> rate=<n> ch=<n> frames=<n> duration=<x.xxx>s` for AIFF content.
