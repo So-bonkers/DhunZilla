@@ -114,7 +114,7 @@ every error string, key name and output format. Summary of the decisions:
     ```
     `git status --short tests/fixtures` is empty.
   - `bash harness/test_cli_errors.sh build/opd` → the 11 new `loop_*` lines all PASS; `test_cli_errors: 0 failures`.
-  - `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures` (exit 0).
+  - `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures` (exit 0).
   - Real CLI evidence (`build/opd`, scratch project = demo golden + loop):
     - No-loop project info, then after `set_loop 0.5 1.5`:
       ```

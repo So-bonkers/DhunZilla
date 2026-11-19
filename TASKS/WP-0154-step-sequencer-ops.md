@@ -111,7 +111,7 @@ Add doc comments with a usage example on `step_grid` in the style of `ops.hpp`.
     `PASS steps_missing_file (exit 3)`, `PASS steps_index_range (exit 2)`, `PASS steps_ok (exit 0, x...x...x...x...)`,
     `test_cli_errors: 0 failures` (exit 0).
   - `bash harness/run_goldens.sh` → `run_goldens: 8 fixtures, 0 failures` (exit 0).
-  - `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/test_glue_scripts.sh` →
+  - `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/test_glue_scripts.sh` →
     `test_glue_scripts: 0 failures` (exit 0).
   - Sanitizers: `cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DDZ_SANITIZE=ON && cmake --build build-san -j2 --target op_tests`
     → exit 0, 0 warnings; `./build-san/op_tests` → `ALL PASS (0 failures)`, 0 `runtime error` / ASAN lines.

@@ -190,7 +190,7 @@ reports them as `error: parse: <text>` (exit 4); the sampler reports `sampler: <
     27 AIFF PASS lines, 27 `CHECK(` calls in `test_aiff`. Full suite: `ALL PASS (0 failures)`, 547 PASS lines.
   - `bash harness/run_goldens.sh`: `run_goldens: 8 fixtures, 0 failures`; no fixture file modified.
   - `bash harness/test_cli_errors.sh`: `test_cli_errors: 0 failures`.
-  - `bash harness/test_glue_scripts.sh` (with `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`): `test_glue_scripts: 0 failures`.
+  - `bash harness/test_glue_scripts.sh` (with `UV_CACHE_DIR=<workspace>/.cache/uv`): `test_glue_scripts: 0 failures`.
   - `-DDZ_SANITIZE=ON` Debug build of `op_tests` (`build-san`): builds with no warnings; run prints `ALL PASS (0 failures)`, no ASAN/UBSAN reports.
   - Byte-identical sampler render (scratch copy of `tests/fixtures/goldens/resampled.opj`, kick samples re-encoded as AIFF with a Python script):
     ```

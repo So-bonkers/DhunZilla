@@ -15,6 +15,12 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0159 | `opd diff` supports clip `pattern`/`repeats` via `set_clip_pattern`/`set_clip_repeats` (step 1b before pattern removal; positional clip compare) | **done** | haiku+orchestrator |
+| WP-0158 | AIFF / AIFF-C (`NONE`, `sowt`) reader — signature dispatch, exact 80-bit rate decode, sampler + `opd info`; renders byte-identical to the same samples as WAV | **done** | haiku+orchestrator |
+| WP-0157 | Document autosave + crash recovery — atomic temp+rename, revision-gated, content-compared recovery state, `open_recovered` | **done** | haiku+orchestrator |
+| WP-0156 | Sampler trim (`start_s`/`end_s` slice after resampling) + `set_sampler_trim`; golden `sampler_trim` | **done** | haiku+orchestrator |
+| WP-0155 | Transport loop region — model field, `set_loop`/`clear_loop`, `opd info`, `opd render --loop`, diff support | **done** | haiku+orchestrator |
+| WP-0154 | Step sequencer ops — `set_step`/`clear_steps` over a 1/4-beat grid, `op::step_grid`, `opd steps` | **done** | haiku+orchestrator |
 | WP-0151 | Sidecar job cancellation — `cancelling` state, cooperative cancel in mock backends, cancelled jobs leave no artifacts, `GET /jobs` listing, job_client support | **done** | subagent+orchestrator |
 | WP-0150 | Resampler polyphase tap table — bit-identical to the direct method (1,014-case matrix), ≥8× faster, bounded table with direct fallback | **done** | subagent+orchestrator |
 | WP-0149 | `opd render --format pcm16|pcm24|f32` (mix + stems) — pcm16 default byte-identical, exact pcm24 rounding rule, IEEE-float WAV; reader accepts 24-bit | **done** | subagent+orchestrator |

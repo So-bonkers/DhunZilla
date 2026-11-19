@@ -96,7 +96,7 @@ or `reorder_clip`.
     (The pre-existing `diff.*` checks, including the 6 golden round trips and `diff.example_text_exact`, still pass.)
   - `bash harness/run_goldens.sh` → `run_goldens: 8 fixtures, 0 failures`, exit 0.
   - `bash harness/test_cli_errors.sh` → `PASS diff_clip_repeats_ok (exit 0)`, `test_cli_errors: 0 failures`, exit 0.
-  - `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`, exit 0.
+  - `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`, exit 0.
   - Sanitizers: `cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DDZ_SANITIZE=ON`, `cmake --build build-san --target op_tests -j2`
     → no warnings; `./build-san/op_tests` → `ALL PASS (0 failures)`, 533 PASS, exit 0.
   - CLI round trip (repeats-only pair): `opd diff arranged.opj b.opj -o j.opjl` → `diff: 1 op(s)`, journal

@@ -132,7 +132,7 @@ Extend the header's top comment with a short autosave/recovery usage example. Do
     ```
     The only match is a comment that was already in HEAD (`git show HEAD:src/doc/document.cpp | grep -n clock`
     prints the same line 2). No `<chrono>`, `time(` or clock code.
-  - Unit tests: `TMPDIR=/home/shubhankar_dgx/qwen-scratch/.cache/tmp ./build/op_tests` -> exit 0, last lines:
+  - Unit tests: `TMPDIR=<workspace>/.cache/tmp ./build/op_tests` -> exit 0, last lines:
     ```
     INFO resample polyphase: 272007 float scalars bit-compared vs reference
     ALL PASS (0 failures)
@@ -140,7 +140,7 @@ Extend the header's top comment with a short autosave/recovery usage example. Do
     `grep -c '^PASS doc.autosave' ` on that log -> `43` (requirement: at least 12).
     One CHECK initially failed because my own test setup was wrong (the default Project has no tracks, so
     `set_track_gain`/`set_bpm` were rejected); the test now uses `add_track`. No implementation change was needed.
-  - Goldens: `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/run_goldens.sh` ->
+  - Goldens: `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/run_goldens.sh` ->
     `run_goldens: 8 fixtures, 0 failures` (exit 0).
   - CLI errors: `bash harness/test_cli_errors.sh` -> `test_cli_errors: 0 failures` (exit 0).
   - Glue: `bash harness/test_glue_scripts.sh` -> `test_glue_scripts: 0 failures` (exit 0).
