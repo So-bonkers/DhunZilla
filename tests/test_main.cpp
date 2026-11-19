@@ -3109,6 +3109,8 @@ static void test_step_sequencer() {
               std::memcmp(ra.interleaved.data(), rb.interleaved.data(),
                           ra.interleaved.size() * sizeof(float)) == 0,
           "step.render_byte_identical_to_handwritten");
+}
+
 // --- WP-0155: transport loop region (docs/spec/project-model.md §Loop region, operations.md) ------
 
 // Minimal valid project text; `extra` is spliced in before the closing brace (e.g. a "loop" member).
@@ -3231,6 +3233,8 @@ static void test_loop_region() {
     round_trip(moved, cleared, "loop.diff_change_then_clear");
     std::vector<json> same_ops;
     CHECK(op::diff_projects(with, with, same_ops, err) && same_ops.empty(), "loop.diff_same_loop_no_ops");
+}
+
 // ---------------------------------------------------------------- sampler trim (WP-0156)
 // Parse one-track project whose voice is `voice` (pan -1 so output left = source sample exactly).
 static bool trim_parse(const nlohmann::json& voice, op::Project& p, std::string& err) {
@@ -3400,6 +3404,8 @@ static void test_sampler_trim() {
               err == "set_sampler_trim: 'end_s' must be a number or null", "ops.set_sampler_trim_reject_end_type");
 
     std::printf("INFO sampler trim: slice frames [96,480) checked against untrimmed reference\n");
+}
+
 // --- AIFF / AIFF-C reader (WP-0158): test-side byte builders (big-endian, explicit assembly).
 namespace aiff_t {
 using Bytes = std::vector<uint8_t>;
