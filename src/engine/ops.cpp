@@ -6,6 +6,7 @@
 #include "engine/ops.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -70,6 +71,23 @@ bool has_object(const json& o, const char* key, std::string& err) {
     if (!o.contains(key)) { err = std::string("missing argument '") + key + "'"; return false; }
     if (!o.at(key).is_object()) { err = std::string("'") + key + "' must be an object"; return false; }
     return true;
+}
+
+// Integer-typed value (WP-0147). The range is left to the model parse, not duplicated here.
+bool has_integer(const json& o, const char* key, std::string& err) {
+    if (!o.contains(key)) { err = std::string("missing argument '") + key + "'"; return false; }
+    if (!o.at(key).is_number_integer()) { err = std::string("'") + key + "' must be an integer"; return false; }
+    return true;
+}
+
+// True when an integer JSON value fits in a 32-bit `int` (the model's field type). Values that do
+// not fit are refused by the caller so they can never wrap silently.
+bool fits_int(const json& v) {
+    constexpr long long kMin = std::numeric_limits<int>::min();
+    constexpr long long kMax = std::numeric_limits<int>::max();
+    if (v.is_number_unsigned()) return v.get<uint64_t>() <= static_cast<uint64_t>(kMax);
+    const long long iv = v.get<long long>();
+    return iv >= kMin && iv <= kMax;
 }
 
 // Keys other than "op" and those listed → reject (spec §Operation: keys not listed → reject).
@@ -180,6 +198,40 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             const std::size_t n_clips = j.contains("arrangement") ? j["arrangement"].size() : 0;
             if (!arg_index(op_json, "index", n_clips, idx, err)) return false;
             j["arrangement"].erase(idx);
+        } else if (name == "set_clip_repeats") {
+            if (!check_keys(op_json, {"index", "repeats"}, err)) return false;
+            const std::size_t n_clips = j.contains("arrangement") ? j["arrangement"].size() : 0;
+            if (!arg_index(op_json, "index", n_clips, idx, err) ||
+                !has_integer(op_json, "repeats", err)) return false;
+            if (!fits_int(op_json.at("repeats"))) { err = "clip.repeats out of range [1..4096]"; return false; }
+            j["arrangement"][idx]["repeats"] = op_json.at("repeats");
+        } else if (name == "set_clip_pattern") {
+            if (!check_keys(op_json, {"index", "pattern"}, err)) return false;
+            const std::size_t n_clips = j.contains("arrangement") ? j["arrangement"].size() : 0;
+            if (!arg_index(op_json, "index", n_clips, idx, err) ||
+                !has_integer(op_json, "pattern", err)) return false;
+            if (!fits_int(op_json.at("pattern"))) {
+                err = "clip.pattern out of range: " + op_json.at("pattern").dump(); return false;
+            }
+            j["arrangement"][idx]["pattern"] = op_json.at("pattern");
+        } else if (name == "duplicate_clip") {
+            if (!check_keys(op_json, {"index", "start_bar"}, err)) return false;
+            const std::size_t n_clips = j.contains("arrangement") ? j["arrangement"].size() : 0;
+            if (!arg_index(op_json, "index", n_clips, idx, err) ||
+                !has_number(op_json, "start_bar", err)) return false;
+            json copy = j["arrangement"][idx];
+            copy["start_bar"] = op_json.at("start_bar");
+            j["arrangement"].insert(j["arrangement"].begin() + static_cast<std::ptrdiff_t>(idx + 1),
+                                    std::move(copy));
+        } else if (name == "reorder_clip") {
+            if (!check_keys(op_json, {"index", "to"}, err)) return false;
+            const std::size_t n_clips = j.contains("arrangement") ? j["arrangement"].size() : 0;
+            if (!arg_index(op_json, "index", n_clips, idx, err) ||
+                !arg_index(op_json, "to", n_clips, sub, err)) return false;
+            json& arr = j["arrangement"];
+            json moved = arr[idx];
+            arr.erase(idx);  // n_clips - 1 remain; `sub` <= n_clips - 1 is a valid final index
+            arr.insert(arr.begin() + static_cast<std::ptrdiff_t>(sub), std::move(moved));
         } else if (name == "add_attachment") {
             // Same rules as op::add_attachment: valid_attachment (enforced by the parse below)
             // plus duplicate-path rejection (the only rule load_project does not enforce).

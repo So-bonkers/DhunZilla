@@ -1470,6 +1470,14 @@ static bool rejected_unchanged(op::Project& p, const nlohmann::json& o, std::str
     return slurp_bytes("/tmp/op_rej_before.opj") == slurp_bytes("/tmp/op_rej_after.opj");
 }
 
+// The exact bytes save_project writes for p (WP-0147 byte-exact undo/redo and rejection checks).
+static std::string saved_text(const op::Project& p) {
+    std::string serr;
+    if (!op::save_project("/tmp/op_saved_text.opj", p, serr)) return "";
+    const std::vector<uint8_t> b = slurp_bytes("/tmp/op_saved_text.opj");
+    return std::string(b.begin(), b.end());
+}
+
 static void test_ops() {
     std::string err;
     op::Project p;
@@ -1584,6 +1592,167 @@ static void test_ops() {
           "ops.remove_clip_reject_oob");
     CHECK(op::apply_op(p, json{{"op", "remove_clip"}, {"index", 1}}, err) && p.arrangement.size() == 1,
           "ops.remove_clip");
+
+    // WP-0147 clip ops: set_clip_repeats / set_clip_pattern / duplicate_clip / reorder_clip.
+    // Each check starts from a fresh 3-clip arrangement (the project above has been mutated).
+    {
+        auto fresh = [&]() {
+            op::Project f;
+            f.bpm = 120.0; f.length_bars = 8.0; f.sample_rate = 48000; f.seed = 5;
+            f.tracks = {t0, t1};
+            f.patterns = {pm, ps};
+            f.arrangement = {{0, 0.0, 2, -3.0}, {1, 1.0, 1, 0.0}, {0, 2.0, 3, -6.0}};
+            return f;
+        };
+        auto same_clip = [](const op::Clip& a, const op::Clip& b) {
+            return a.pattern == b.pattern && a.start_bar == b.start_bar && a.repeats == b.repeats &&
+                   a.gain_db == b.gain_db;
+        };
+
+        // set_clip_repeats
+        {
+            op::Project f = fresh();
+            const auto before = f.arrangement;
+            CHECK(op::apply_op(f, json{{"op", "set_clip_repeats"}, {"index", 1}, {"repeats", 4}}, err) &&
+                      f.arrangement[1].repeats == 4 && f.arrangement[1].pattern == 1 &&
+                      f.arrangement[1].start_bar == 1.0 && f.arrangement[1].gain_db == 0.0 &&
+                      same_clip(f.arrangement[0], before[0]) && same_clip(f.arrangement[2], before[2]),
+                  "ops.set_clip_repeats");
+            op::Project g = fresh();
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_repeats"}, {"index", 1}, {"repeats", 0}}, err) &&
+                      err == "set_clip_repeats: clip.repeats out of range [1..4096]",
+                  "ops.set_clip_repeats_reject_zero");
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_repeats"}, {"index", 1}, {"repeats", 4097}}, err) &&
+                      err == "set_clip_repeats: clip.repeats out of range [1..4096]",
+                  "ops.set_clip_repeats_reject_4097");
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_repeats"}, {"index", 1}, {"repeats", 4294967297LL}}, err) &&
+                      err == "set_clip_repeats: clip.repeats out of range [1..4096]",
+                  "ops.set_clip_repeats_reject_no_wrap");
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_repeats"}, {"index", 1}, {"repeats", 3.0}}, err) &&
+                      err == "set_clip_repeats: 'repeats' must be an integer",
+                  "ops.set_clip_repeats_reject_float");
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_repeats"}, {"index", 1}}, err) &&
+                      err == "set_clip_repeats: missing argument 'repeats'",
+                  "ops.set_clip_repeats_reject_missing");
+        }
+
+        // set_clip_pattern
+        {
+            op::Project f = fresh();
+            const auto before = f.arrangement;
+            CHECK(op::apply_op(f, json{{"op", "set_clip_pattern"}, {"index", 0}, {"pattern", 1}}, err) &&
+                      f.arrangement[0].pattern == 1 && f.arrangement[0].start_bar == 0.0 &&
+                      f.arrangement[0].repeats == 2 && f.arrangement[0].gain_db == -3.0 &&
+                      same_clip(f.arrangement[1], before[1]) && same_clip(f.arrangement[2], before[2]),
+                  "ops.set_clip_pattern");
+            op::Project g = fresh();
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_pattern"}, {"index", 0}, {"pattern", -1}}, err) &&
+                      err == "set_clip_pattern: clip.pattern out of range: -1",
+                  "ops.set_clip_pattern_reject_negative");
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_pattern"}, {"index", 0}, {"pattern", 2}}, err) &&
+                      err == "set_clip_pattern: clip.pattern out of range: 2",
+                  "ops.set_clip_pattern_reject_oob_pattern");
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_pattern"}, {"index", 0}, {"pattern", 4294967297LL}}, err) &&
+                      err == "set_clip_pattern: clip.pattern out of range: 4294967297",
+                  "ops.set_clip_pattern_reject_no_wrap");
+        }
+
+        // duplicate_clip: copy inserted at index+1, start_bar replaced, other fields copied.
+        {
+            op::Project f = fresh();
+            const auto before = f.arrangement;
+            CHECK(op::apply_op(f, json{{"op", "duplicate_clip"}, {"index", 0}, {"start_bar", 4.0}}, err) &&
+                      f.arrangement.size() == 4 && f.arrangement[1].start_bar == 4.0 &&
+                      f.arrangement[1].pattern == before[0].pattern &&
+                      f.arrangement[1].repeats == before[0].repeats,
+                  "ops.duplicate_clip");
+            CHECK(f.arrangement[1].gain_db == -3.0, "ops.duplicate_clip_copies_gain");
+            CHECK(same_clip(f.arrangement[0], before[0]) && same_clip(f.arrangement[2], before[1]) &&
+                      same_clip(f.arrangement[3], before[2]),
+                  "ops.duplicate_clip_keeps_others");
+            op::Project g = fresh();
+            CHECK(rejected_unchanged(g, json{{"op", "duplicate_clip"}, {"index", 0}, {"start_bar", "4"}}, err) &&
+                      err == "duplicate_clip: 'start_bar' must be a number",
+                  "ops.duplicate_clip_reject_type");
+            CHECK(rejected_unchanged(g, json{{"op", "duplicate_clip"}, {"index", 0}, {"start_bar", -1.0}}, err),
+                  "ops.duplicate_clip_reject_negative");
+        }
+
+        // reorder_clip: final position `to`; others keep relative order.
+        {
+            op::Project f = fresh();
+            const auto before = f.arrangement;
+            CHECK(op::apply_op(f, json{{"op", "reorder_clip"}, {"index", 0}, {"to", 2}}, err) &&
+                      f.arrangement.size() == 3 && same_clip(f.arrangement[0], before[1]) &&
+                      same_clip(f.arrangement[1], before[2]) && same_clip(f.arrangement[2], before[0]),
+                  "ops.reorder_clip_to_last");
+            op::Project f2 = fresh();
+            CHECK(op::apply_op(f2, json{{"op", "reorder_clip"}, {"index", 2}, {"to", 0}}, err) &&
+                      same_clip(f2.arrangement[0], before[2]) && same_clip(f2.arrangement[1], before[0]) &&
+                      same_clip(f2.arrangement[2], before[1]),
+                  "ops.reorder_clip_to_first");
+            op::Project f3 = fresh();
+            const std::string t_before = saved_text(f3);
+            CHECK(op::apply_op(f3, json{{"op", "reorder_clip"}, {"index", 1}, {"to", 1}}, err) &&
+                      saved_text(f3) == t_before, "ops.reorder_clip_to_self");
+            op::Project g = fresh();
+            CHECK(rejected_unchanged(g, json{{"op", "reorder_clip"}, {"index", 0}, {"to", 3}}, err) &&
+                      err == "reorder_clip: 'to' out of range",
+                  "ops.reorder_clip_reject_to_oob");
+        }
+
+        // Index strictness for all four ops: 3 and -1 are out of range for a 3-clip arrangement.
+        {
+            op::Project g = fresh();
+            CHECK(rejected_unchanged(g, json{{"op", "set_clip_repeats"}, {"index", 3}, {"repeats", 2}}, err) &&
+                      rejected_unchanged(g, json{{"op", "set_clip_repeats"}, {"index", -1}, {"repeats", 2}}, err) &&
+                      rejected_unchanged(g, json{{"op", "set_clip_pattern"}, {"index", 3}, {"pattern", 0}}, err) &&
+                      rejected_unchanged(g, json{{"op", "set_clip_pattern"}, {"index", -1}, {"pattern", 0}}, err) &&
+                      rejected_unchanged(g, json{{"op", "duplicate_clip"}, {"index", 3}, {"start_bar", 1.0}}, err) &&
+                      rejected_unchanged(g, json{{"op", "duplicate_clip"}, {"index", -1}, {"start_bar", 1.0}}, err) &&
+                      rejected_unchanged(g, json{{"op", "reorder_clip"}, {"index", 3}, {"to", 0}}, err) &&
+                      rejected_unchanged(g, json{{"op", "reorder_clip"}, {"index", -1}, {"to", 0}}, err),
+                  "ops.clip_ops_reject_bad_index");
+        }
+
+        // History: each op undoes and redoes byte-exactly.
+        auto roundtrip = [&](const json& o) {
+            op::Project f = fresh();
+            op::History hh;
+            const std::string before_txt = saved_text(f);
+            if (!hh.apply(f, o, err)) return false;
+            const std::string after_txt = saved_text(f);
+            if (after_txt == before_txt) return false;
+            return hh.undo(f) && saved_text(f) == before_txt && hh.redo(f) && saved_text(f) == after_txt;
+        };
+        CHECK(roundtrip(json{{"op", "set_clip_repeats"}, {"index", 1}, {"repeats", 4}}), "hist.set_clip_repeats");
+        CHECK(roundtrip(json{{"op", "set_clip_pattern"}, {"index", 0}, {"pattern", 1}}), "hist.set_clip_pattern");
+        CHECK(roundtrip(json{{"op", "duplicate_clip"}, {"index", 0}, {"start_bar", 4.0}}), "hist.duplicate_clip");
+        CHECK(roundtrip(json{{"op", "reorder_clip"}, {"index", 0}, {"to", 2}}), "hist.reorder_clip");
+
+        // Journal: mixed new ops are all-or-nothing.
+        {
+            op::Project f = fresh();
+            const std::string before_txt = saved_text(f);
+            const std::string bad_journal =
+                R"J({"op":"duplicate_clip","index":0,"start_bar":4.0})J" "\n"
+                R"J({"op":"reorder_clip","index":0,"to":2})J" "\n"
+                R"J({"op":"set_clip_repeats","index":1,"repeats":0})J" "\n";
+            op::JournalOutcome oc{};
+            CHECK(!op::apply_journal(f, bad_journal, err, &oc) &&
+                      err.rfind("line 3: set_clip_repeats: clip.repeats out of range", 0) == 0 &&
+                      oc.failure == op::JournalFailure::kRejected && saved_text(f) == before_txt,
+                  "ops.journal_clip_ops_all_or_nothing");
+            const std::string good_journal =
+                R"J({"op":"duplicate_clip","index":0,"start_bar":4.0})J" "\n"
+                R"J({"op":"reorder_clip","index":0,"to":2})J" "\n";
+            op::JournalOutcome ok{};
+            CHECK(op::apply_journal(f, good_journal, err, &ok) && ok.applied == 2 && f.arrangement.size() == 4 &&
+                      f.arrangement[0].start_bar == 4.0 && f.arrangement[1].start_bar == 1.0 &&
+                      f.arrangement[2].start_bar == 0.0,
+                  "ops.journal_clip_ops_applied");
+        }
+    }
 
     // add_attachment: same rules as op::add_attachment (valid + no duplicate path)
     CHECK(op::apply_op(p, json{{"op", "add_attachment"}, {"path", "stems/x.wav"},

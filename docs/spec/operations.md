@@ -126,3 +126,38 @@ net; unreachable for supported inputs).
 to parse (`parse`), **5 unsupported difference** (code name `diff`; stderr
 `error: diff: unsupported difference: <field>`), 5 write failure (`write`). On any failure the output
 file is not created or modified.
+## Clip operations — additive (WP-0147)
+`add_clip`, `move_clip`, `set_clip_gain` and `remove_clip` already exist (table above). Four more
+ops complete arrangement editing. All follow the Apply semantics above unchanged (copy → JSON edit →
+save→parse validation → commit) and the same strict-argument rules (`check_keys`, missing/mistyped
+argument rejection, integer-only indices). `<n>` below = number of clips in `arrangement` (0 when the
+key is absent). Error strings are `<op>: <reason>`.
+
+| op | arguments | effect |
+|---|---|---|
+| `set_clip_repeats` | `index`, `repeats` | `arrangement[index].repeats = repeats` |
+| `set_clip_pattern` | `index`, `pattern` | `arrangement[index].pattern = pattern` |
+| `duplicate_clip` | `index`, `start_bar` | insert a copy of `arrangement[index]` at position `index+1` with `start_bar` replaced; all other fields (`pattern`, `repeats`, `gain_db`) copied |
+| `reorder_clip` | `index`, `to` | remove `arrangement[index]` and re-insert it so that it ends at position `to` (`to` is the final index, `0 <= to < n`); other clips keep their relative order |
+
+Rules:
+- `index` must be an integer in `[0, n)`, else `<op>: 'index' out of range` (non-integer incl. `2.0`:
+  `<op>: 'index' must be an integer`; absent: `<op>: missing argument 'index'`).
+- `set_clip_repeats`: `repeats` must be a JSON integer (`3.0` → `set_clip_repeats: 'repeats' must be an
+  integer`). The range `[1..4096]` is NOT re-implemented: an out-of-range value is rejected by the model
+  parse with its existing message, giving `set_clip_repeats: clip.repeats out of range [1..4096]`. Integers outside the 32-bit `int` range (e.g. `4294967297`) must get the same message, never wrap silently.
+- `set_clip_pattern`: `pattern` must be a JSON integer (`'pattern' must be an integer`). Range is
+  enforced by the model parse: `set_clip_pattern: clip.pattern out of range: <value>` (value printed as the JSON integer; integers outside 32-bit `int` range get `clip.pattern out of range: <value>` too, never wrap). The referenced
+  pattern's track is not otherwise checked.
+- `duplicate_clip`: `start_bar` must be a number (`'start_bar' must be a number`); `>= 0` enforced by
+  the model parse (`clip.start_bar must be a finite number >= 0`). Duplicating at the same `start_bar`
+  is allowed (clips may overlap).
+- `reorder_clip`: `to` validated like `index` (`'to' out of range`, etc.). `to == index` is a valid
+  no-op that still counts as a successful operation (and pushes an undo snapshot). Declaration order
+  is render accumulation order (project-model.md §Arrangement), so this op can change float
+  summation order by design.
+- Absent `arrangement` has `n == 0`, so every one of these ops fails with `'index' out of range`.
+- Undo/redo: no new mechanism. `History` already snapshots the whole project, so each of these ops is
+  undone/redone by `History::undo`/`redo` byte-exactly (invariant above).
+- `set_clip_gain` setting `0` makes the saved clip omit `gain_db` (existing canonical-save rule);
+  `duplicate_clip` of a clip without `gain_db` yields a copy without `gain_db`.
