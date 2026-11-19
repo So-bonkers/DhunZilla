@@ -85,8 +85,8 @@ void render_synth(MixTarget& t, long long start, const Note& note, const Voice& 
     }
 }
 
-bool render_sampler(MixTarget& t, long long start, const Note& note, const std::string& abs_path, int sr,
-                    double spb, std::map<std::string, wav::ReadResult>& cache, std::string& err) {
+bool render_sampler(MixTarget& t, long long start, const Note& note, const Voice& v, const std::string& abs_path,
+                    int sr, double spb, std::map<std::string, wav::ReadResult>& cache, std::string& err) {
     auto it = cache.find(abs_path);
     if (it == cache.end()) {
         wav::ReadResult rr = wav::read_wav(abs_path);
@@ -110,12 +110,29 @@ bool render_sampler(MixTarget& t, long long start, const Note& note, const std::
     }
     const wav::ReadResult& rr = it->second;
     long long avail = static_cast<long long>(rr.samples.size()) / rr.channels;
+    // Sampler trim (WP-0156): slice [i0, i1) of the project-rate buffer, computed after resampling.
+    // Default (no start_s, no end_s) skips all arithmetic: i0 = 0, i1 = avail (bit-identical path).
+    long long i0 = 0, i1 = avail;
+    if (v.start_s != 0.0 || v.has_end_s) {
+        // Clamp the double before llround so absurd values stay defined (they are empty slices anyway).
+        auto to_frame = [sr](double sec) {
+            double x = sec * static_cast<double>(sr);
+            if (x > 4e18) x = 4e18;
+            return static_cast<long long>(std::llround(x));
+        };
+        i0 = to_frame(v.start_s);
+        if (v.has_end_s) i1 = to_frame(v.end_s);
+        if (i1 > avail) i1 = avail;
+        if (i1 <= i0) { err = "sampler: trim slice is empty"; return false; }
+    }
     long long want = static_cast<long long>(std::llround(note.dur_beats * spb));
-    long long len = avail < want ? avail : want;
+    long long slice = i1 - i0;
+    long long len = slice < want ? slice : want;
     for (long long n = 0; n < len; ++n) {
         float l, r;
-        if (rr.channels == 1) { l = r = rr.samples[n]; }
-        else { l = rr.samples[n * 2]; r = rr.samples[n * 2 + 1]; }
+        const long long f = i0 + n;
+        if (rr.channels == 1) { l = r = rr.samples[f]; }
+        else { l = rr.samples[f * 2]; r = rr.samples[f * 2 + 1]; }
         add_stereo(t, start + n, l, r);
     }
     return true;
@@ -281,7 +298,8 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                     case VoiceKind::Sine:      render_sine(*target, start, note, tr.voice, sr, spb); break;
                     case VoiceKind::Synth:     render_synth(*target, start, note, tr.voice, sr, spb); break;
                     case VoiceKind::Sampler:
-                        if (!render_sampler(*target, start, note, join_path(base_dir, tr.voice.path), sr, spb, sampler_cache, err))
+                        if (!render_sampler(*target, start, note, tr.voice, join_path(base_dir, tr.voice.path), sr, spb,
+                                       sampler_cache, err))
                             return false;
                         break;
                 }

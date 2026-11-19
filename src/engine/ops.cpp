@@ -158,6 +158,18 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
                 !has_number(op_json, "pan", err)) return false;
             j["tracks"][idx]["pan"] = op_json.at("pan");
+        } else if (name == "set_sampler_trim") {  // WP-0156; range checks come from the model parse below
+            if (!check_keys(op_json, {"index", "start_s", "end_s"}, err)) return false;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
+                !has_number(op_json, "start_s", err)) return false;
+            if (!op_json.contains("end_s")) { err = "missing argument 'end_s'"; return false; }
+            const json& end_v = op_json.at("end_s");
+            if (!end_v.is_number() && !end_v.is_null()) { err = "'end_s' must be a number or null"; return false; }
+            json& voice = j["tracks"][idx]["voice"];
+            if (voice.value("kind", std::string{}) != "sampler") { err = "track is not a sampler voice"; return false; }
+            voice["start_s"] = op_json.at("start_s");
+            if (end_v.is_null()) voice.erase("end_s");  // null = no end: canonical save omits the key
+            else voice["end_s"] = end_v;
         } else if (name == "set_track_mute") {  // mixer (spec §mixer); audibility rule lives in the model
             if (!check_keys(op_json, {"index", "mute"}, err)) return false;
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||

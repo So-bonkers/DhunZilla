@@ -14,6 +14,9 @@ struct Voice {
     float freq_hz = 440.0f;      // sine voice (synth: base A4 reference when note absent)
     int accent_every = 4;        // metronome: downbeat every N beats
     std::string path;            // sampler: wav path (relative to project file dir)
+    double start_s = 0.0;        // sampler: slice start, seconds on the asset timeline (WP-0156)
+    double end_s = 0.0;          // sampler: slice end, seconds; valid only when has_end_s (WP-0156)
+    bool has_end_s = false;      // sampler: false = play to end of asset (WP-0156)
     float attack_ms = 5.0f;      // synth: linear attack ramp
     float release_ms = 30.0f;    // synth: linear release ramp at note end
 };

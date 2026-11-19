@@ -1,0 +1,36 @@
+{
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 1.0,
+  "patterns": [
+    {
+      "notes": [
+        {
+          "dur": 1.0,
+          "t": 0.0
+        },
+        {
+          "dur": 0.01,
+          "t": 1.0
+        }
+      ],
+      "track": 0
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 7,
+  "tracks": [
+    {
+      "gain_db": 0.0,
+      "name": "RampSlice",
+      "pan": 0.0,
+      "voice": {
+        "end_s": 0.0375,
+        "kind": "sampler",
+        "path": "kits/ramp48k.wav",
+        "start_s": 0.0125
+      }
+    }
+  ]
+}

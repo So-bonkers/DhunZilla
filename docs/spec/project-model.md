@@ -329,3 +329,41 @@ the whole song, and `render_project` / `render_stems` / MIDI export / `.opd` pac
     (checked with the option syntax, before the project is loaded);
   - project has no loop (checked after load) → `project has no loop region`.
   `--loop` takes no value. Project-file errors keep their codes (3 / 4 / 5) and precedence.
+## Sampler trim — additive (WP-0156)
+A sampler voice may play a slice of its asset: `{"kind": "sampler", "path": "...", "start_s": 0.0125, "end_s": 0.0375}`.
+Both keys are optional and valid **only on sampler voices** (on any other kind → parse error
+`voice.start_s/end_s are only valid for sampler voices`).
+
+**Units and reference frame (normative).** `start_s` / `end_s` are seconds on the asset's own timeline,
+converted to frame indices of the **project-rate buffer, i.e. after resampling (WP-0138)** — the converter
+runs first, unchanged and on the whole asset, and the slice is cut from its output. For a native-rate asset
+the buffer is the asset itself, so index `k` is source frame `k`. Rounding rule, exactly:
+`i0 = llround(start_s × sample_rate)` and, when `end_s` is present, `i1 = llround(end_s × sample_rate)`
+(`sample_rate` = project rate as `double`, product in `double`, `llround` = round half away from zero).
+The slice is frames `[i0, i1)` of that buffer; `i1` is clamped to the buffer length `avail` (`i1 = min(i1, avail)`);
+with no `end_s`, `i1 = avail`. Examples at 48 kHz: `start_s 0.0125` → `i0 = 600`; `end_s 0.0375` → `i1 = 1800`.
+
+**Defaults.** `start_s` absent or `0.0` and `end_s` absent: `i0 = 0`, `i1 = avail` and the render is
+**bit-identical** to pre-WP-0156 output (committed goldens prove it). Canonical save omits `start_s` when it
+is exactly `0.0` and omits `end_s` when absent; legacy files round-trip byte-identically.
+
+**Validation** (project parse; the same code path serves `load_project` and operations; checked in this order,
+first failure wins, only when either key is present on a sampler voice):
+- `start_s` present but not a JSON number, not finite, or `< 0` → `voice.start_s must be a finite number >= 0`;
+- `end_s` present but not a JSON number, not finite, or `<= 0` (this includes JSON `null`) →
+  `voice.end_s must be a finite number > 0`;
+- both effectively present (`start_s` defaults to 0): `end_s <= start_s` → `voice.end_s must be greater than voice.start_s`.
+An `end_s` beyond the asset's length is **not** an error at parse time (the asset is not opened by the parser)
+and **clamps** at render time as above. At render time, after the asset is loaded (and resampled),
+if `i1 <= i0` — start at or beyond the end of the asset, or a slice shorter than rounds to one frame — the
+render fails: `sampler: trim slice is empty` (exit 5, same code as other sampler render errors).
+
+**Playback semantics are unchanged, applied to the slice.** A note plays the slice from its first frame:
+output frame `n` (relative to the note start) is slice frame `i0 + n`; the note sounds for
+`len = min(i1 − i0, llround(note.dur × spb))` frames — a note shorter than the slice gates it (cut with no fade,
+as today), a longer note plays the slice once and then is silent (one-shot, no looping). Velocity, pan, gain,
+clips and the tempo map apply exactly as for an untrimmed sampler.
+
+## Sampler trim — operation and diff (WP-0156)
+See `docs/spec/operations.md` (`set_sampler_trim`). `opd diff` is unchanged: a trim difference is a
+`tracks[i].voice` difference and is reported as `unsupported difference: tracks[i].voice` (as any voice change).

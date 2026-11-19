@@ -279,3 +279,23 @@ order of §`opd diff`, and only when `a.loop != b.loop` (absent counts as a dist
   (`start_bar`, `end_bar` from b's canonical JSON) if `b` has a loop.
 This order is always valid (the old loop is gone before the length changes; the new one is set after).
 Projects without loops produce exactly the same journals as before.
+## Sampler trim operation — additive (WP-0156)
+| op | arguments | effect |
+|---|---|---|
+| `set_sampler_trim` | `index`, `start_s`, `end_s` | set the slice of `tracks[index]`'s sampler voice (semantics: `docs/spec/project-model.md` §Sampler trim) |
+
+Follows the Apply semantics unchanged (strict keys, copy → JSON edit → save→parse validation → commit; no second
+ruleset). Argument checks, in this order, error strings `set_sampler_trim: <reason>`:
+1. unknown key → `unknown argument '<key>'`;
+2. `index` an integer in `[0, #tracks)` (existing `arg_index` messages: `'index' out of range`, etc.);
+3. `start_s` required JSON number (`missing argument 'start_s'` / `'start_s' must be a number`);
+4. `end_s` required (`missing argument 'end_s'`) and either a JSON number or `null`
+   (anything else → `'end_s' must be a number or null`); `null` means "no end" (play to the end of the asset);
+5. the track's voice must be a sampler → `track is not a sampler voice`;
+6. the edit writes `voice.start_s = start_s` and `voice.end_s = end_s` (or removes `end_s` for `null`), then the
+   model parse enforces ranges, giving e.g. `set_sampler_trim: voice.start_s must be a finite number >= 0`,
+   `set_sampler_trim: voice.end_s must be a finite number > 0`,
+   `set_sampler_trim: voice.end_s must be greater than voice.start_s`.
+`{"start_s": 0, "end_s": null}` restores defaults, and the canonical save then omits both keys (byte-identical
+to a never-trimmed project). Undo/redo: whole-project snapshots, byte-exact as for every op. `opd diff` does not
+emit this op (see project-model.md).

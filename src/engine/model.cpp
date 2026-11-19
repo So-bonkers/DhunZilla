@@ -30,6 +30,28 @@ bool parse_voice(const json& j, Voice& v, std::string& err) {
     if (v.kind == VoiceKind::Sampler && v.path.empty()) { err = "sampler voice requires path"; return false; }
     if (v.accent_every <= 0) { err = "accent_every must be > 0"; return false; }
     if (!(v.attack_ms >= 0.0f) || !(v.release_ms >= 0.0f)) { err = "attack_ms/release_ms must be >= 0"; return false; }
+    // Sampler trim (WP-0156, docs/spec/project-model.md §Sampler trim). Checked only when a key is present.
+    const bool has_start = j.contains("start_s");
+    const bool has_end = j.contains("end_s");
+    if (has_start || has_end) {
+        if (v.kind != VoiceKind::Sampler) { err = "voice.start_s/end_s are only valid for sampler voices"; return false; }
+        if (has_start) {
+            const json& s = j.at("start_s");
+            if (!s.is_number() || !std::isfinite(s.get<double>()) || s.get<double>() < 0.0) {
+                err = "voice.start_s must be a finite number >= 0"; return false;
+            }
+            v.start_s = s.get<double>();
+        }
+        if (has_end) {
+            const json& e = j.at("end_s");
+            if (!e.is_number() || !std::isfinite(e.get<double>()) || e.get<double>() <= 0.0) {
+                err = "voice.end_s must be a finite number > 0"; return false;
+            }
+            v.end_s = e.get<double>();
+            v.has_end_s = true;
+            if (v.end_s <= v.start_s) { err = "voice.end_s must be greater than voice.start_s"; return false; }
+        }
+    }
     return true;
 }
 
@@ -183,7 +205,12 @@ json voice_to_json(const Voice& v) {
     switch (v.kind) {
         case VoiceKind::Metronome: j["kind"] = "metronome"; j["accent_every"] = v.accent_every; break;
         case VoiceKind::Sine:      j["kind"] = "sine"; j["freq_hz"] = v.freq_hz; break;
-        case VoiceKind::Sampler:   j["kind"] = "sampler"; j["path"] = v.path; break;
+        case VoiceKind::Sampler:
+            j["kind"] = "sampler";
+            j["path"] = v.path;
+            if (v.start_s != 0.0) j["start_s"] = v.start_s;   // WP-0156: default keys omitted
+            if (v.has_end_s) j["end_s"] = v.end_s;
+            break;
         case VoiceKind::Synth:     j["kind"] = "synth"; j["attack_ms"] = v.attack_ms; j["release_ms"] = v.release_ms; break;
     }
     return j;

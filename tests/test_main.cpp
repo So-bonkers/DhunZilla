@@ -3081,6 +3081,175 @@ static void test_loop_region() {
     round_trip(moved, cleared, "loop.diff_change_then_clear");
     std::vector<json> same_ops;
     CHECK(op::diff_projects(with, with, same_ops, err) && same_ops.empty(), "loop.diff_same_loop_no_ops");
+// ---------------------------------------------------------------- sampler trim (WP-0156)
+// Parse one-track project whose voice is `voice` (pan -1 so output left = source sample exactly).
+static bool trim_parse(const nlohmann::json& voice, op::Project& p, std::string& err) {
+    nlohmann::json j;
+    j["format_version"] = 0; j["bpm"] = 120.0; j["sample_rate"] = 48000;
+    j["length_bars"] = 1.0; j["beats_per_bar"] = 4; j["seed"] = 7;
+    nlohmann::json tk = {{"name", "S"}, {"gain_db", 0.0}, {"pan", -1.0}, {"voice", voice}};
+    j["tracks"] = nlohmann::json::array();
+    j["tracks"].push_back(tk);
+    nlohmann::json note = {{"t", 0.0}, {"dur", 4.0}};
+    nlohmann::json pat = {{"track", 0}};
+    pat["notes"] = nlohmann::json::array();
+    pat["notes"].push_back(note);
+    j["patterns"] = nlohmann::json::array();
+    j["patterns"].push_back(pat);
+    return op::project_from_json(j, p, err);
+}
+
+// Left-channel samples of a render of p (base_dir /tmp for the fixture WAVs written below).
+static bool trim_render_left(const op::Project& p, std::vector<float>& left, std::string& err) {
+    op::wav::StereoBuffer b;
+    if (!op::render_project(p, "/tmp", b, err)) return false;
+    left.resize(b.frames());
+    for (size_t i = 0; i < left.size(); ++i) left[i] = b.interleaved[2 * i];
+    return true;
+}
+
+static void test_sampler_trim() {
+    using nlohmann::json;
+    std::string err;
+
+    // Fixture asset: 1000 mono frames, frame i = i/32768 (PCM16-exact).
+    std::vector<float> ramp(1000);
+    for (size_t i = 0; i < ramp.size(); ++i) ramp[i] = static_cast<float>(i) / 32768.0f;
+    write_mono_pcm16("/tmp/op_trim_ramp.wav", 48000, ramp);
+
+    // (1)-(2) parse: fields stored; untouched voice keeps defaults.
+    op::Project pa;
+    const json va = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.0125}, {"end_s", 0.0375}};
+    CHECK(trim_parse(va, pa, err) && pa.tracks[0].voice.start_s == 0.0125 &&
+              pa.tracks[0].voice.has_end_s && pa.tracks[0].voice.end_s == 0.0375,
+          "trim.parse_fields");
+    op::Project pd;
+    const json vd = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}};
+    CHECK(trim_parse(vd, pd, err) && pd.tracks[0].voice.start_s == 0.0 && !pd.tracks[0].voice.has_end_s,
+          "trim.parse_defaults_untrimmed");
+
+    // (3)-(9) parse errors, exact strings, first failure wins.
+    const std::string e_start = "voice.start_s must be a finite number >= 0";
+    const std::string e_end = "voice.end_s must be a finite number > 0";
+    const std::string e_order = "voice.end_s must be greater than voice.start_s";
+    op::Project scratch;
+    CHECK(!trim_parse({{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", -0.5}}, scratch, err) &&
+              err == e_start, "trim.e_start_negative");
+    CHECK(!trim_parse({{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", "0.1"}}, scratch, err) &&
+              err == e_start, "trim.e_start_not_number");
+    CHECK(!trim_parse({{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"end_s", 0.0}}, scratch, err) &&
+              err == e_end, "trim.e_end_zero");
+    CHECK(!trim_parse({{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"end_s", nullptr}}, scratch, err) &&
+              err == e_end, "trim.e_end_null");
+    CHECK(!trim_parse({{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.5}, {"end_s", 0.25}},
+                      scratch, err) && err == e_order, "trim.e_end_not_after_start");
+    CHECK(!trim_parse({{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.5}, {"end_s", 0.5}},
+                      scratch, err) && err == e_order, "trim.e_end_equals_start");
+    CHECK(!trim_parse({{"kind", "metronome"}, {"start_s", 0.1}}, scratch, err) &&
+              err == "voice.start_s/end_s are only valid for sampler voices", "trim.e_non_sampler");
+
+    // (10)-(11) canonical save: default keys omitted; trimmed keys emitted; round-trip stable.
+    const std::string bytes_untrimmed = op::project_bytes(pd);
+    CHECK(bytes_untrimmed.find("start_s") == std::string::npos &&
+              bytes_untrimmed.find("end_s") == std::string::npos, "trim.canonical_omits_defaults");
+    const std::string bytes_trim = op::project_bytes(pa);
+    CHECK(bytes_trim.find("\"start_s\": 0.0125") != std::string::npos &&
+              bytes_trim.find("\"end_s\": 0.0375") != std::string::npos, "trim.canonical_emits_trim");
+    op::Project back;
+    CHECK(op::project_from_json(json::parse(bytes_trim), back, err) && op::project_bytes(back) == bytes_trim,
+          "trim.canonical_roundtrip_stable");
+
+    // (12)-(13) exact slice: slice [96, 480) of the ramp; gate-free note of 4 beats.
+    op::Project ps;
+    const json vs = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.002}, {"end_s", 0.01}};
+    CHECK(trim_parse(vs, ps, err), "trim.parse_slice_ok");
+    std::vector<float> slice, full;
+    CHECK(trim_render_left(ps, slice, err), "trim.render_slice_ok");
+    CHECK(trim_parse({{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}}, scratch, err) &&
+              trim_render_left(scratch, full, err), "trim.render_reference_ok");
+    bool exact = true, silent_after = true;
+    for (size_t n = 0; n < 384; ++n) exact = exact && slice[n] == full[96 + n];
+    for (size_t n = 384; n < slice.size(); ++n) silent_after = silent_after && slice[n] == 0.0f;
+    CHECK(exact, "trim.slice_samples_exact");
+    CHECK(silent_after && slice[383] != 0.0f, "trim.silence_after_slice");
+
+    // (14) note shorter than the slice gates it (0.001 beat = 24 frames at 120 bpm / 48 kHz).
+    op::Project pg = ps;
+    pg.patterns[0].notes[0].dur_beats = 0.001;
+    std::vector<float> gated;
+    CHECK(trim_render_left(pg, gated, err) && gated[23] == full[96 + 23] && gated[24] == 0.0f &&
+              gated[100] == 0.0f, "trim.note_gates_slice");
+
+    // (15) end_s beyond the asset clamps to the asset length: slice [96, 1000).
+    op::Project pc;
+    const json vc = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.002}, {"end_s", 10.0}};
+    std::vector<float> clamped;
+    CHECK(trim_parse(vc, pc, err) && trim_render_left(pc, clamped, err) && clamped[903] == full[96 + 903] &&
+              clamped[904] == 0.0f, "trim.end_clamps_to_asset");
+
+    // (16)-(17) start at/after asset end: render error; start inside asset with no end: short slice.
+    op::Project pe;
+    const json ve = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.05}};
+    CHECK(trim_parse(ve, pe, err), "trim.parse_start_beyond_ok");
+    op::wav::StereoBuffer be;
+    CHECK(!op::render_project(pe, "/tmp", be, err) && err == "sampler: trim slice is empty",
+          "trim.e_render_slice_empty");
+    op::Project pz;
+    const json vz = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.02}};
+    std::vector<float> tail;
+    CHECK(trim_parse(vz, pz, err) && trim_render_left(pz, tail, err) && tail[39] == full[960 + 39] &&
+              tail[40] == 0.0f, "trim.start_only_to_asset_end");
+
+    // (18) 44.1 kHz asset: slice is i1 - i0 frames at 48 kHz (960 .. 2880 -> 1920 frames).
+    std::vector<float> dc(4410, 0.5f);
+    write_mono_pcm16("/tmp/op_trim_dc44k.wav", 44100, dc);
+    op::Project pr;
+    const json vr = {{"kind", "sampler"}, {"path", "op_trim_dc44k.wav"}, {"start_s", 0.02}, {"end_s", 0.06}};
+    std::vector<float> rs;
+    CHECK(trim_parse(vr, pr, err) && trim_render_left(pr, rs, err), "trim.resampled_asset_renders");
+    size_t sounding = 0;
+    for (float x : rs) sounding += x != 0.0f ? 1u : 0u;
+    CHECK(sounding == 1920 && rs[1919] != 0.0f && rs[1920] == 0.0f, "trim.resampled_slice_length_48k");
+
+    // (19) explicit default trim renders bit-identical to the untrimmed path.
+    op::Project pdef;
+    const json vdef = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.0}};
+    std::vector<float> defr;
+    CHECK(trim_parse(vdef, pdef, err) && trim_render_left(pdef, defr, err) && defr.size() == full.size() &&
+              std::memcmp(defr.data(), full.data(), full.size() * sizeof(float)) == 0,
+          "trim.default_render_bitexact");
+
+    // (20)-(27) set_sampler_trim op: sets, clears with null, rejects with exact strings.
+    op::Project po;
+    op::Track tk; tk.name = "S"; tk.pan = -1.0f;
+    tk.voice.kind = op::VoiceKind::Sampler; tk.voice.path = "op_trim_ramp.wav";
+    po.bpm = 120.0; po.length_bars = 1.0; po.beats_per_bar = 4; po.sample_rate = 48000;
+    po.tracks.push_back(tk);
+    op::Track mk; mk.name = "M"; mk.voice.kind = op::VoiceKind::Metronome;
+    po.tracks.push_back(mk);
+    CHECK(op::apply_op(po, json{{"op", "set_sampler_trim"}, {"index", 0}, {"start_s", 0.01}, {"end_s", 0.02}}, err) &&
+              po.tracks[0].voice.start_s == 0.01 && po.tracks[0].voice.has_end_s &&
+              po.tracks[0].voice.end_s == 0.02, "ops.set_sampler_trim_sets");
+    CHECK(op::apply_op(po, json{{"op", "set_sampler_trim"}, {"index", 0}, {"start_s", 0}, {"end_s", nullptr}}, err) &&
+              po.tracks[0].voice.start_s == 0.0 && !po.tracks[0].voice.has_end_s,
+          "ops.set_sampler_trim_null_clears");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_trim"}, {"index", 0}, {"start_s", 0.03}, {"end_s", 0.02}}, err) &&
+              err == "set_sampler_trim: voice.end_s must be greater than voice.start_s",
+          "ops.set_sampler_trim_reject_order");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_trim"}, {"index", 0}, {"start_s", -1}, {"end_s", 1.0}}, err) &&
+              err == "set_sampler_trim: voice.start_s must be a finite number >= 0",
+          "ops.set_sampler_trim_reject_start_range");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_trim"}, {"index", 1}, {"start_s", 0.0}, {"end_s", nullptr}}, err) &&
+              err == "set_sampler_trim: track is not a sampler voice",
+          "ops.set_sampler_trim_reject_non_sampler");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_trim"}, {"index", 0}, {"start_s", "x"}, {"end_s", nullptr}}, err) &&
+              err == "set_sampler_trim: 'start_s' must be a number", "ops.set_sampler_trim_reject_start_type");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_trim"}, {"index", 0}, {"start_s", 0.0}}, err) &&
+              err == "set_sampler_trim: missing argument 'end_s'", "ops.set_sampler_trim_reject_end_missing");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_trim"}, {"index", 0}, {"start_s", 0.0}, {"end_s", "x"}}, err) &&
+              err == "set_sampler_trim: 'end_s' must be a number or null", "ops.set_sampler_trim_reject_end_type");
+
+    std::printf("INFO sampler trim: slice frames [96,480) checked against untrimmed reference\n");
 }
 
 int main() {
@@ -3118,6 +3287,7 @@ int main() {
     test_resample_polyphase();
     test_step_sequencer();
     test_loop_region();
+    test_sampler_trim();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
