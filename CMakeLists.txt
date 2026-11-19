@@ -27,7 +27,8 @@ target_link_libraries(opd PRIVATE opengine)
 enable_testing()
 add_executable(op_tests tests/test_main.cpp)
 target_link_libraries(op_tests PRIVATE opengine dzdoc)
-target_compile_definitions(op_tests PRIVATE OP_TEST_DATA="${CMAKE_SOURCE_DIR}/tests")
+target_compile_definitions(op_tests PRIVATE OP_TEST_DATA="${CMAKE_SOURCE_DIR}/tests"
+    OPD_BIN="$<TARGET_FILE:opd>")  # WP-0162: unit tests exercise `opd steps` default width end-to-end
 add_test(NAME unit COMMAND op_tests)
 
 # Our targets only — list explicitly so third_party/ can never trip these gates.

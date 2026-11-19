@@ -120,6 +120,15 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
                     pat.notes.push_back(n);
                 }
             }
+            // Explicit pattern length (WP-0162, spec §Explicit pattern length): checked after the
+            // notes; any JSON number read as double, finite and > 0 required, no upper bound.
+            if (pj.contains("length_beats")) {
+                const json& lv = pj.at("length_beats");
+                if (!lv.is_number() || !std::isfinite(lv.get<double>()) || lv.get<double>() <= 0.0) {
+                    err = "pattern.length_beats must be a finite number > 0"; return false;
+                }
+                pat.length_beats = lv.get<double>();
+            }
             p.patterns.push_back(std::move(pat));
         }
     }
@@ -254,6 +263,16 @@ bool track_audible(const Project& p, std::size_t i) {
     return !t.mute && (!any_solo || t.solo);  // mute wins over solo (spec §mixer)
 }
 
+double pattern_extent(const Pattern& pat) {
+    if (pat.length_beats) return *pat.length_beats;  // explicit loop period (WP-0162)
+    double extent = 0.0;                             // derived: max(t + dur), unchanged legacy rule
+    for (const Note& n : pat.notes) {
+        const double e = n.t_beats + n.dur_beats;
+        if (e > extent) extent = e;
+    }
+    return extent;
+}
+
 bool load_project(const std::string& path, Project& out, std::string& err) {
     out = Project{};  // full reset: loading into a dirty Project must never accumulate state
     std::ifstream f(path, std::ios::binary);
@@ -301,6 +320,7 @@ json project_to_json(const Project& p) {
     for (const auto& pat : p.patterns) {
         json pj;
         pj["track"] = pat.track;
+        if (pat.length_beats) pj["length_beats"] = *pat.length_beats;  // WP-0162: omitted when absent → legacy bytes
         json notes = json::array();
         for (const auto& n : pat.notes) {
             json nj;

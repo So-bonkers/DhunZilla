@@ -176,11 +176,7 @@ bool save_midi(const std::string& path, const Project& p, std::string& err) {
             for (const Clip& clip : p.arrangement) {
                 const Pattern& pat = p.patterns[static_cast<size_t>(clip.pattern)];
                 if (pat.track != static_cast<int>(ti)) continue;
-                double extent = 0.0;  // loop period, same computation as renderer
-                for (const Note& n : pat.notes) {
-                    const double e = n.t_beats + n.dur_beats;
-                    if (e > extent) extent = e;
-                }
+                const double extent = pattern_extent(pat);  // loop period, same helper as renderer (WP-0162)
                 const int reps = (extent > 0.0) ? clip.repeats : 1;
                 // MIDI has no clip level: bake gain_db into note velocities (documented in spec).
                 const double cg = clip.gain_db != 0.0 ? static_cast<double>(dsp::db_to_lin(clip.gain_db)) : 1.0;

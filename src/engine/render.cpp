@@ -316,11 +316,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
             for (const Clip& clip : p.arrangement) {
                 const Pattern& pat = p.patterns[static_cast<size_t>(clip.pattern)];
                 if (static_cast<size_t>(pat.track) != ti) continue;
-                double extent = 0.0;  // loop period = pattern note extent, beats
-                for (const Note& n : pat.notes) {
-                    const double e = n.t_beats + n.dur_beats;
-                    if (e > extent) extent = e;
-                }
+                const double extent = pattern_extent(pat);  // loop period, beats (WP-0162 helper)
                 const int reps = (extent > 0.0) ? clip.repeats : 1;
                 const double base = clip.start_bar * bpb;
                 for (int r = 0; r < reps; ++r) {

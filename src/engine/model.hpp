@@ -32,10 +32,18 @@ struct Note {
 struct Pattern {
     int track = 0;               // index into Project::tracks
     std::vector<Note> notes;
+    std::optional<double> length_beats;  // explicit loop period (WP-0162, spec §Explicit pattern
+                                         // length): finite > 0; absent = derived from the notes
 };
 
+// Pattern extent (loop period) in beats: `*length_beats` when present, else
+// max(note.t + note.dur) over its notes (0.0 for a pattern without notes). The single source of
+// truth for repetition spacing — renderer and MIDI export both consult it. Example:
+//   op::Pattern p; p.length_beats = 4.0;  op::pattern_extent(p);  // → 4.0
+double pattern_extent(const Pattern& pat);
+
 // Playlist clip: one placement of a pattern on the timeline (spec §arrangement).
-// Pattern extent (loop period) = max(note.t + note.dur) over its notes, in beats.
+// Pattern extent (loop period) = pattern_extent(): explicit length_beats, else max(note.t + note.dur).
 struct Clip {
     int pattern = 0;             // index into Project::patterns
     double start_bar = 0.0;      // placement, bars from project start

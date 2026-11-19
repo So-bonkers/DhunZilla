@@ -521,12 +521,14 @@ static bool parse_decimal(const std::string& s, long long max, long long& out) {
 static int cmd_steps(int argc, char** argv) {
     std::vector<std::string> pos;
     long long steps = 16;
+    bool steps_given = false;  // WP-0162: an explicit --steps beats the length_beats-derived default
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--steps") && i + 1 < argc) {
             long long v = 0;
             if (!parse_decimal(argv[i + 1], 256, v) || v < 1)
                 { usage(); return fail("usage", std::string("bad --steps value '") + argv[i + 1] + "'"); }
             steps = v;
+            steps_given = true;
             ++i;
         } else if (!std::strncmp(argv[i], "--", 2)) {  // includes a valueless `--steps`
             usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
@@ -550,6 +552,17 @@ static int cmd_steps(int argc, char** argv) {
         usage();
         return fail("usage", "pattern index " + std::to_string(idx) + " out of range (project has " +
                                  std::to_string(p.patterns.size()) + " patterns)");
+    }
+    // Default width (WP-0162, spec §opd steps default width): an explicit --steps always wins;
+    // otherwise a pattern with length_beats uses ceil(length_beats * 4) clamped to [1, 256].
+    if (!steps_given) {
+        const auto& lb = p.patterns[static_cast<std::size_t>(idx)].length_beats;
+        if (lb) {
+            double w = std::ceil(*lb * 4.0);
+            if (!(w > 1.0)) w = 1.0;    // defensive; the model parse guarantees lb > 0 → ceil ≥ 1
+            if (w > 256.0) w = 256.0;   // clamp before the int cast: length_beats has no upper bound
+            steps = static_cast<long long>(w);
+        }
     }
     std::printf("%s\n", op::step_grid(p.patterns[static_cast<std::size_t>(idx)], static_cast<int>(steps)).c_str());
     return 0;
