@@ -102,6 +102,8 @@ sed 's/"seed": 42/"seed": 43/' "$ROOT/tests/fixtures/goldens/demo.opj" > "$TMP/s
 err="$("$OPD" diff "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/seed43.opj" -o "$TMP/never_d.opjl" 2>&1 >/dev/null)"; got=$?
 if [ "$got" = 5 ] && [ "$err" = "error: diff: unsupported difference: seed" ]; then echo "PASS diff_unsupported (exit 5, stderr names field)"; else echo "FAIL diff_unsupported: exit $got stderr [$err]"; fails=$((fails+1)); fi
 if [ ! -e "$TMP/never_d.opjl" ]; then echo "PASS diff_unsupported_no_output"; else echo "FAIL diff_unsupported_no_output"; fails=$((fails+1)); fi
+sed 's/"start_bar": 2.0, "repeats": 1/"start_bar": 2.0, "repeats": 2/' "$ROOT/tests/fixtures/goldens/arranged.opj" > "$TMP/rep2.opj"
+check diff_clip_repeats_ok  0 "$OPD" diff "$ROOT/tests/fixtures/goldens/arranged.opj" "$TMP/rep2.opj" -o "$TMP/d_rep.opjl"
 
 # --- opd steps (WP-0154): docs/spec/operations.md §Engine view and CLI exit-code contract
 cat > "$TMP/st_base.opj" <<'EOF'

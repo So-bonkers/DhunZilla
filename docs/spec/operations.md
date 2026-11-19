@@ -93,15 +93,19 @@ failure). "Equal" means equal canonical JSON (`project_to_json`), i.e. equal sav
 **Unsupported differences** (no operation can change them). The first one found, checking in exactly this
 order, is reported as `unsupported difference: <field>`: `format_version`, `sample_rate`, `seed`,
 `beats_per_bar`, `tempo_map` (any difference), then for i ascending `tracks[i].voice` (i < min track
-count), `patterns[i].track` (i < min pattern count), then for i ascending `arrangement[i].pattern` and
-`arrangement[i].repeats` (i < min clip count), then `attachments` (a's attachment list must be a prefix of
-b's — operations can only append). Anything else that differs is supported.
+count), `patterns[i].track` (i < min pattern count), then `attachments` (a's attachment list must be a prefix of
+b's — operations can only append). Anything else that differs is supported. Since WP-0159 that includes every clip field: `arrangement[i].pattern` and
+`arrangement[i].repeats` are no longer unsupported (they are expressed with `set_clip_pattern` and
+`set_clip_repeats`).
 
 **Output**: JSON Lines, one `nlohmann::json::dump()` (compact, keys alphabetically sorted — so `"op"`
 sorts among the arguments, e.g. `{"gain_db":-3.0,"op":"set_master_gain"}`) per operation, `\n`
 terminated, no comments/blank lines. Values come from the canonical JSON of `b`. Identical projects →
 a zero-byte file (exit 0). Operations are emitted in this fixed order (output is byte-stable):
 1. `remove_clip` for indices `size(a.arrangement)-1` down to `size(b.arrangement)` (descending);
+1b. (WP-0159) only if `size(a.patterns) > size(b.patterns)`: for clip i = 0.. (i < min clip count),
+    `set_clip_pattern` where `pattern` differs (`pattern` = b's value). Rationale: b's values are then
+    `< size(b.patterns) < size(a.patterns)`, valid now, and it frees patterns about to be removed;
 2. `remove_pattern` likewise (descending, a's tail beyond b's pattern count);
 3. `remove_track` likewise;
 4. `set_bpm`, `set_length_bars`, `set_master_gain` (each only if different);
@@ -112,10 +116,19 @@ a zero-byte file (exit 0). Operations are emitted in this fixed order (output is
    note lists; `remove_note` for a's note indices `size-1` down to k (descending), then `add_note` for b's
    notes k.. ascending (`note` = b's canonical note JSON);
 8. `add_pattern` for b's extra patterns, ascending;
-9. for clip i = 0.. (i < min clip count): `move_clip` if `start_bar` differs, then `set_clip_gain` if
-   `gain_db` differs (absent = 0.0);
+9. for clip i = 0.. (i < min clip count), in this order: `set_clip_pattern` if `pattern` differs and
+   it was NOT already emitted in step 1b (i.e. `size(a.patterns) <= size(b.patterns)`; all of b's patterns
+   exist after step 8), `set_clip_repeats` if `repeats` differs (`repeats` = b's value), `move_clip` if
+   `start_bar` differs, then `set_clip_gain` if `gain_db` differs (absent = 0.0);
 10. `add_clip` for b's extra clips, ascending;
 11. `add_attachment` for b's attachments beyond a's count, ascending (`producer` always present, `""` if empty).
+
+**Clip lists are compared position by position** (WP-0159). Clip i of a is turned into clip i of b by the
+per-field ops above, and the tails are removed/added. No `duplicate_clip` or `reorder_clip` is ever
+emitted: a duplicated or reordered clip simply shows up as per-position field changes plus an
+added tail clip (correct, not minimal). Detecting inserts/moves is deliberately not attempted.
+Pairs whose clip lists agree in every shared position's `pattern` and `repeats` produce exactly the same
+journal bytes as before WP-0159.
 
 Finally `diff_projects` applies its own journal to a copy of `a` and returns false with
 `unsupported difference: (journal does not reproduce target)` if the result is not equal to `b` (safety

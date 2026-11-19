@@ -47,7 +47,7 @@ bool apply_journal(Project& p, const std::string& jsonl_text, std::string& err,
 // §opd diff): ops is cleared first, filled in the spec's fixed emission order, and left empty on
 // failure. "Equal" means equal canonical JSON (project_to_json), i.e. equal saved bytes. Fields
 // no operation can change (format_version, sample_rate, seed, beats_per_bar, tempo_map, existing
-// tracks' voice, patterns' track, clips' pattern/repeats, non-prefix attachments) make it return
+// tracks' voice, patterns' track, non-prefix attachments) make it return
 // false with err "unsupported difference: <field>" (0-based decimal indices). As a safety net the
 // journal is applied to a copy of `a` and must reproduce b; otherwise err ends in
 // "(journal does not reproduce target)". Example:

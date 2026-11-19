@@ -2887,6 +2887,100 @@ static void test_opd_diff() {
     y.seed = base.seed + 1;
     y.beats_per_bar = 3;
     CHECK(expect_unsupported(y, "seed"), "diff.unsupported_seed_before_beats");
+    op::Project pt = base;
+    pt.patterns[1].track = 0;
+    std::vector<json> upo;
+    std::string upe;
+    CHECK(!op::diff_projects(base, pt, upo, upe) && upo.empty() &&
+              upe == "unsupported difference: patterns[1].track",
+          "diff.unsupported_pattern_track_1");
+
+    // (g) WP-0159: clip pattern/repeats are supported (set_clip_pattern / set_clip_repeats).
+    // Replay helper: diff(from,to) applied to a copy of `from` must give exactly `to`.
+    auto canon = [](const op::Project& p) { return op::project_to_json(p).dump(); };
+    auto replays = [&](const op::Project& from, const op::Project& to, std::vector<json>& o) {
+        std::string re;
+        op::Project c = from;
+        return op::diff_projects(from, to, o, re) && op::apply_journal(c, journal_text(o), re) &&
+               canon(c) == canon(to);
+    };
+    const op::Project cbase = diff_base_project();  // clips: (p0,0.0,r1) (p1,1.0,r1) (p2,2.0,r1)
+
+    // (g1) repeats on clip 0 + pattern on clip 1
+    op::Project t1 = cbase;
+    std::string e1;
+    bool t1ok = op::apply_op(t1, json{{"op", "set_clip_repeats"}, {"index", 0}, {"repeats", 3}}, e1) &&
+                op::apply_op(t1, json{{"op", "set_clip_pattern"}, {"index", 1}, {"pattern", 2}}, e1);
+    std::vector<json> o1;
+    CHECK(t1ok && op::diff_projects(cbase, t1, o1, e1) && journal_text(o1) ==
+                  "{\"index\":0,\"op\":\"set_clip_repeats\",\"repeats\":3}\n"
+                  "{\"index\":1,\"op\":\"set_clip_pattern\",\"pattern\":2}\n",
+          "diff.clip_repeats_and_pattern_exact");
+    CHECK(t1ok && replays(cbase, t1, o1), "diff.clip_repeats_and_pattern_replays");
+
+    // (g2) all four clip fields changed on one clip: pattern, repeats, move_clip, set_clip_gain
+    op::Project t2 = cbase;
+    std::string e2;
+    bool t2ok = op::apply_op(t2, json{{"op", "set_clip_pattern"}, {"index", 1}, {"pattern", 0}}, e2) &&
+                op::apply_op(t2, json{{"op", "set_clip_repeats"}, {"index", 1}, {"repeats", 2}}, e2) &&
+                op::apply_op(t2, json{{"op", "move_clip"}, {"index", 1}, {"start_bar", 3.0}}, e2) &&
+                op::apply_op(t2, json{{"op", "set_clip_gain"}, {"index", 1}, {"gain_db", -4.0}}, e2);
+    std::vector<json> o2;
+    CHECK(t2ok && op::diff_projects(cbase, t2, o2, e2) && journal_text(o2) ==
+                  "{\"index\":1,\"op\":\"set_clip_pattern\",\"pattern\":0}\n"
+                  "{\"index\":1,\"op\":\"set_clip_repeats\",\"repeats\":2}\n"
+                  "{\"index\":1,\"op\":\"move_clip\",\"start_bar\":3.0}\n"
+                  "{\"gain_db\":-4.0,\"index\":1,\"op\":\"set_clip_gain\"}\n",
+          "diff.clip_all_four_fields_exact");
+    CHECK(t2ok && replays(cbase, t2, o2), "diff.clip_all_four_fields_replays");
+
+    // (g3) shrinking patterns: clip 2 re-pointed to pattern 0, then pattern 2 removed.
+    // Step 1b must emit set_clip_pattern before remove_pattern (else "pattern in use").
+    op::Project t3 = cbase;
+    std::string e3;
+    bool t3ok = op::apply_op(t3, json{{"op", "set_clip_pattern"}, {"index", 2}, {"pattern", 0}}, e3) &&
+                op::apply_op(t3, json{{"op", "remove_pattern"}, {"index", 2}}, e3);
+    std::vector<json> o3;
+    CHECK(t3ok && op::diff_projects(cbase, t3, o3, e3) && journal_text(o3) ==
+                  "{\"index\":2,\"op\":\"set_clip_pattern\",\"pattern\":0}\n"
+                  "{\"index\":2,\"op\":\"remove_pattern\"}\n",
+          "diff.clip_shrink_patterns_exact");
+    CHECK(t3ok && replays(cbase, t3, o3), "diff.clip_shrink_patterns_replays");
+
+    // (g4) growing patterns: add_pattern (step 8) precedes set_clip_pattern (step 9)
+    op::Project t4 = cbase;
+    std::string e4;
+    bool t4ok = op::apply_op(t4, json{{"op", "add_pattern"},
+                                      {"pattern", json::parse(R"({"track":0,"notes":[{"t":0.0,"dur":0.5}]})")}},
+                             e4) &&
+                op::apply_op(t4, json{{"op", "set_clip_pattern"}, {"index", 0}, {"pattern", 3}}, e4);
+    std::vector<json> o4;
+    CHECK(t4ok && op::diff_projects(cbase, t4, o4, e4) && journal_text(o4) ==
+                  "{\"op\":\"add_pattern\",\"pattern\":" + op::project_to_json(t4)["patterns"][3].dump() +
+                      "}\n{\"index\":0,\"op\":\"set_clip_pattern\",\"pattern\":3}\n",
+          "diff.clip_grow_patterns_exact");
+    CHECK(t4ok && replays(cbase, t4, o4), "diff.clip_grow_patterns_replays");
+
+    // (g5) duplicate_clip / reorder_clip results: round trip, and the journal never names them
+    op::Project t5 = cbase;
+    std::string e5;
+    bool t5ok = op::apply_op(t5, json{{"op", "duplicate_clip"}, {"index", 0}, {"start_bar", 0.5}}, e5);
+    std::vector<json> o5;
+    CHECK(t5ok && op::diff_projects(cbase, t5, o5, e5) &&
+              journal_text(o5).find("duplicate_clip") == std::string::npos &&
+              journal_text(o5).find("reorder_clip") == std::string::npos,
+          "diff.duplicate_clip_no_dup_op");
+    CHECK(t5ok && replays(cbase, t5, o5), "diff.duplicate_clip_replays");
+
+    op::Project t6 = cbase;
+    std::string e6;
+    bool t6ok = op::apply_op(t6, json{{"op", "reorder_clip"}, {"index", 0}, {"to", 2}}, e6);
+    std::vector<json> o6;
+    CHECK(t6ok && op::diff_projects(cbase, t6, o6, e6) &&
+              journal_text(o6).find("duplicate_clip") == std::string::npos &&
+              journal_text(o6).find("reorder_clip") == std::string::npos,
+          "diff.reorder_clip_no_reorder_op");
+    CHECK(t6ok && replays(cbase, t6, o6), "diff.reorder_clip_replays");
 }
 
 // WP-0150: the polyphase tap table must be bit-identical to the frozen direct reference for every

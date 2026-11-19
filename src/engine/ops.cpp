@@ -472,13 +472,6 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
 
     const json& clips_a = field_or(ja, "arrangement", kEmptyArray);
     const json& clips_b = field_or(jb, "arrangement", kEmptyArray);
-    for (std::size_t i = 0; i < std::min(clips_a.size(), clips_b.size()); ++i) {
-        if (clips_a[i].at("pattern") != clips_b[i].at("pattern"))
-            return unsupported("arrangement[" + std::to_string(i) + "].pattern");
-        if (clips_a[i].at("repeats") != clips_b[i].at("repeats"))
-            return unsupported("arrangement[" + std::to_string(i) + "].repeats");
-    }
-
     // Operations can only append attachments: a's list must be a prefix of b's.
     const json& atts_a = field_or(ja, "attachments", kEmptyArray);
     const json& atts_b = field_or(jb, "attachments", kEmptyArray);
@@ -491,6 +484,15 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
     // kept clips/patterns reference only b-valid indices (checked above), so no "in use" hits.
     for (std::size_t i = clips_a.size(); i-- > clips_b.size();)
         ops.push_back({{"op", "remove_clip"}, {"index", i}});
+    // Step 1b (WP-0159): only when a has more patterns than b. Re-point shared clips at b's pattern
+    // indices first, so that the tail patterns removed next are no longer "in use".
+    const std::size_t min_clips = std::min(clips_a.size(), clips_b.size());
+    const bool repoint_first = patterns_a.size() > patterns_b.size();
+    if (repoint_first) {
+        for (std::size_t i = 0; i < min_clips; ++i)
+            if (clips_a[i].at("pattern") != clips_b[i].at("pattern"))
+                ops.push_back({{"op", "set_clip_pattern"}, {"index", i}, {"pattern", clips_b[i].at("pattern")}});
+    }
     for (std::size_t i = patterns_a.size(); i-- > patterns_b.size();)
         ops.push_back({{"op", "remove_pattern"}, {"index", i}});
     for (std::size_t i = tracks_a.size(); i-- > tracks_b.size();)
@@ -549,8 +551,13 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
     for (std::size_t i = patterns_a.size(); i < patterns_b.size(); ++i)
         ops.push_back({{"op", "add_pattern"}, {"pattern", patterns_b[i]}});
 
-    // Shared clips: pattern/repeats are equal (checked above), so only position and gain can differ.
-    for (std::size_t i = 0; i < std::min(clips_a.size(), clips_b.size()); ++i) {
+    // Shared clips, compared position by position (WP-0159): no duplicate_clip/reorder_clip is emitted.
+    // Pattern is set here unless step 1b already did it; b's patterns all exist by now (step 8).
+    for (std::size_t i = 0; i < min_clips; ++i) {
+        if (!repoint_first && clips_a[i].at("pattern") != clips_b[i].at("pattern"))
+            ops.push_back({{"op", "set_clip_pattern"}, {"index", i}, {"pattern", clips_b[i].at("pattern")}});
+        if (clips_a[i].at("repeats") != clips_b[i].at("repeats"))
+            ops.push_back({{"op", "set_clip_repeats"}, {"index", i}, {"repeats", clips_b[i].at("repeats")}});
         if (clips_a[i].at("start_bar") != clips_b[i].at("start_bar"))
             ops.push_back({{"op", "move_clip"}, {"index", i}, {"start_bar", clips_b[i].at("start_bar")}});
         const json& gain_b = field_or(clips_b[i], "gain_db", kZeroDb);
