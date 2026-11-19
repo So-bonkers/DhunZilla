@@ -379,3 +379,85 @@ WAV, so an AIFF and a WAV with the same samples render byte-identically. Strict 
 `unsupported AIFF-C compression`, `AIFF must be 16 or 24-bit`, `implausible sample rate`. `opd info`
 reports them as `error: parse: <text>` (exit 4); the sampler reports `sampler: <text>` (render exit 5).
 `opd info` prints `aiff: <path> rate=<n> ch=<n> frames=<n> duration=<x.xxx>s` for AIFF content.
+
+## Synth voice v1 — additive (WP-0161)
+Optional keys on a `"synth"` voice. A synth voice with **none** of `waveform`, `adsr`, `cutoff_hz` takes the
+legacy path above **unchanged** (bit-identical to pre-WP-0161 renders; committed goldens prove it).
+`resonance` alone also changes nothing (it only parameterises the filter). The three features are independent.
+
+| key | type / range | default (= key absent) |
+|---|---|---|
+| `waveform` | string `"sine"`, `"saw"` or `"square"` | absent = the legacy timbre (fundamental + 0.35 octave partial); this is **not** the same as `"sine"` |
+| `adsr` | object `{attack_s, decay_s, sustain, release_s}`; each inner key optional | absent = legacy envelope (`attack_ms` / `release_ms`, release inside the note, no tail). Present = ADSR below; inner defaults `attack_s` 0.005, `decay_s` 0.0, `sustain` 1.0, `release_s` 0.030 |
+| `cutoff_hz` | number in `[20, 20000]` | absent = no filter |
+| `resonance` | number (Q) in `[0.5, 20]` | 0.7071 |
+
+`adsr` ranges: `attack_s`, `decay_s`, `release_s` in `[0, 10]` seconds; `sustain` in `[0, 1]`.
+When `adsr` is present, `attack_ms`/`release_ms` are ignored. Using any of the four keys on a non-synth voice is an error.
+
+**Numeric type.** Everything in the v1 path is computed in **IEEE double** (`double`), converted to `float` only
+for the final per-sample value passed to the mixer (`add_stereo`). Constants: `PI = dsp::kPi_d()`. Only
+`dsp::sind_`, `dsp::cosd_`, `dsp::powd_` are used for transcendental functions (`floor`/`ceil`/`min` are exact).
+Exception: if `waveform` is absent but `adsr`/`cutoff_hz` is set, the oscillator is the legacy one, computed with
+its exact legacy `float` expression (`dphi`, `sinf_`, `0.35f`, `kNorm`) and widened to double; likewise if `adsr`
+is absent but `waveform`/`cutoff_hz` is set, the envelope is the legacy `float` envelope widened to double.
+
+**Voice model.** Every note is an independent voice (polyphonic, no voice stealing, no choke): it starts at its
+frame with oscillator phase 0 and all filter state 0 (this is the retrigger rule — a repeated or overlapping note
+simply starts another voice, and all voices are summed by the mixer). `len = llround(note.dur × spb)` frames as
+for every voice (`len <= 0` → nothing). Note-off is frame `len`. `n` below is the frame index relative to the
+note start; `sr` is the project sample rate; `t = n / sr` as a double (`(double)n / (double)sr`).
+
+**Pitch.** `f = 440.0 × powd_(2.0, (double)(midi_note − 69) / 12.0)` when the note has `midi_note`, else
+`(double)voice.freq_hz`. `dt = f / sr`. When `waveform` is set and (`f <= 0` or `dt >= 0.5`) the note renders
+nothing.
+
+**Oscillator** (`waveform` set; amplitude 0.5 so a full-scale-safe peak of 0.5 before the filter/envelope).
+`ph = f × (double)n / sr` (multiply first, then divide), `fr = ph − floor(ph)` ∈ [0,1).
+- `sine`:   `w = sind_(2·PI·fr)`.
+- `saw`:    `w = (2·fr − 1) − blep(fr)`.
+- `square`: `t2 = fr + 0.5; if (t2 >= 1.0) t2 -= 1.0;  w = (fr < 0.5 ? 1.0 : −1.0) + blep(fr) − blep(t2)`.
+- `blep(t)` (PolyBLEP, uses `dt` of the note): if `t < dt`: `x = t/dt; return x + x − x·x − 1`;
+  else if `t > 1 − dt`: `x = (t − 1)/dt; return x·x + x + x + 1`; else `0`.
+- oscillator output `x[n] = 0.5 × w`.
+
+**Filter** (`cutoff_hz` set): a biquad low-pass (RBJ cookbook) in direct form I, in double. Per note:
+`fc = min(cutoff_hz, 0.45 × sr)`, `w0 = 2·PI·fc / sr`, `cw = cosd_(w0)`, `sw = sind_(w0)`, `alpha = sw / (2·Q)`
+(`Q` = `resonance`), `a0 = 1 + alpha`, then the normalised coefficients
+`B0 = ((1 − cw)/2)/a0`, `B1 = (1 − cw)/a0`, `B2 = B0`, `A1 = (−2·cw)/a0`, `A2 = (1 − alpha)/a0`.
+Difference equation: `y[n] = B0·x[n] + B1·x[n−1] + B2·x[n−2] − A1·y[n−1] − A2·y[n−2]` with
+`x[−1] = x[−2] = y[−1] = y[−2] = 0`, applied to **every** frame the voice produces (including the release tail).
+The filter sits before the envelope: `out[n] = y[n] × env[n]`. With no `cutoff_hz`, `y[n] = x[n]`.
+
+**ADSR** (`adsr` present; `A, D, S, R` = `attack_s, decay_s, sustain, release_s`). Gate-held level at time `t`:
+`g(t) = t / A` if `t < A`; else `1 − (1 − S)·(t − A)/D` if `t < A + D`; else `S`
+(the divisions only occur when `A > 0` / `D > 0` respectively because of the comparisons).
+- Frames `n < len`: `env[n] = g(n / sr)`.
+- Release: `e_off = g(len / sr)` (the level at note-off, even if the attack/decay is unfinished there).
+  The voice continues for `tail = ceil(R × sr)` further frames (`R = 0` → no tail, hard cut at `len`):
+  for `n = len + k`, `0 <= k < tail`: `env[n] = e_off × (1 − (k / sr) / R)`. After that the voice is silent.
+  The oscillator and filter keep running through the tail (the tail may extend past the project end — audio
+  beyond the render window is clipped as for every voice).
+With `adsr` absent the envelope is the legacy one and the voice ends at frame `len` (no tail).
+
+**Output.** `s[n] = (float)(y[n] × env[n])`, written equally to L and R via the usual mixer path
+(track gain, pan, velocity, clip gain, master gain unchanged).
+
+**Canonical save.** `waveform` is written only when set, `adsr` only when present (then **all four** inner keys are
+written, even at their defaults), `cutoff_hz` only when set, `resonance` only when it is not exactly `0.7071`.
+Legacy synth voices write exactly the same bytes as before. A `null` value in a project file is a type error.
+
+**Validation** (project parse; one code path for `load_project` and operations; checked in this order, first
+failure wins, each only when its key is present). Messages are exact:
+1. key present on a non-synth voice → `voice.<key> is only valid for synth voices` (`<key>` = the first present
+   of `waveform`, `adsr`, `cutoff_hz`, `resonance`, in that order);
+2. `waveform` not one of the three strings (including any non-string) → `voice.waveform must be sine|saw|square`;
+3. `adsr` not an object → `voice.adsr must be an object`; an inner key other than the four →
+   `voice.adsr has unknown key '<key>'`; then inner keys in the order `attack_s`, `decay_s`, `sustain`,
+   `release_s`, each a JSON number in range, else `voice.adsr.attack_s must be a number in [0, 10]`,
+   `voice.adsr.decay_s must be a number in [0, 10]`, `voice.adsr.sustain must be a number in [0, 1]`,
+   `voice.adsr.release_s must be a number in [0, 10]`;
+4. `cutoff_hz` not a number in `[20, 20000]` → `voice.cutoff_hz must be a number in [20, 20000]`;
+5. `resonance` not a number in `[0.5, 20]` → `voice.resonance must be a number in [0.5, 20]`.
+`opd` reports these like every other parse error (`error: parse: <message>`, exit 4).
+`opd diff` is unchanged: a synth-params difference is `unsupported difference: tracks[i].voice`.

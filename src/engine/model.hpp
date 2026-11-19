@@ -9,6 +9,10 @@ namespace op {
 
 enum class VoiceKind { Metronome, Sine, Sampler, Synth };
 
+// Synth voice v1 oscillator (WP-0161, spec §Synth voice v1). Legacy = the pre-WP-0161 timbre
+// (fundamental + 0.35 octave partial) — it is NOT the same as Sine.
+enum class Waveform { Legacy, Sine, Saw, Square };
+
 struct Voice {
     VoiceKind kind = VoiceKind::Metronome;
     float freq_hz = 440.0f;      // sine voice (synth: base A4 reference when note absent)
@@ -17,8 +21,17 @@ struct Voice {
     double start_s = 0.0;        // sampler: slice start, seconds on the asset timeline (WP-0156)
     double end_s = 0.0;          // sampler: slice end, seconds; valid only when has_end_s (WP-0156)
     bool has_end_s = false;      // sampler: false = play to end of asset (WP-0156)
-    float attack_ms = 5.0f;      // synth: linear attack ramp
-    float release_ms = 30.0f;    // synth: linear release ramp at note end
+    float attack_ms = 5.0f;      // synth: linear attack ramp (legacy envelope)
+    float release_ms = 30.0f;    // synth: linear release ramp at note end (legacy envelope)
+    // Synth voice v1 (WP-0161, spec §Synth voice v1). All defaults = "key absent" → legacy path.
+    Waveform waveform = Waveform::Legacy;  // oscillator shape; Legacy = pre-WP-0161 timbre
+    bool has_adsr = false;       // adsr object present → ADSR envelope with release tail
+    double attack_s = 0.005;     // adsr: attack seconds [0, 10]
+    double decay_s = 0.0;        // adsr: decay seconds [0, 10]
+    double sustain = 1.0;        // adsr: sustain level [0, 1]
+    double release_s = 0.030;    // adsr: release seconds [0, 10] (tail after note-off)
+    double cutoff_hz = 0.0;      // biquad low-pass cutoff [20, 20000]; 0 = no filter (never from a file)
+    double resonance = 0.7071;   // filter Q [0.5, 20]; omitted at exactly 0.7071 on save
 };
 
 struct Note {

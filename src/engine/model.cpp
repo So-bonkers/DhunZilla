@@ -52,6 +52,90 @@ bool parse_voice(const json& j, Voice& v, std::string& err) {
             if (v.end_s <= v.start_s) { err = "voice.end_s must be greater than voice.start_s"; return false; }
         }
     }
+    // Synth voice v1 (WP-0161, docs/spec/project-model.md §Synth voice v1). Checked in the spec's
+    // order, first failure wins, each rule only when its key is present. A JSON null fails the
+    // type checks = type error (spec: "A null value in a project file is a type error").
+    const bool has_waveform = j.contains("waveform");
+    const bool has_adsr_key = j.contains("adsr");
+    const bool has_cutoff = j.contains("cutoff_hz");
+    const bool has_resonance = j.contains("resonance");
+    if (has_waveform || has_adsr_key || has_cutoff || has_resonance) {
+        // 1. Key present on a non-synth voice: report the first present key in spec order.
+        if (v.kind != VoiceKind::Synth) {
+            const char* first = has_waveform ? "waveform"
+                              : has_adsr_key ? "adsr"
+                              : has_cutoff   ? "cutoff_hz"
+                                             : "resonance";
+            err = std::string("voice.") + first + " is only valid for synth voices"; return false;
+        }
+        // 2. waveform: one of the three strings (any non-string is the same message).
+        if (has_waveform) {
+            const json& w = j.at("waveform");
+            if (!w.is_string()) { err = "voice.waveform must be sine|saw|square"; return false; }
+            const std::string ws = w.get<std::string>();
+            if (ws == "sine") v.waveform = Waveform::Sine;
+            else if (ws == "saw") v.waveform = Waveform::Saw;
+            else if (ws == "square") v.waveform = Waveform::Square;
+            else { err = "voice.waveform must be sine|saw|square"; return false; }
+        }
+        // 3. adsr: object; unknown inner keys first; then the four in spec order, each a number
+        //    in range (the negated double comparison rejects NaN too).
+        if (has_adsr_key) {
+            const json& a = j.at("adsr");
+            if (!a.is_object()) { err = "voice.adsr must be an object"; return false; }
+            for (auto it = a.begin(); it != a.end(); ++it) {
+                const std::string& k = it.key();
+                if (k != "attack_s" && k != "decay_s" && k != "sustain" && k != "release_s") {
+                    err = "voice.adsr has unknown key '" + k + "'"; return false;
+                }
+            }
+            v.has_adsr = true;  // present-and-object → ADSR envelope, inner defaults for absent keys
+            if (a.contains("attack_s")) {
+                const json& x = a.at("attack_s");
+                if (!x.is_number() || !(x.get<double>() >= 0.0 && x.get<double>() <= 10.0)) {
+                    err = "voice.adsr.attack_s must be a number in [0, 10]"; return false;
+                }
+                v.attack_s = x.get<double>();
+            }
+            if (a.contains("decay_s")) {
+                const json& x = a.at("decay_s");
+                if (!x.is_number() || !(x.get<double>() >= 0.0 && x.get<double>() <= 10.0)) {
+                    err = "voice.adsr.decay_s must be a number in [0, 10]"; return false;
+                }
+                v.decay_s = x.get<double>();
+            }
+            if (a.contains("sustain")) {
+                const json& x = a.at("sustain");
+                if (!x.is_number() || !(x.get<double>() >= 0.0 && x.get<double>() <= 1.0)) {
+                    err = "voice.adsr.sustain must be a number in [0, 1]"; return false;
+                }
+                v.sustain = x.get<double>();
+            }
+            if (a.contains("release_s")) {
+                const json& x = a.at("release_s");
+                if (!x.is_number() || !(x.get<double>() >= 0.0 && x.get<double>() <= 10.0)) {
+                    err = "voice.adsr.release_s must be a number in [0, 10]"; return false;
+                }
+                v.release_s = x.get<double>();
+            }
+        }
+        // 4. cutoff_hz: a number in [20, 20000].
+        if (has_cutoff) {
+            const json& x = j.at("cutoff_hz");
+            if (!x.is_number() || !(x.get<double>() >= 20.0 && x.get<double>() <= 20000.0)) {
+                err = "voice.cutoff_hz must be a number in [20, 20000]"; return false;
+            }
+            v.cutoff_hz = x.get<double>();
+        }
+        // 5. resonance: a number in [0.5, 20].
+        if (has_resonance) {
+            const json& x = j.at("resonance");
+            if (!x.is_number() || !(x.get<double>() >= 0.5 && x.get<double>() <= 20.0)) {
+                err = "voice.resonance must be a number in [0.5, 20]"; return false;
+            }
+            v.resonance = x.get<double>();
+        }
+    }
     return true;
 }
 
@@ -211,7 +295,28 @@ json voice_to_json(const Voice& v) {
             if (v.start_s != 0.0) j["start_s"] = v.start_s;   // WP-0156: default keys omitted
             if (v.has_end_s) j["end_s"] = v.end_s;
             break;
-        case VoiceKind::Synth:     j["kind"] = "synth"; j["attack_ms"] = v.attack_ms; j["release_ms"] = v.release_ms; break;
+        case VoiceKind::Synth: {
+            j["kind"] = "synth"; j["attack_ms"] = v.attack_ms; j["release_ms"] = v.release_ms;
+            // WP-0161 canonical save (spec §Canonical save): each v1 key written only when set —
+            // a legacy voice emits exactly the same bytes as before. adsr, when present, writes
+            // all four inner keys even at their defaults; resonance only when != 0.7071.
+            if (v.waveform != Waveform::Legacy) {
+                j["waveform"] = v.waveform == Waveform::Sine ? "sine"
+                              : v.waveform == Waveform::Saw  ? "saw"
+                                                             : "square";
+            }
+            if (v.has_adsr) {
+                json a;
+                a["attack_s"] = v.attack_s;
+                a["decay_s"] = v.decay_s;
+                a["sustain"] = v.sustain;
+                a["release_s"] = v.release_s;
+                j["adsr"] = std::move(a);
+            }
+            if (v.cutoff_hz != 0.0) j["cutoff_hz"] = v.cutoff_hz;
+            if (v.resonance != 0.7071) j["resonance"] = v.resonance;
+            break;
+        }
     }
     return j;
 }

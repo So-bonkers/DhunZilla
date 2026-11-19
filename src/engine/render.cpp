@@ -85,6 +85,126 @@ void render_synth(MixTarget& t, long long start, const Note& note, const Voice& 
     }
 }
 
+// synth voice v1 (WP-0161, spec §Synth voice v1): subtractive synth taken ONLY when
+// waveform != Legacy || has_adsr || cutoff_hz > 0 — the legacy path above stays untouched.
+// Everything is IEEE double per spec (float only for the final sample into the mixer); a
+// feature left at its default uses the exact legacy float expression widened to double, so
+// e.g. waveform+legacy-envelope or legacy-osc+ADSR render as specified. Polyphonic: every
+// note is an independent voice, phase 0 and filter state 0 at its start; release tail after
+// note-off. Only dsp::sind_/cosd_/powd_ for transcendentals (floor/ceil/min are exact).
+void render_synth_v1(MixTarget& t, long long start, const Note& note, const Voice& v, int sr, double spb) {
+    const long long len = static_cast<long long>(std::llround(note.dur_beats * spb));
+    if (len <= 0) return;
+    const double srd = static_cast<double>(sr);
+    const bool has_waveform = v.waveform != Waveform::Legacy;
+    const bool has_adsr = v.has_adsr;
+    const bool has_filter = v.cutoff_hz > 0.0;
+
+    // Pitch (spec §Pitch): double 12-TET for the v1 oscillator. Out-of-range → render nothing.
+    double f = 0.0, dt = 0.0;
+    if (has_waveform) {
+        f = (note.midi_note >= 0)
+            ? 440.0 * dsp::powd_(2.0, static_cast<double>(note.midi_note - 69) / 12.0)
+            : static_cast<double>(v.freq_hz);
+        dt = f / srd;
+        if (f <= 0.0 || dt >= 0.5) return;
+    }
+
+    // Legacy oscillator (waveform absent): the exact legacy float expression, widened to double.
+    float dphi = 0.0f, dphi_oct = 0.0f;
+    if (!has_waveform) {
+        const float f_legacy = (note.midi_note >= 0)
+            ? 440.0f * dsp::powf_(2.0f, static_cast<float>(note.midi_note - 69) / 12.0f)
+            : v.freq_hz;
+        dphi = dsp::twoPi() * f_legacy / static_cast<float>(sr);
+        dphi_oct = 2.0f * dphi;
+    }
+
+    // PolyBLEP correction (spec §Oscillator), using this note's dt.
+    auto blep = [dt](double tt) -> double {
+        if (tt < dt) { const double x = tt / dt; return x + x - x * x - 1.0; }
+        if (tt > 1.0 - dt) { const double x = (tt - 1.0) / dt; return x * x + x + x + 1.0; }
+        return 0.0;
+    };
+
+    // Filter (spec §Filter): RBJ cookbook low-pass, direct form I, per-note zero state.
+    double B0 = 0.0, B1 = 0.0, B2 = 0.0, A1 = 0.0, A2 = 0.0;
+    if (has_filter) {
+        const double fc = std::min(v.cutoff_hz, 0.45 * srd);
+        const double w0 = 2.0 * dsp::kPi_d() * fc / srd;
+        const double cw = dsp::cosd_(w0), sw = dsp::sind_(w0);
+        const double alpha = sw / (2.0 * v.resonance);
+        const double a0 = 1.0 + alpha;
+        B0 = ((1.0 - cw) / 2.0) / a0;
+        B1 = (1.0 - cw) / a0;
+        B2 = B0;
+        A1 = (-2.0 * cw) / a0;
+        A2 = (1.0 - alpha) / a0;
+    }
+
+    // Envelope (spec §ADSR). g(t): the divisions are unreachable when A == 0 / D == 0 because
+    // of the comparisons, exactly as the spec notes.
+    const double A = v.attack_s, D = v.decay_s, S = v.sustain, R = v.release_s;
+    auto g = [A, D, S](double tt) -> double {
+        if (tt < A) return tt / A;
+        if (tt < A + D) return 1.0 - (1.0 - S) * (tt - A) / D;
+        return S;
+    };
+    const double e_off = has_adsr ? g(static_cast<double>(len) / srd) : 1.0;
+    const long long tail = has_adsr ? static_cast<long long>(std::ceil(R * srd)) : 0;  // R == 0 → no tail
+
+    // Legacy envelope (adsr absent): the exact legacy float expression, widened to double.
+    const long long atk = static_cast<long long>(v.attack_ms * 0.001f * static_cast<float>(sr));
+    const long long rel = static_cast<long long>(v.release_ms * 0.001f * static_cast<float>(sr));
+
+    double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0;  // filter state, zero at voice start (retrigger rule)
+    for (long long n = 0; n < len + tail; ++n) {
+        double x;
+        if (has_waveform) {
+            const double ph = f * static_cast<double>(n) / srd;  // multiply first, then divide (spec)
+            const double fr = ph - std::floor(ph);               // ∈ [0,1)
+            double w;
+            if (v.waveform == Waveform::Sine) {
+                w = dsp::sind_(2.0 * dsp::kPi_d() * fr);
+            } else if (v.waveform == Waveform::Saw) {
+                w = (2.0 * fr - 1.0) - blep(fr);
+            } else {  // Square
+                double t2 = fr + 0.5;
+                if (t2 >= 1.0) t2 -= 1.0;
+                w = (fr < 0.5 ? 1.0 : -1.0) + blep(fr) - blep(t2);
+            }
+            x = 0.5 * w;
+        } else {
+            constexpr float kNorm = 1.0f / 1.35f;
+            const float nn = static_cast<float>(n);
+            x = static_cast<double>((dsp::sinf_(dphi * nn) + 0.35f * dsp::sinf_(dphi_oct * nn)) * kNorm);
+        }
+
+        double y = x;
+        if (has_filter) {
+            y = B0 * x + B1 * x1 + B2 * x2 - A1 * y1 - A2 * y2;
+            x2 = x1; x1 = x;
+            y2 = y1; y1 = y;
+        }
+
+        double env;
+        if (!has_adsr) {
+            float e = 1.0f;
+            if (atk > 0 && n < atk) e = static_cast<float>(n) / static_cast<float>(atk);
+            const long long since_end = len - n;
+            if (rel > 0 && since_end <= rel) e *= static_cast<float>(since_end) / static_cast<float>(rel);
+            env = static_cast<double>(e);
+        } else if (n < len) {
+            env = g(static_cast<double>(n) / srd);
+        } else {  // release tail: linear from the note-off level to silence over R seconds
+            const long long k = n - len;
+            env = e_off * (1.0 - (static_cast<double>(k) / srd) / R);
+        }
+
+        add_stereo(t, start + n, static_cast<float>(y * env), static_cast<float>(y * env));
+    }
+}
+
 bool render_sampler(MixTarget& t, long long start, const Note& note, const Voice& v, const std::string& abs_path,
                     int sr, double spb, std::map<std::string, wav::ReadResult>& cache, std::string& err) {
     auto it = cache.find(abs_path);
@@ -296,7 +416,13 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 switch (tr.voice.kind) {
                     case VoiceKind::Metronome: render_metronome(*target, start, note, tr.voice, sr); break;
                     case VoiceKind::Sine:      render_sine(*target, start, note, tr.voice, sr, spb); break;
-                    case VoiceKind::Synth:     render_synth(*target, start, note, tr.voice, sr, spb); break;
+                    case VoiceKind::Synth:
+                        // WP-0161: v1 path only when a v1 feature is set; legacy renders untouched.
+                        if (tr.voice.waveform != Waveform::Legacy || tr.voice.has_adsr || tr.voice.cutoff_hz > 0.0)
+                            render_synth_v1(*target, start, note, tr.voice, sr, spb);
+                        else
+                            render_synth(*target, start, note, tr.voice, sr, spb);
+                        break;
                     case VoiceKind::Sampler:
                         if (!render_sampler(*target, start, note, tr.voice, join_path(base_dir, tr.voice.path), sr, spb,
                                        sampler_cache, err))

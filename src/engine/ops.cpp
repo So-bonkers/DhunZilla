@@ -170,6 +170,34 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             voice["start_s"] = op_json.at("start_s");
             if (end_v.is_null()) voice.erase("end_s");  // null = no end: canonical save omits the key
             else voice["end_s"] = end_v;
+        } else if (name == "set_synth_params") {  // WP-0161; types/ranges come from the model parse below (no second ruleset)
+            if (!check_keys(op_json, {"index", "waveform", "adsr", "cutoff_hz", "resonance"}, err)) return false;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err)) return false;
+            const bool has_w = op_json.contains("waveform");
+            const bool has_a = op_json.contains("adsr");
+            const bool has_c = op_json.contains("cutoff_hz");
+            const bool has_r = op_json.contains("resonance");
+            if (!has_w && !has_a && !has_c && !has_r) { err = "no synth parameters given"; return false; }
+            json& voice = j["tracks"][idx]["voice"];
+            if (voice.value("kind", std::string{}) != "synth") { err = "track is not a synth voice"; return false; }
+            // Each given key is written as-is; null removes it (= reset to default). adsr replaces
+            // the whole object — inner keys not given take their defaults via the model parse.
+            if (has_w) {
+                const json& w = op_json.at("waveform");
+                if (w.is_null()) voice.erase("waveform"); else voice["waveform"] = w;
+            }
+            if (has_a) {
+                const json& a = op_json.at("adsr");
+                if (a.is_null()) voice.erase("adsr"); else voice["adsr"] = a;
+            }
+            if (has_c) {
+                const json& c = op_json.at("cutoff_hz");
+                if (c.is_null()) voice.erase("cutoff_hz"); else voice["cutoff_hz"] = c;
+            }
+            if (has_r) {
+                const json& r = op_json.at("resonance");
+                if (r.is_null()) voice.erase("resonance"); else voice["resonance"] = r;
+            }
         } else if (name == "set_track_mute") {  // mixer (spec §mixer); audibility rule lives in the model
             if (!check_keys(op_json, {"index", "mute"}, err)) return false;
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||

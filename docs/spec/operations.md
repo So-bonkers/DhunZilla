@@ -312,3 +312,22 @@ ruleset). Argument checks, in this order, error strings `set_sampler_trim: <reas
 `{"start_s": 0, "end_s": null}` restores defaults, and the canonical save then omits both keys (byte-identical
 to a never-trimmed project). Undo/redo: whole-project snapshots, byte-exact as for every op. `opd diff` does not
 emit this op (see project-model.md).
+
+## Synth parameters operation — additive (WP-0161)
+| op | arguments | effect |
+|---|---|---|
+| `set_synth_params` | `index`, and any of `waveform`, `adsr`, `cutoff_hz`, `resonance` (at least one) | set synth-v1 parameters of `tracks[index]`'s synth voice (semantics and ranges: `docs/spec/project-model.md` §Synth voice v1) |
+
+Follows the Apply semantics unchanged (strict keys, copy → JSON edit → save→parse validation → commit; no second
+ruleset). Argument checks, in this order, error strings `set_synth_params: <reason>`:
+1. unknown key → `unknown argument '<key>'`;
+2. `index` an integer in `[0, #tracks)` (existing `arg_index` messages);
+3. none of the four parameter keys present → `no synth parameters given`;
+4. the track's voice must be a synth → `track is not a synth voice`;
+5. each given key is written to the voice (`adsr` replaces the whole object: inner keys not given take their
+   defaults); a JSON `null` value **removes** the key (= reset to default); then the model parse enforces types
+   and ranges, giving e.g. `set_synth_params: voice.waveform must be sine|saw|square`,
+   `set_synth_params: voice.cutoff_hz must be a number in [20, 20000]`.
+Keys not mentioned are left as they are. Setting every param to `null` restores a never-edited voice and the
+canonical save is then byte-identical to the original legacy bytes. Undo/redo: whole-project snapshots, byte-exact.
+`opd diff` does not emit this op.
