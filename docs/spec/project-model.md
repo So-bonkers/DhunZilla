@@ -379,3 +379,37 @@ WAV, so an AIFF and a WAV with the same samples render byte-identically. Strict 
 `unsupported AIFF-C compression`, `AIFF must be 16 or 24-bit`, `implausible sample rate`. `opd info`
 reports them as `error: parse: <text>` (exit 4); the sampler reports `sampler: <text>` (render exit 5).
 `opd info` prints `aiff: <path> rate=<n> ch=<n> frames=<n> duration=<x.xxx>s` for AIFF content.
+
+## Pattern swing — additive (WP-0166)
+A pattern may carry an optional groove: `{"track": 0, "swing": 0.5, "notes": [...]}`. `swing` is a JSON number,
+a **fraction** (not a percent), default `0`, valid range `[0, 0.75]`. It is a **render-time** effect only: notes
+keep their stored `t`, `dur` and `vel`; nothing else in the project (extent, `step_grid`, MIDI export,
+`opd analyze`) sees swing.
+
+**Which notes are swung (normative).** A note is swung iff its own pattern-local `t` is *exactly* an odd 16th step:
+`q = t * 4.0` (exact, power-of-two scale) satisfies `std::floor(q) == q` and `std::fmod(q, 2.0) == 1.0`
+(so `t` = 0.25, 0.75, 1.25, ... qualify; 0.0, 0.5, 1.0, 0.3, 0.2500001 do not). The test uses the note's `t` inside its
+pattern, never the clip-absolute position, so a clip placed at any `start_bar`/repeat offset swings the same notes.
+All other notes are untouched (bit-identical to the unswung render).
+
+**Shift.** `delay_beats = swing * 0.125` (swing times half of a 16th step of 0.25 beat; one double multiply,
+exact scaling by a power of two). `swing = 0.0` is "off". A swung note's absolute beat position is the existing
+placement expression plus the delay, one more double addition done last:
+`t_abs = (offset_beats == 0.0 ? note.t : offset_beats + note.t)` and, if swung, `t_abs = t_abs + delay_beats`.
+
+**Onset rounding (cites the existing rule).** The renderer's single onset rule is `TempoMap::at(beats)` in
+`src/engine/render.cpp`: with no tempo map `llround(beats * spb)`, `spb = sample_rate * 60.0 / bpm`; with a tempo
+map `segment.start_sample + llround((beats - segment.start_beats) * segment.spb)` where the segment is chosen by
+the *position being converted*. The swung onset is exactly `TempoMap::at(t_abs)` for the shifted `t_abs` above
+(so the tempo segment is chosen by the shifted position), and the local tempo for the note's length
+(`TempoMap::spb_at`) is likewise taken at the shifted `t_abs`. `llround` is round-half-away-from-zero. The note
+length in beats (`dur`) is not changed by swing. A swung note whose shifted onset is at/after the project window
+end is dropped by the existing rule.
+
+**Validation** (project parse, the same code path for `load_project` and operations; checked right after
+`pattern.track`, before the notes): `swing` present but not a JSON number, or outside `[0, 0.75]` (including
+negative values and anything above 0.75) → `pattern.swing must be a number in [0, 0.75]`. `null`, strings and
+booleans give the same message. `-0.0` is accepted and treated as `0`.
+
+**Canonical save** omits `"swing"` when it is exactly `0` (so every existing file and golden round-trips
+byte-identically) and writes the number otherwise. Operation: `set_pattern_swing` (see `operations.md`).

@@ -31,6 +31,7 @@ struct Note {
 
 struct Pattern {
     int track = 0;               // index into Project::tracks
+    double swing = 0.0;          // render-time groove, [0, 0.75] (WP-0166)
     std::vector<Note> notes;
 };
 

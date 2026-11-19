@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <unistd.h>  // getpid (WP-0166 unique temp dirs)
 
 #include "doc/document.hpp"
 #include "engine/analyze.hpp"
@@ -3500,6 +3501,187 @@ static void test_sampler_trim() {
     std::printf("INFO sampler trim: slice frames [96,480) checked against untrimmed reference\n");
 }
 
+// ---------------------------------------------------------------- pattern swing (WP-0166)
+
+static void test_pattern_swing() {
+    namespace fs = std::filesystem;
+    using nlohmann::json;
+    std::string err;
+
+    // Unique temp dir (pid-suffixed): never fixed /tmp/op_* paths.
+    const fs::path dir = fs::temp_directory_path() / ("op_swing_wp0166_" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+
+    // Known-content "kick": 4800 mono frames of constant 0.5 (PCM16-exact, never zero), so every
+    // note onset is a rising edge out of silence on the hard-left channel.
+    std::vector<float> kick(4800, 0.5f);
+    write_mono_pcm16((dir / "op_swing_kick.wav").string(), 48000, kick);
+
+    // One-bar... five-bar sampler project: notes at `ts` (dur 0.04 beats → 960 frames @120bpm,
+    // gaps keep onsets separable), optional pattern swing value, optional tempo map.
+    auto proj_json = [](const std::vector<double>& ts, bool has_swing, const json& swing_val,
+                        const json& tempo_map) {  // pass json(nullptr) for "no tempo map"
+        json j;
+        j["format_version"] = 0; j["bpm"] = 120.0; j["sample_rate"] = 48000;
+        j["length_bars"] = 5.0; j["beats_per_bar"] = 4; j["seed"] = 7;
+        json voice = {{"kind", "sampler"}, {"path", "op_swing_kick.wav"}};
+        json tk = {{"name", "S"}, {"gain_db", 0.0}, {"pan", -1.0}, {"voice", voice}};
+        j["tracks"] = json::array();
+        j["tracks"].push_back(tk);
+        json pat = {{"track", 0}};
+        if (has_swing) pat["swing"] = swing_val;
+        pat["notes"] = json::array();
+        for (double t : ts) pat["notes"].push_back({{"t", t}, {"dur", 0.04}});
+        j["patterns"] = json::array();
+        j["patterns"].push_back(pat);
+        if (!tempo_map.is_null()) j["tempo_map"] = tempo_map;
+        return j;
+    };
+
+    // Left-channel onset samples (rising edges 0 → non-zero) of a render.
+    auto render_onsets = [&](const op::Project& p, std::vector<long long>& v) -> bool {
+        op::wav::StereoBuffer b;
+        if (!op::render_project(p, dir.string(), b, err)) return false;
+        v.clear();
+        float prev = 0.0f;
+        for (size_t i = 0; i < b.frames(); ++i) {
+            const float x = b.interleaved[2 * i];
+            if (x != 0.0f && prev == 0.0f) v.push_back(static_cast<long long>(i));
+            prev = x;
+        }
+        return true;
+    };
+
+    // (1) parse stores the value; canonical save keeps it at 0.5.
+    op::Project p_half;
+    CHECK(op::project_from_json(proj_json({0.25}, true, json(0.5), json(nullptr)), p_half, err) &&
+              p_half.patterns[0].swing == 0.5 &&
+              op::project_bytes(p_half).find("\"swing\": 0.5") != std::string::npos,
+          "swing.parse_and_save_keeps_value");
+
+    // (2)-(5) validation: exact message for each bad kind (negative, > 0.75, string, null).
+    const std::string e_swing = "pattern.swing must be a number in [0, 0.75]";
+    op::Project scratch;
+    CHECK(!op::project_from_json(proj_json({0.25}, true, json(-0.1), json(nullptr)), scratch, err) &&
+              err == e_swing, "swing.e_negative");
+    CHECK(!op::project_from_json(proj_json({0.25}, true, json(0.76), json(nullptr)), scratch, err) &&
+              err == e_swing, "swing.e_above_range");
+    CHECK(!op::project_from_json(proj_json({0.25}, true, json("0.5"), json(nullptr)), scratch, err) &&
+              err == e_swing, "swing.e_string");
+    CHECK(!op::project_from_json(proj_json({0.25}, true, json(nullptr), json(nullptr)), scratch, err) &&
+              err == e_swing, "swing.e_null");
+
+    // (6) -0.0 accepted and treated as 0 (canonical omits the key). Match the quoted key: the
+    // fixture path "op_swing_kick.wav" also contains the word "swing".
+    op::Project p_mzero;
+    CHECK(op::project_from_json(proj_json({0.25}, true, json(-0.0), json(nullptr)), p_mzero, err) &&
+              p_mzero.patterns[0].swing == 0.0 &&
+              op::project_bytes(p_mzero).find("\"swing\"") == std::string::npos, "swing.minus_zero_treated_as_zero");
+
+    // (7) canonical save omits swing when exactly 0.
+    const std::vector<double> sixteenths = {0.0, 0.25, 0.5, 0.75};
+    op::Project p_noswing;
+    CHECK(op::project_from_json(proj_json(sixteenths, false, json(), json(nullptr)), p_noswing, err) &&
+              op::project_bytes(p_noswing).find("\"swing\"") == std::string::npos, "swing.canonical_omits_zero");
+
+    // (8) explicit swing 0.0 renders bit-identically to no-swing (default path untouched).
+    {
+        op::Project p_zero;
+        bool ok = op::project_from_json(proj_json(sixteenths, true, json(0.0), json(nullptr)), p_zero, err);
+        std::vector<long long> v1, v2;
+        ok = ok && render_onsets(p_zero, v1) && render_onsets(p_noswing, v2) && v1 == v2 && !v1.empty();
+        op::wav::StereoBuffer b1, b2;
+        ok = ok && op::render_project(p_zero, dir.string(), b1, err) &&
+             op::render_project(p_noswing, dir.string(), b2, err) &&
+             b1.interleaved.size() == b2.interleaved.size() &&
+             std::memcmp(b1.interleaved.data(), b2.interleaved.data(),
+                         b1.interleaved.size() * sizeof(float)) == 0;
+        CHECK(ok, "swing.render_zero_equals_no_swing_bitexact");
+    }
+
+    // (9) 16th pattern @120bpm/48kHz, swing 0.5 → delay 0.0625 beats = 1500 samples: odd steps
+    // at llround((t + 0.0625)*24000) (step 1: 7500), even steps unmoved.
+    {
+        std::vector<long long> v;
+        CHECK(op::project_from_json(proj_json(sixteenths, true, json(0.5), json(nullptr)), p_half, err) &&
+                  render_onsets(p_half, v) && v == std::vector<long long>({0, 7500, 12000, 19500}),
+              "swing.onsets_odd_steps_shifted_even_unmoved");
+    }
+
+    // (10) off-grid note (t = 0.3) does not move under swing.
+    {
+        op::Project p_off;
+        std::vector<long long> v;
+        CHECK(op::project_from_json(proj_json({0.3}, true, json(0.5), json(nullptr)), p_off, err) &&
+                  render_onsets(p_off, v) && v == std::vector<long long>({7200}),  // llround(0.3*24000)
+              "swing.off_grid_note_unmoved");
+    }
+
+    // (11) under a tempo map ({bar 0: 120, bar 1.95: 60}): onset = TempoMap::at(shifted t_abs),
+    // segment chosen by the shifted position (t=7.75+0.0625 crosses the change at beat 7.8).
+    {
+        json tm = json::array();
+        tm.push_back(json{{"bar", 0.0}, {"bpm", 120.0}});
+        tm.push_back(json{{"bar", 1.95}, {"bpm", 60.0}});
+        op::Project p_tm;
+        std::vector<long long> v;
+        CHECK(op::project_from_json(proj_json({0.25, 7.75, 8.0}, true, json(0.5), tm), p_tm, err) &&
+                  render_onsets(p_tm, v) &&
+                  v == std::vector<long long>({7500,          // seg0: llround(0.3125*24000)
+                                               187800,        // seg1: 187200 + llround(0.0125*48000)
+                                               196800}),      // even step: 187200 + llround(0.2*48000)
+              "swing.tempo_map_onsets_shifted_segment_by_position");
+    }
+
+    // (12)-(15) set_pattern_swing op: sets, clears to byte-identical defaults, rejects bad values
+    // with the spec'd strings (project unchanged on rejection).
+    {
+        op::Project p = p_noswing;
+        const std::string bytes_never_swung = op::project_bytes(p);
+        CHECK(op::apply_op(p, json{{"op", "set_pattern_swing"}, {"pattern", 0}, {"swing", 0.5}}, err) &&
+                  p.patterns[0].swing == 0.5 &&
+                  op::project_bytes(p).find("\"swing\": 0.5") != std::string::npos,
+              "ops.set_pattern_swing_sets");
+        CHECK(op::apply_op(p, json{{"op", "set_pattern_swing"}, {"pattern", 0}, {"swing", 0.0}}, err) &&
+                  op::project_bytes(p) == bytes_never_swung, "ops.set_pattern_swing_zero_clears_bytes");
+        const std::string before = op::project_bytes(p);
+        CHECK(!op::apply_op(p, json{{"op", "set_pattern_swing"}, {"pattern", 0}, {"swing", 0.76}}, err) &&
+                  err == "set_pattern_swing: " + e_swing && op::project_bytes(p) == before,
+              "ops.set_pattern_swing_reject_range");
+        CHECK(!op::apply_op(p, json{{"op", "set_pattern_swing"}, {"pattern", 0}, {"swing", "x"}}, err) &&
+                  err == "set_pattern_swing: 'swing' must be a number" && op::project_bytes(p) == before,
+              "ops.set_pattern_swing_reject_type");
+    }
+
+    // (16) undo restores the exact bytes; redo re-applies.
+    {
+        op::Project p = p_noswing;
+        const std::string before = op::project_bytes(p);
+        op::History h;
+        bool ok = h.apply(p, json{{"op", "set_pattern_swing"}, {"pattern", 0}, {"swing", 0.5}}, err) &&
+                  op::project_bytes(p).find("\"swing\": 0.5") != std::string::npos;
+        ok = ok && h.undo(p) && op::project_bytes(p) == before;
+        ok = ok && h.redo(p) && p.patterns[0].swing == 0.5;
+        CHECK(ok, "ops.set_pattern_swing_undo_restores_bytes");
+    }
+
+    // (17)-(18) opd diff: projects differing only in pattern swing emit exactly the op; applying
+    // the journal to a reproduces b byte-for-byte.
+    {
+        op::Project a = p_noswing, b = p_noswing;
+        CHECK(op::apply_op(b, json{{"op", "set_pattern_swing"}, {"pattern", 0}, {"swing", 0.5}}, err),
+              "diff.swing_build_b_ok");
+        std::vector<json> ops;
+        bool ok = op::diff_projects(a, b, ops, err) &&
+                  journal_text(ops) == "{\"op\":\"set_pattern_swing\",\"pattern\":0,\"swing\":0.5}\n";
+        ok = ok && op::apply_journal(a, journal_text(ops), err) &&
+             op::project_to_json(a).dump() == op::project_to_json(b).dump();
+        CHECK(ok, "diff.swing_emits_and_replays_op");
+    }
+
+    fs::remove_all(dir);
+}
+
 // --- AIFF / AIFF-C reader (WP-0158): test-side byte builders (big-endian, explicit assembly).
 namespace aiff_t {
 using Bytes = std::vector<uint8_t>;
@@ -3860,6 +4042,7 @@ int main() {
     test_step_sequencer();
     test_loop_region();
     test_sampler_trim();
+    test_pattern_swing();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

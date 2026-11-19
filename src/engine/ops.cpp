@@ -208,6 +208,11 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             const json& notes = j["patterns"][idx]["notes"];
             if (!arg_index(op_json, "index", notes.size(), sub, err)) return false;
             j["patterns"][idx]["notes"].erase(sub);
+        } else if (name == "set_pattern_swing") {  // WP-0166; range checks come from the model parse below
+            if (!check_keys(op_json, {"pattern", "swing"}, err)) return false;
+            if (!arg_index(op_json, "pattern", j["patterns"].size(), idx, err) ||
+                !has_number(op_json, "swing", err)) return false;
+            j["patterns"][idx]["swing"] = op_json.at("swing");
         } else if (name == "add_clip") {
             if (!check_keys(op_json, {"clip"}, err) || !has_object(op_json, "clip", err)) return false;
             if (!j.contains("arrangement")) j["arrangement"] = json::array();
@@ -547,6 +552,10 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
             ops.push_back({{"op", "remove_note"}, {"pattern", i}, {"index", j}});
         for (std::size_t j = k; j < notes_b.size(); ++j)
             ops.push_back({{"op", "add_note"}, {"pattern", i}, {"note", notes_b[j]}});
+        // Pattern swing (WP-0166, spec §opd diff step 7): after this pattern's note ops; absent = 0.
+        const json& swing_b = field_or(patterns_b[i], "swing", kZeroDb);
+        if (field_or(patterns_a[i], "swing", kZeroDb) != swing_b)
+            ops.push_back({{"op", "set_pattern_swing"}, {"pattern", i}, {"swing", swing_b}});
     }
     for (std::size_t i = patterns_a.size(); i < patterns_b.size(); ++i)
         ops.push_back({{"op", "add_pattern"}, {"pattern", patterns_b[i]}});
