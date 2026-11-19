@@ -15,6 +15,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0164 | CI `app` job — builds the JUCE app (`dhunzilla`, `DZ_BUILD_APP=ON`) on both arches, runs headless `--snapshot` under Xvfb, asserts exit 0 + 1100×700 PNG; JUCE download/build cache keyed to 9.0.5 | **done** | qwen-goldfish |
 | WP-0159 | `opd diff` supports clip `pattern`/`repeats` via `set_clip_pattern`/`set_clip_repeats` (step 1b before pattern removal; positional clip compare) | **done** | haiku+orchestrator |
 | WP-0158 | AIFF / AIFF-C (`NONE`, `sowt`) reader — signature dispatch, exact 80-bit rate decode, sampler + `opd info`; renders byte-identical to the same samples as WAV | **done** | haiku+orchestrator |
 | WP-0157 | Document autosave + crash recovery — atomic temp+rename, revision-gated, content-compared recovery state, `open_recovered` | **done** | haiku+orchestrator |
