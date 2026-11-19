@@ -205,6 +205,16 @@ class UnknownBackend(KeyError):
     retryable = False
 
 
+class JobCancelled(Exception):
+    """Raised by :meth:`BackendBase.check_cancelled` when cancel was requested.
+
+    Not an error: the job runner turns it into a ``cancelled`` job, never ``failed``
+    (docs/spec/sidecar-protocol.md, WP-0151). Backends call ``check_cancelled()``
+    between work chunks; backends that never call it still cancel once their current
+    call returns.
+    """
+
+
 def supports_task(caps: Capabilities, task: str) -> bool:
     """Return True if *caps* declares support for a job task token.
 
@@ -234,6 +244,9 @@ class JobContext:
     request_hash: str
     seed: int | None = None
     report_progress: Callable[[float], None] = field(default=lambda p: None)
+    is_cancelled: Callable[[], bool] = field(default=lambda: False)
+    """True once cancellation was requested for this job (WP-0151); poll it via
+    :meth:`BackendBase.check_cancelled` between work chunks."""
 
 
 JOB_CONTEXT: contextvars.ContextVar[JobContext | None] = contextvars.ContextVar(
@@ -311,6 +324,20 @@ class BackendBase(abc.ABC):
     def report_progress(self, value: float) -> None:
         """Report progress 0..1 for the active job (spec: indeterminate = don't call)."""
         self.job_context().report_progress(min(1.0, max(0.0, float(value))))
+
+    def check_cancelled(self) -> None:
+        """Raise :class:`JobCancelled` if cancel was requested for the active job.
+
+        Call between work chunks; the runner maps it to a ``cancelled`` job.
+
+        Usage example::
+
+            for chunk in chunks:
+                self.check_cancelled()
+                process(chunk)
+        """
+        if self.job_context().is_cancelled():
+            raise JobCancelled("job cancelled")
 
     def ensure_available(self, hardware: HardwareTier = "cpu") -> None:
         """Raise :class:`BackendUnavailable` if health says this backend can't serve now.

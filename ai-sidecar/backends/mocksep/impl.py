@@ -110,6 +110,7 @@ class MockSepBackend(SeparationBackend):
         x = _resample_linear(x, sr_in, TARGET_SR)
 
         self.report_progress(0.3)
+        self.check_cancelled()  # last checkpoint before any stem file is written
         spectrum = np.fft.rfft(x, axis=0)
         freqs = np.fft.rfftfreq(x.shape[0], d=1.0 / TARGET_SR)
         masks = _band_masks(freqs.astype(np.float64))
@@ -122,5 +123,6 @@ class MockSepBackend(SeparationBackend):
             write_wav(path, band, TARGET_SR)
             artifacts[stem] = path
             self.report_progress(0.3 + 0.7 * (i + 1) / len(wanted))
+            self.check_cancelled()
 
         return JobResult(artifacts=artifacts, provenance=self.new_provenance())

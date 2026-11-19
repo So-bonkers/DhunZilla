@@ -25,3 +25,61 @@ POST /models/{id}/download        → fetch+verify per manifest; respects licens
 The app spawns the sidecar (`uv run opsidecar serve --port 0`), reads the port from stdout line
 `SIDECAR_PORT=<n>`, health-checks with backoff, and terminates it on exit. Orphaned sidecars die
 with their parent (process-group kill) — no zombie daemons.
+
+## Job cancellation and listing — additive (WP-0151)
+This section makes the existing `POST /jobs/{job_id}/cancel` exact and adds `GET /jobs`.
+
+### States
+`state` is one of `queued | running | cancelling | done | failed | cancelled`. `cancelling` is new:
+cancel was requested for a job whose backend call is still in flight. Terminal states are `done`,
+`failed`, `cancelled`; a terminal job never changes state again.
+
+```
+queued    --cancel--> cancelled                     (immediate, inside the cancel call)
+running   --cancel--> cancelling --> cancelled      (when the backend call returns or raises JobCancelled)
+cancelling--cancel--> cancelling                    (idempotent)
+cancelled --cancel--> cancelled                     (idempotent)
+done|failed --cancel--> unchanged
+```
+A job in `cancelling` ends `cancelled` even if the backend finishes successfully (non-cooperative
+backends cannot be interrupted) or raises an error; it never ends `done` or `failed`.
+
+### POST /jobs/{job_id}/cancel
+Always HTTP 200 for a known id; body `{"job_id": str, "accepted": bool, "state": str}` where `state` is the
+state after the call. `accepted` is true iff the job is now `cancelled` or `cancelling`.
+
+| state before | HTTP | accepted | state in response |
+|---|---|---|---|
+| queued | 200 | true | `cancelled` |
+| running | 200 | true | `cancelling` |
+| cancelling | 200 | true | `cancelling` |
+| cancelled | 200 | true | `cancelled` |
+| done | 200 | false | `done` |
+| failed | 200 | false | `failed` |
+| unknown id | 404 | — | body `{"error": {"code": "unknown_job", "message": ..., "retryable": false}}` |
+
+### Cancelled jobs
+- Snapshot (`GET /jobs/{id}`) of a `cancelled` job: `state` `"cancelled"`, `progress` `null`, no `result`
+  key, no `error` key.
+- No artifacts: the directory `out/jobs/<job_id>/` (including any partial output and no
+  `provenance.json`) is deleted when the job becomes `cancelled`. A `done`/`failed` job's directory is
+  never touched by cancel.
+- A cancelled job is still listed and fetchable by id (the record stays; only the files go).
+
+### Cooperative cancellation (backend contract)
+`BackendBase.check_cancelled() -> None` raises `ai_sidecar.base.JobCancelled` if cancel was requested for
+the active job; backends SHOULD call it between work chunks. `JobCancelled` is not an error: the runner
+turns it into `cancelled`, never `failed`. Backends that never call it still cancel correctly, but only
+once their current call returns. The mock backends (`mockgen`, `mocksep`, `mocktrans`) call it at every
+progress checkpoint.
+
+Deterministic test hook (mockgen only): a `generate` request whose `style_tags` contains the literal
+`"mock:hold"` writes `partial.bin` into the job dir, then waits (polling `check_cancelled()` every 10 ms,
+at most 30 s) and only continues to a normal result if it was not cancelled in that time. This gives tests
+a job that stays `running` until cancelled, with no sleeps in the test.
+
+### GET /jobs
+`200 {"jobs": [<snapshot>, ...]}` — every job the sidecar knows, oldest submission first (stable order);
+each element is exactly what `GET /jobs/{job_id}` returns for that job. Optional query `?state=<s>` keeps
+only jobs in that state; an unknown state value is `422` with `{"error": {"code": "bad_request", ...}}`.
+Empty list when there are no jobs.

@@ -72,6 +72,18 @@ def submit(base: str, backend: str, task: str, params: dict) -> str:
     return job_id
 
 
+def cancel(base: str, job_id: str) -> dict:
+    """POST /jobs/<id>/cancel (WP-0151); returns {"job_id", "accepted", "state"}."""
+    return req("POST", f"{base}/jobs/{job_id}/cancel")
+
+
+def list_jobs(base: str, state: str | None = None) -> list[dict]:
+    """GET /jobs (optional exact ?state= filter), oldest submission first (WP-0151)."""
+    url = base + "/jobs" + (f"?state={state}" if state else "")
+    jobs: list[dict] = req("GET", url)["jobs"]
+    return jobs
+
+
 def wait_done(base: str, job_id: str, timeout_iters: int = 300) -> dict:
     """Poll to a terminal state; SystemExit on failed/cancelled/timeout so callers stay terse."""
     snapshot: dict = {}

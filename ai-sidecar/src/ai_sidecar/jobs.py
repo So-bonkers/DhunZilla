@@ -1,10 +1,13 @@
 """Job runner: asyncio queue + worker pool, per spec/sidecar-protocol.md.
 
-States: queued → running → done|failed|cancelled. Artifacts land in
-``out/jobs/<job_id>/`` and every done job gets a mandatory ``provenance.json``.
-Concurrency model (v0): N workers pull from one queue; a single inference lock
-serializes actual backend calls ("one GPU lock until profiling says otherwise").
-Backends report progress 0..1 through the JobContext; otherwise progress stays None.
+States: queued → running (→ cancelling) → done|failed|cancelled. Artifacts land in
+``out/jobs/<job_id>/`` and every done job gets a mandatory ``provenance.json``; a
+cancelled job's directory is removed. Concurrency model (v0): N workers pull from one
+queue; a single inference lock serializes actual backend calls ("one GPU lock until
+profiling says otherwise"). Backends report progress 0..1 through the JobContext;
+otherwise progress stays None. Cooperative cancellation: backends may call
+``check_cancelled()`` between work chunks (raises ``JobCancelled``); non-cooperative
+backends still end cancelled once their in-flight call returns.
 
 Usage example::
 
@@ -29,10 +32,11 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import ValidationError
 
@@ -42,6 +46,7 @@ from ai_sidecar.base import (
     GenerateRequest,
     GenerationBackend,
     InvalidRequest,
+    JobCancelled,
     JobContext,
     JobResult,
     SeparationBackend,
@@ -52,8 +57,9 @@ from ai_sidecar.base import (
 
 logger = logging.getLogger("opsidecar.jobs")
 
-JobState = Literal["queued", "running", "done", "failed", "cancelled"]
+JobState = Literal["queued", "running", "cancelling", "done", "failed", "cancelled"]
 TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "cancelled"})
+JOB_STATES: frozenset[str] = frozenset(get_args(JobState))  # every valid state token
 
 
 @dataclass
@@ -85,6 +91,20 @@ class JobRecord:
         if self.error is not None:
             snap["error"] = self.error
         return snap
+
+
+def _finish_cancelled(record: JobRecord) -> None:
+    """End *record* as cancelled — the ONE path that does (WP-0151).
+
+    Clears progress/result/error (so the snapshot has no ``result``/``error`` key)
+    and removes the job's whole output directory, partial files included. A
+    ``done``/``failed`` job's directory is never touched by cancel.
+    """
+    record.state = "cancelled"
+    record.progress = None
+    record.result = None
+    record.error = None
+    shutil.rmtree(record.out_dir, ignore_errors=True)
 
 
 class JobRunner:
@@ -165,17 +185,51 @@ class JobRunner:
             await asyncio.sleep(poll_s)
 
     async def cancel(self, job_id: str) -> bool:
-        """Request cancellation. Queued → cancelled immediately; running → best effort
-        (flag checked when the in-flight backend call returns)."""
+        """Request cancellation per the WP-0151 state machine; return ``accepted``.
+
+        =======================  =========================================
+        state before             effect / return
+        =======================  =========================================
+        queued                   finish as cancelled immediately → True
+        running                  flag requested, state → cancelling → True
+        cancelling               no change → True
+        cancelled                no change → True
+        done / failed            unchanged → False
+        =======================  =========================================
+
+        Unknown *job_id* raises :class:`KeyError`. A job in ``cancelling`` ends
+        ``cancelled`` even if the backend finishes successfully or raises; it never
+        ends ``done``/``failed``.
+        """
         record = self._records.get(job_id)
         if record is None:
             raise KeyError(f"unknown job {job_id}")
-        if record.state in TERMINAL_STATES:
+        if record.state == "cancelled":
+            return True
+        if record.state in ("done", "failed"):
             return False
         record.cancel_requested = True
         if record.state == "queued":
-            record.state = "cancelled"
+            _finish_cancelled(record)
+        elif record.state == "running":
+            record.state = "cancelling"
+        # "cancelling": already requested — idempotent, nothing left to change.
         return True
+
+    def list_jobs(self, state: str | None = None) -> list[JobRecord]:
+        """All known jobs in submission order (dict insertion order), oldest first.
+
+        With *state* given, keep only jobs whose state equals it exactly.
+
+        Usage example::
+
+            for rec in runner.list_jobs("done"):
+                print(rec.id)
+        """
+        records = list(self._records.values())
+        if state is not None:
+            records = [rec for rec in records if rec.state == state]
+        return records
 
     # -- internals ---------------------------------------------------------------
 
@@ -191,7 +245,7 @@ class JobRunner:
             try:
                 await self._execute(record)
             except asyncio.CancelledError:
-                record.state = "cancelled"
+                _finish_cancelled(record)
                 return
 
     async def _execute(self, record: JobRecord) -> None:
@@ -201,9 +255,10 @@ class JobRunner:
 
         async with self._inference_lock:
             if record.cancel_requested:
-                record.state = "cancelled"
+                _finish_cancelled(record)  # cancelled while queued / waiting for the lock
                 return
             record.state = "running"
+
             def _progress(p: float) -> None:
                 self._report(record, p)
 
@@ -212,28 +267,33 @@ class JobRunner:
                 request_hash=request_hash,
                 seed=seed,
                 report_progress=_progress,
+                is_cancelled=lambda: record.cancel_requested,
             )
             token = JOB_CONTEXT.set(ctx)
             try:
                 job_result = await asyncio.to_thread(_dispatch, inst, record.task, record.params)
             except asyncio.CancelledError:
-                record.state = "cancelled"
+                _finish_cancelled(record)
                 raise
+            except JobCancelled:
+                # Cooperative checkpoint hit (WP-0151): cancelled, never failed.
+                _finish_cancelled(record)
+                return
             except Exception as exc:  # noqa: BLE001 - structured error per protocol
+                if record.cancel_requested:
+                    _finish_cancelled(record)  # cancel wins over failure (never ends failed)
+                    return
                 code = str(getattr(exc, "error_code", "inference_failed"))
                 retryable = bool(getattr(exc, "retryable", True))
                 record.error = {"code": code, "message": str(exc), "retryable": retryable}
                 logger.warning("job %s failed (%s): %s", record.id, code, exc)
-                if record.cancel_requested:
-                    record.state = "cancelled"
-                else:
-                    record.state = "failed"
+                record.state = "failed"
                 return
             finally:
                 JOB_CONTEXT.reset(token)
 
         if record.cancel_requested:
-            record.state = "cancelled"
+            _finish_cancelled(record)  # backend succeeded but cancel arrived → cancelled
             return
         try:
             finalize_done(record, inst, job_result)

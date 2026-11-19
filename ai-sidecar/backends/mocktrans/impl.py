@@ -77,11 +77,13 @@ class MockTransBackend(TranscriptionBackend):
         from ai_sidecar.wav import read_wav
 
         self.report_progress(0.3)
+        self.check_cancelled()  # last checkpoint before the MIDI file is written
         x, sr = read_wav(audio_path)
         duration_s = x.shape[0] / float(sr)
         out_midi = self.job_context().output_dir / "transcription.mid"
         out_midi.write_bytes(build_midi(duration_s))
         self.report_progress(1.0)
+        self.check_cancelled()
         return JobResult(artifacts={"midi": out_midi}, provenance=self.new_provenance())
 
 

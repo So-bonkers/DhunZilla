@@ -11,6 +11,8 @@ Signal recipe (fake but exercises the whole pipeline):
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 
 from ai_sidecar.base import (
@@ -64,6 +66,15 @@ class MockGenBackend(GenerationBackend):
             )
 
         ctx = self.job_context()
+
+        # WP-0151 test hook: "mock:hold" parks the job in a cancellable wait so tests
+        # can observe the cancelling → cancelled transition of a *running* job.
+        if "mock:hold" in req.style_tags:
+            (ctx.output_dir / "partial.bin").write_bytes(b"mockgen partial output\n")
+            for _ in range(3000):  # ≤30 s at 10 ms per poll
+                self.check_cancelled()
+                threading.Event().wait(0.01)
+
         rng = np.random.default_rng(req.seed)
         scale = MAJOR if rng.random() < 0.5 else MINOR
         root_midi = int(rng.integers(45, 61))
@@ -75,6 +86,7 @@ class MockGenBackend(GenerationBackend):
         env_n = max(1, int(_ENVELOPE_S * SAMPLE_RATE))
 
         self.report_progress(0.3)
+        self.check_cancelled()
         for i, degree in enumerate(degrees):
             start = i * seg_len
             stop = frames if i == len(degrees) - 1 else (i + 1) * seg_len
@@ -102,10 +114,12 @@ class MockGenBackend(GenerationBackend):
             out[start:stop] = seg * ramp
 
         self.report_progress(0.8)
+        self.check_cancelled()
         stereo = np.repeat(out[:, None], 2, axis=1)  # (frames, 2) identical L/R
         from ai_sidecar.wav import write_wav
 
         audio_path = ctx.output_dir / "audio.wav"
         write_wav(audio_path, stereo, SAMPLE_RATE)
         self.report_progress(1.0)
+        self.check_cancelled()
         return JobResult(artifacts={"audio": audio_path}, provenance=self.new_provenance(req.seed))

@@ -1,8 +1,8 @@
 """FastAPI app implementing docs/spec/sidecar-protocol.md (v0 transport).
 
-Endpoints: GET /health, POST /jobs, GET /jobs/{id}, POST /jobs/{id}/cancel,
-GET /jobs/{id}/events (SSE; the stream is fed by cheap polling per the spec's
-"polling fallback allowed"), GET /models, POST /models/{id}/download.
+Endpoints: GET /health, POST /jobs, GET /jobs (list, oldest first), GET /jobs/{id},
+POST /jobs/{id}/cancel, GET /jobs/{id}/events (SSE; the stream is fed by cheap polling
+per the spec's "polling fallback allowed"), GET /models, POST /models/{id}/download.
 
 Errors are always structured ``{code, message, retryable}`` under an ``error`` key.
 
@@ -44,7 +44,7 @@ from ai_sidecar.base import (
     TranscriptionBackend,
     UnknownBackend,
 )
-from ai_sidecar.jobs import TERMINAL_STATES, JobRunner
+from ai_sidecar.jobs import JOB_STATES, TERMINAL_STATES, JobRunner
 from ai_sidecar.model_manager import (
     DownloadFailed,
     HashMismatch,
@@ -224,6 +224,23 @@ def create_app(
         except InvalidRequest as exc:
             raise ApiError(exc.error_code, str(exc), 422, False) from exc
         return {"job_id": job_id}
+
+    @app.get("/jobs")
+    def list_jobs(state: str | None = None) -> dict[str, Any]:
+        """All job snapshots, oldest submission first; optional exact ``?state=`` filter.
+
+        Usage example::
+
+            done_ids = [j["job_id"] for j in client.get("/jobs?state=done").json()["jobs"]]
+        """
+        if state is not None and state not in JOB_STATES:
+            raise ApiError(
+                "bad_request",
+                f"unknown state '{state}'; expected one of {sorted(JOB_STATES)}",
+                422,
+                False,
+            )
+        return {"jobs": [rec.snapshot() for rec in runner.list_jobs(state)]}
 
     def _require_record(job_id: str) -> Any:
         record = runner.get(job_id)
