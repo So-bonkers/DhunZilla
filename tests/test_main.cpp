@@ -2254,6 +2254,156 @@ static void test_document() {
     }
 }
 
+// ---------------------------------------------------------------- autosave + recovery (WP-0157)
+
+static std::string slurp_str(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+static void test_document_autosave() {
+    namespace fs = std::filesystem;
+    using nlohmann::json;
+    std::string err;
+    const std::string demo = std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj";
+    const fs::path dir = fs::temp_directory_path() / "op_doc_autosave_wp0157";
+    fs::create_directories(dir);
+    const std::string main_path = (dir / "song.opj").string();
+    const std::string auto_path = op::Document::autosave_path(main_path);
+    const std::string tmp_path = auto_path + ".tmp";
+    const auto fresh_copy = [&] {
+        fs::remove(auto_path);
+        fs::remove(tmp_path);
+        fs::copy_file(demo, main_path, fs::copy_options::overwrite_existing);
+    };
+    const json edit_a{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -3.5}};
+    const json edit_b{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -8.25}};
+
+    // 1. untitled: exact error, nothing written even though dirty.
+    {
+        op::Document u;
+        CHECK(u.apply(json{{"op", "add_track"},
+                           {"track", json{{"gain_db", -6.0}, {"name", "Pad"}, {"pan", 0.0},
+                                          {"voice", json{{"kind", "metronome"}, {"accent_every", 4}}}}}},
+                      err) &&
+                  u.dirty(),
+              "doc.autosave.untitled_dirty_pre");
+        err.clear();
+        CHECK(!u.autosave(err) && err == "cannot autosave an untitled document", "doc.autosave.untitled_error");
+        CHECK(!fs::exists(op::Document::autosave_path("")), "doc.autosave.untitled_no_file");
+    }
+
+    // 2. clean document: no autosave file created, err unchanged.
+    fresh_copy();
+    op::Document doc;
+    CHECK(op::Document::open(main_path, doc, err), "doc.autosave.open_ok");
+    err = "keep";
+    CHECK(doc.autosave(err) && err == "keep" && !fs::exists(auto_path), "doc.autosave.clean_no_file");
+
+    // 3. dirty: autosave file == project_bytes(project()), no .tmp left, main file untouched.
+    const std::string main_before = slurp_str(main_path);
+    CHECK(doc.apply(edit_a, err), "doc.autosave.edit_a");
+    CHECK(doc.autosave(err) && fs::exists(auto_path), "doc.autosave.dirty_writes");
+    CHECK(slurp_str(auto_path) == op::project_bytes(doc.project()), "doc.autosave.bytes_equal_project_bytes");
+    CHECK(!fs::exists(tmp_path), "doc.autosave.no_tmp_left");
+    CHECK(slurp_str(main_path) == main_before, "doc.autosave.main_bytes_unchanged");
+    CHECK(doc.dirty() && doc.revision() == 1 && doc.path() == main_path, "doc.autosave.state_unchanged");
+
+    // 4. same revision: second call does not rewrite.
+    fs::remove(auto_path);
+    CHECK(doc.autosave(err) && !fs::exists(auto_path), "doc.autosave.same_revision_no_rewrite");
+
+    // 5. new revision: rewritten with the new content.
+    CHECK(doc.apply(edit_b, err) && doc.autosave(err), "doc.autosave.new_revision_ok");
+    CHECK(slurp_str(auto_path) == op::project_bytes(doc.project()), "doc.autosave.new_revision_rewritten");
+
+    // 6. failure: <autosave>.tmp is a directory -> false, exact error, main and prior autosave untouched.
+    const std::string prior_auto = slurp_str(auto_path);
+    CHECK(doc.apply(edit_a, err), "doc.autosave.edit_for_tmp_dir");
+    fs::create_directory(tmp_path);
+    err.clear();
+    CHECK(!doc.autosave(err) && err == "cannot write autosave '" + auto_path + "'",
+          "doc.autosave.tmp_dir_error");
+    CHECK(slurp_str(auto_path) == prior_auto, "doc.autosave.tmp_dir_prior_untouched");
+    CHECK(slurp_str(main_path) == main_before, "doc.autosave.tmp_dir_main_untouched");
+    fs::remove_all(tmp_path);
+
+    // 7. failure: the autosave path itself is a directory -> false, no .tmp left, and the failed
+    //    revision is not recorded (a retry after removing the directory writes).
+    fresh_copy();
+    CHECK(op::Document::open(main_path, doc, err) && doc.apply(edit_a, err), "doc.autosave.dir_target_setup");
+    fs::create_directory(auto_path);
+    err.clear();
+    CHECK(!doc.autosave(err) && err == "cannot write autosave '" + auto_path + "'",
+          "doc.autosave.dir_target_error");
+    CHECK(!fs::exists(tmp_path), "doc.autosave.dir_target_no_tmp");
+    fs::remove(auto_path);
+    CHECK(doc.autosave(err) && fs::exists(auto_path), "doc.autosave.retry_after_failure_writes");
+
+    // 8. save() removes the autosave file and its .tmp.
+    CHECK(doc.save(err) && !fs::exists(auto_path) && !fs::exists(tmp_path), "doc.autosave.save_removes_autosave");
+    CHECK(!doc.dirty(), "doc.autosave.save_clean");
+
+    // 9. save_as() removes the new path's autosave file, not the old path's.
+    fresh_copy();
+    const std::string other = (dir / "other.opj").string();
+    const std::string other_auto = op::Document::autosave_path(other);
+    fs::remove(other_auto);
+    CHECK(op::Document::open(main_path, doc, err) && doc.apply(edit_a, err) && doc.autosave(err),
+          "doc.autosave.saveas_setup");
+    CHECK(!fs::exists(other_auto), "doc.autosave.saveas_other_absent_pre");
+    fs::copy_file(auto_path, other_auto, fs::copy_options::overwrite_existing);  // stale autosave of "other"
+    CHECK(doc.save_as(other, err) && !fs::exists(other_auto),
+          "doc.autosave.saveas_removes_new_path_autosave");
+    CHECK(fs::exists(auto_path), "doc.autosave.saveas_old_path_autosave_kept");
+
+    // 10. recovery_state: None without autosave, None for identical content, None for corrupt autosave.
+    fresh_copy();
+    CHECK(op::Document::recovery_state(main_path) == op::RecoveryState::None, "doc.autosave.recovery_none_no_file");
+    fs::copy_file(main_path, auto_path, fs::copy_options::overwrite_existing);
+    CHECK(op::Document::recovery_state(main_path) == op::RecoveryState::None, "doc.autosave.recovery_none_identical");
+    write_text(auto_path, "{ \"truncated\": ");
+    CHECK(op::Document::recovery_state(main_path) == op::RecoveryState::None, "doc.autosave.recovery_none_corrupt");
+    CHECK(op::Document::recovery_state(main_path + ".missing") == op::RecoveryState::None,
+          "doc.autosave.recovery_none_missing_main");
+
+    // 11. recovery_state AutosaveNewer for differing content; plain open ignores it and leaves it.
+    fresh_copy();
+    CHECK(op::Document::open(main_path, doc, err) && doc.apply(edit_b, err) && doc.autosave(err),
+          "doc.autosave.recover_setup");
+    CHECK(op::Document::recovery_state(main_path) == op::RecoveryState::AutosaveNewer,
+          "doc.autosave.recovery_newer");
+    op::Document plain;
+    CHECK(op::Document::open(main_path, plain, err) && !plain.dirty() && fs::exists(auto_path),
+          "doc.autosave.plain_open_ignores_autosave");
+
+    // 12. open_recovered: dirty, content == autosave, then save() makes the main file the recovered content.
+    const std::string recovered_bytes = slurp_str(auto_path);
+    op::Document rec;
+    CHECK(op::Document::open_recovered(main_path, rec, err), "doc.autosave.open_recovered_ok");
+    CHECK(rec.dirty() && rec.path() == main_path && rec.revision() == 0 && !rec.can_undo(),
+          "doc.autosave.open_recovered_dirty_state");
+    CHECK(op::project_bytes(rec.project()) == recovered_bytes, "doc.autosave.open_recovered_content");
+    CHECK(slurp_str(main_path) != recovered_bytes && fs::exists(auto_path),
+          "doc.autosave.open_recovered_files_untouched");
+    CHECK(rec.save(err) && slurp_str(main_path) == recovered_bytes && !rec.dirty(),
+          "doc.autosave.recovered_save_writes_main");
+
+    // 13. open_recovered with no recoverable autosave: false, exact error, out unchanged.
+    fresh_copy();
+    op::Document keep;
+    CHECK(op::Document::open(main_path, keep, err) && keep.apply(edit_a, err), "doc.autosave.keep_setup");
+    err.clear();
+    CHECK(!op::Document::open_recovered(main_path, keep, err) &&
+              err == "no recoverable autosave for '" + main_path + "'",
+          "doc.autosave.open_recovered_none_error");
+    CHECK(keep.revision() == 1 && keep.dirty() && keep.path() == main_path && keep.can_undo() &&
+              keep.project().tracks[0].gain_db == -3.5f,
+          "doc.autosave.open_recovered_none_out_unchanged");
+
+    fs::remove_all(dir);
+}
+
 // ---------------------------------------------------------------- resampler (WP-0138)
 
 // Minimal mono PCM16 WAV writer — tests need assets at arbitrary rates; wav::write is stereo-only.
@@ -3280,6 +3430,7 @@ int main() {
     test_ops();
     test_ops_property();
     test_document();
+    test_document_autosave();
     test_resample();
     test_project_bytes();
     test_analyze();

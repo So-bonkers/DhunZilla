@@ -4,9 +4,25 @@
 // writes), so undoing back to the saved state makes the document clean again by construction.
 #include "doc/document.hpp"
 
+#include <cstdio>
+#include <fstream>
 #include <utility>
 
 namespace op {
+
+namespace {
+
+// Autosave temp file of an autosave file: <path>.autosave.tmp
+std::string autosave_tmp_path(const std::string& path) { return Document::autosave_path(path) + ".tmp"; }
+
+// Best-effort removal of the autosave file and its temp file of `path` (missing is fine).
+void remove_autosave_files(const std::string& path) {
+    const std::string file = Document::autosave_path(path);
+    std::remove(file.c_str());
+    std::remove((file + ".tmp").c_str());
+}
+
+}  // namespace
 
 Document::Document() : saved_bytes_(project_bytes(project_)) {}
 
@@ -22,6 +38,7 @@ bool Document::open(const std::string& path, Document& out, std::string& err) {
     out.gesture_base_ = Project{};
     out.last_op_ = nlohmann::json();
     out.have_last_op_ = false;
+    out.have_autosaved_ = false;
     return true;
 }
 
@@ -112,6 +129,8 @@ bool Document::dirty() const { return project_bytes(project_) != saved_bytes_; }
 bool Document::save(std::string& err) {
     if (!save_project(path_, project_, err)) return false;
     saved_bytes_ = project_bytes(project_);
+    remove_autosave_files(path_);
+    have_autosaved_ = false;
     return true;
 }
 
@@ -119,6 +138,78 @@ bool Document::save_as(const std::string& path, std::string& err) {
     if (!save_project(path, project_, err)) return false;
     path_ = path;
     saved_bytes_ = project_bytes(project_);
+    remove_autosave_files(path_);
+    have_autosaved_ = false;
+    return true;
+}
+
+std::string Document::autosave_path(const std::string& path) { return path + ".autosave"; }
+
+bool Document::autosave(std::string& err) {
+    if (path_.empty()) {
+        err = "cannot autosave an untitled document";
+        return false;
+    }
+    if (!dirty()) return true;  // clean: an existing autosave file stays as it is
+    if (have_autosaved_ && autosaved_revision_ == revision_) return true;  // already current
+
+    const std::string file = autosave_path(path_);
+    const std::string tmp = autosave_tmp_path(path_);
+    const std::string bytes = project_bytes(project_);
+
+    bool ok = false;
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (f) {
+            f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+            f.flush();
+            f.close();
+            ok = !f.fail();
+        }
+    }
+    if (ok && std::rename(tmp.c_str(), file.c_str()) == 0) {
+        autosaved_revision_ = revision_;
+        have_autosaved_ = true;
+        return true;
+    }
+    std::remove(tmp.c_str());  // ignore the result: the temp file may simply not exist
+    err = "cannot write autosave '" + file + "'";
+    return false;
+}
+
+RecoveryState Document::recovery_state(const std::string& path) {
+    try {
+        Project main_project;
+        Project autosave_project;
+        std::string err;
+        if (!load_project(path, main_project, err)) return RecoveryState::None;
+        if (!load_project(autosave_path(path), autosave_project, err)) return RecoveryState::None;
+        return project_bytes(main_project) != project_bytes(autosave_project) ? RecoveryState::AutosaveNewer
+                                                                              : RecoveryState::None;
+    } catch (...) {
+        return RecoveryState::None;
+    }
+}
+
+bool Document::open_recovered(const std::string& path, Document& out, std::string& err) {
+    if (recovery_state(path) != RecoveryState::AutosaveNewer) {
+        err = "no recoverable autosave for '" + path + "'";
+        return false;
+    }
+    Project recovered;  // parse into scratches first: on failure `out` must be untouched
+    Project on_disk;
+    if (!load_project(autosave_path(path), recovered, err)) return false;
+    if (!load_project(path, on_disk, err)) return false;
+    out.project_ = std::move(recovered);
+    out.path_ = path;
+    out.revision_ = 0;
+    out.history_ = History();
+    out.saved_bytes_ = project_bytes(on_disk);  // baseline = main file, so the recovery is dirty
+    out.gesture_active_ = false;
+    out.gesture_base_ = Project{};
+    out.last_op_ = nlohmann::json();
+    out.have_last_op_ = false;
+    out.have_autosaved_ = false;
     return true;
 }
 

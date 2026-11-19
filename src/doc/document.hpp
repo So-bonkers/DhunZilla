@@ -15,6 +15,13 @@
 //                                             {"index", 0}, {"gain_db", g}}, err);
 //       doc.end_gesture(err);                                          // release: one undo entry
 //   }
+// Autosave + crash recovery (WP-0157). The doc layer has no timers: the app calls autosave()
+// periodically. Autosave writes <path>.autosave (never the main file); on the next launch:
+//   if (op::Document::recovery_state(path) == op::RecoveryState::AutosaveNewer)
+//       op::Document::open_recovered(path, doc, err);  // dirty; the user decides what to keep
+//   else
+//       op::Document::open(path, doc, err);
+// save()/save_as() remove the autosave file of the saved path.
 #pragma once
 
 #include <cstdint>
@@ -36,6 +43,8 @@ struct TrackRow {  // what a track-list row displays; derived from the model, ne
     bool solo = false;
     bool audible = true;  // op::track_audible(project, i) — the WP-0136 rule
 };
+
+enum class RecoveryState { None, AutosaveNewer };
 
 class Document {
 public:
@@ -78,6 +87,21 @@ public:
     bool save(std::string& err);                            // writes path() via op::save_project
     bool save_as(const std::string& path, std::string& err);  // on success path() becomes `path`
 
+    // Autosave (WP-0157). The autosave file of `path` is path + ".autosave". Writes
+    // op::project_bytes(project()) atomically (temp file + rename) only when the document is dirty
+    // and its revision() differs from the last successful autosave. Never touches path(), the
+    // revision, the dirty state or the history. Untitled document: false, err "cannot autosave an
+    // untitled document". Write failure: false, err "cannot write autosave '<file>'".
+    bool autosave(std::string& err);
+    static std::string autosave_path(const std::string& path);  // returns path + ".autosave"
+    // AutosaveNewer iff `path` and its autosave both load and their project_bytes differ.
+    // Never modifies files, never throws.
+    static RecoveryState recovery_state(const std::string& path);
+    // Only if recovery_state(path) == AutosaveNewer: `out` holds the autosave content at `path`,
+    // dirty() is true against the on-disk main file, no history, revision 0. Otherwise false,
+    // `out` unchanged, err "no recoverable autosave for '<path>'".
+    static bool open_recovered(const std::string& path, Document& out, std::string& err);
+
     std::vector<TrackRow> track_rows() const;
 
 private:
@@ -90,6 +114,8 @@ private:
     Project gesture_base_;         // project() as of begin_gesture()
     nlohmann::json last_op_;       // last successful update_gesture operation
     bool have_last_op_ = false;
+    std::uint64_t autosaved_revision_ = 0;  // revision at the last successful autosave
+    bool have_autosaved_ = false;           // false: never autosaved since open/save
 };
 
 }  // namespace op
