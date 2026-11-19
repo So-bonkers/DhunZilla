@@ -379,3 +379,38 @@ WAV, so an AIFF and a WAV with the same samples render byte-identically. Strict 
 `unsupported AIFF-C compression`, `AIFF must be 16 or 24-bit`, `implausible sample rate`. `opd info`
 reports them as `error: parse: <text>` (exit 4); the sampler reports `sampler: <text>` (render exit 5).
 `opd info` prints `aiff: <path> rate=<n> ch=<n> frames=<n> duration=<x.xxx>s` for AIFF content.
+
+## New project — additive (WP-0165)
+`opd new <out.opj> [--bpm X] [--bars N] [--beats-per-bar N] [--sample-rate SR] [--track NAME:KIND[:PATH]]... [--force]`
+creates a fresh project file from the engine function `op::new_project(const NewProjectSpec&)`
+(`engine/model.hpp`; pure, Document-free, no I/O). The file is written with `op::save_project`, so its bytes are
+exactly `op::project_bytes` of the result.
+
+**Defaults:** `--bpm 120`, `--bars 4`, `--beats-per-bar 4`, `--sample-rate 48000`; no `--track` = the single track
+`Synth` (kind `synth`). Options may appear in any order; `--track` repeats (declaration order = track order).
+
+**Content (normative, fixes the bytes):** `format_version` 0, `seed` 42, `length_bars` = bars (as a double), no master
+gain, tempo map, loop or attachments. For track i: `Track` (gain_db 0, pan 0, not muted/soloed, default voice
+parameters of its kind — sine `freq_hz` 440, synth `attack_ms` 5 / `release_ms` 30, metronome `accent_every` 4,
+sampler `path` = PATH verbatim, no trim); `Pattern` i = `{track: i, notes: []}`; arrangement clip i =
+`{pattern: i, start_bar: 0, repeats: 1}`. Hence an empty-but-arranged project that renders silence of exactly
+`total_samples_for` frames, loads, passes `opd info`, and accepts further ops (`add_note`, `add_clip`, ...).
+Sampler PATH is stored as given (relative to the project file directory) and is NOT checked for existence.
+
+**Option rules** (any violation: exit 2, `error: usage: <msg>`, nothing written; checked left to right before the
+output path is examined):
+- `--bpm`: whole argument parses as a finite number in (0, 1000] — else `bad --bpm value '<v>' (expected a number in (0, 1000])`.
+- `--bars`: decimal digits only, 1..4096 — else `bad --bars value '<v>' (expected an integer 1..4096)`.
+- `--beats-per-bar`: digits only, 1..32 — else `bad --beats-per-bar value '<v>' (expected an integer 1..32)`.
+- `--sample-rate`: digits only, 8000..192000 — else `bad --sample-rate value '<v>' (expected an integer 8000..192000)`.
+- `--track NAME:KIND[:PATH]`: split at the first `:` (NAME, non-empty) and the second `:` (KIND; PATH is everything
+  after it and may itself contain `:`). Errors, each prefixed `bad --track '<v>': `: `expected NAME:KIND[:PATH]`
+  (no `:` or empty NAME); `unknown kind '<k>' (expected sine, synth, sampler or metronome)`; `sampler needs a PATH`
+  (missing or empty PATH); `PATH is only valid for sampler`. More than 64 tracks: `too many tracks (max 64)`.
+- An option that needs a value as the last argument: `missing value for <option>`. Any other `--x`, or a second
+  positional: `unknown arg '<arg>'`. No output path: `new needs <out.opj>`.
+
+**Overwrite:** if `<out.opj>` exists (any file type) and `--force` is absent: exit 5,
+`error: write: <out.opj> already exists (use --force)`, the existing file untouched. With `--force` it is replaced.
+An unwritable path (e.g. missing parent directory) is exit 5, `error: write: cannot write '<out.opj>'`.
+On success exit 0 and stdout `new: <out.opj> tracks=<n> bars=<n> bpm=<%g of bpm>`.

@@ -30,6 +30,8 @@ static void usage() {
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B] [--loop]\n"
         "             [--format pcm16|pcm24|f32]\n"
         "  opd click <project.opj> -o <out.wav>\n"
+        "  opd new <out.opj> [--bpm X] [--bars N] [--beats-per-bar N] [--sample-rate SR]\n"
+        "          [--track NAME:KIND[:PATH]]... [--force]   (KIND = sine|synth|sampler|metronome)\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
@@ -68,6 +70,9 @@ static bool parse_bar_value(const std::string& arg, double& out) {
     out = v;
     return true;
 }
+
+// Defined below (near opd steps); used by cmd_new too.
+static bool parse_decimal(const std::string& s, long long max, long long& out);
 
 static int cmd_render(int argc, char** argv) {
     if (argc < 4) { usage(); return fail("usage", "render needs project + -o out"); }
@@ -200,6 +205,100 @@ static int cmd_click(int argc, char** argv) {
     op::wav::StereoBuffer buf;
     if (!op::render_click(p, buf, err)) return fail("render", err);
     if (!op::wav::write_pcm16_stereo(out_path, buf, err)) return fail("write", err);
+    return 0;
+}
+
+// opd new (WP-0165, spec §New project): canonical new project via op::new_project. EVERY option is
+// validated left to right before the output path is examined; nothing is written on any error.
+// Exit 2 usage, 5 write (existing file without --force, or unwritable path). Example:
+//   opd new song.opj --bpm 140 --bars 8 --track Kick:sampler:kits/kick.wav --force
+static bool parse_track_arg(const std::string& v, op::NewTrackSpec& t, std::string& msg) {
+    const size_t c1 = v.find(':');
+    if (c1 == std::string::npos || c1 == 0) { msg = "expected NAME:KIND[:PATH]"; return false; }
+    t.name = v.substr(0, c1);
+    const size_t c2 = v.find(':', c1 + 1);
+    const std::string kind = c2 == std::string::npos ? v.substr(c1 + 1) : v.substr(c1 + 1, c2 - c1 - 1);
+    const bool has_path = c2 != std::string::npos;
+    if (kind == "sine")           t.kind = op::VoiceKind::Sine;
+    else if (kind == "synth")     t.kind = op::VoiceKind::Synth;
+    else if (kind == "sampler")   t.kind = op::VoiceKind::Sampler;
+    else if (kind == "metronome") t.kind = op::VoiceKind::Metronome;
+    else { msg = "unknown kind '" + kind + "' (expected sine, synth, sampler or metronome)"; return false; }
+    if (t.kind == op::VoiceKind::Sampler) {
+        const std::string path = has_path ? v.substr(c2 + 1) : "";  // may itself contain ':'
+        if (path.empty()) { msg = "sampler needs a PATH"; return false; }
+        t.path = path;
+    } else if (has_path) {
+        msg = "PATH is only valid for sampler"; return false;
+    }
+    return true;
+}
+
+static int cmd_new(int argc, char** argv) {
+    op::NewProjectSpec spec;
+    std::string out_path;
+    bool force = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--force") { force = true; continue; }
+        if (a.rfind("--", 0) != 0) {  // positional: the output path, once only
+            if (!out_path.empty()) { usage(); return fail("usage", "unknown arg '" + a + "'"); }
+            out_path = a;
+            continue;
+        }
+        const std::string opt = a;  // for "missing value for <option>" messages
+        auto need_value = [&](std::string& v) -> bool {
+            if (i + 1 >= argc) { usage(); fail("usage", "missing value for " + opt); return false; }
+            v = argv[++i];
+            return true;
+        };
+        std::string v;
+        if (opt == "--bpm") {
+            if (!need_value(v)) return 2;
+            double bpm = 0.0;
+            if (!parse_bar_value(v, bpm) || !(bpm > 0.0) || bpm > 1000.0)
+                { usage(); return fail("usage", "bad --bpm value '" + v + "' (expected a number in (0, 1000])"); }
+            spec.bpm = bpm;
+        } else if (opt == "--bars") {
+            if (!need_value(v)) return 2;
+            long long n = 0;
+            if (!parse_decimal(v, 4096, n) || n < 1)
+                { usage(); return fail("usage", "bad --bars value '" + v + "' (expected an integer 1..4096)"); }
+            spec.bars = static_cast<int>(n);
+        } else if (opt == "--beats-per-bar") {
+            if (!need_value(v)) return 2;
+            long long n = 0;
+            if (!parse_decimal(v, 32, n) || n < 1)
+                { usage(); return fail("usage", "bad --beats-per-bar value '" + v + "' (expected an integer 1..32)"); }
+            spec.beats_per_bar = static_cast<int>(n);
+        } else if (opt == "--sample-rate") {
+            if (!need_value(v)) return 2;
+            long long n = 0;
+            if (!parse_decimal(v, 192000, n) || n < 8000)
+                { usage(); return fail("usage", "bad --sample-rate value '" + v + "' (expected an integer 8000..192000)"); }
+            spec.sample_rate = static_cast<int>(n);
+        } else if (opt == "--track") {
+            if (!need_value(v)) return 2;
+            op::NewTrackSpec t;
+            std::string msg;
+            if (!parse_track_arg(v, t, msg))
+                { usage(); return fail("usage", "bad --track '" + v + "': " + msg); }
+            if (spec.tracks.size() >= 64)
+                { usage(); return fail("usage", "too many tracks (max 64)"); }
+            spec.tracks.push_back(std::move(t));
+        } else {
+            usage(); return fail("usage", "unknown arg '" + a + "'");
+        }
+    }
+    if (out_path.empty()) { usage(); return fail("usage", "new needs <out.opj>"); }
+
+    // Output path examined only after every option validated (spec §New project): overwrite is exit 5.
+    if (!force && fs::exists(out_path))
+        return fail("write", out_path + " already exists (use --force)");
+    const op::Project p = op::new_project(spec);
+    std::string err;
+    if (!op::save_project(out_path, p, err)) return fail("write", err);
+    std::printf("new: %s tracks=%zu bars=%d bpm=%g\n", out_path.c_str(), p.tracks.size(), spec.bars, spec.bpm);
     return 0;
 }
 
@@ -560,6 +659,7 @@ int main(int argc, char** argv) {
     const std::string cmd = argv[1];
     if (cmd == "render") return cmd_render(argc - 1, argv + 1);
     if (cmd == "click") return cmd_click(argc - 1, argv + 1);
+    if (cmd == "new") return cmd_new(argc - 1, argv + 1);
     if (cmd == "gen-testproject") return cmd_gen_testproject(argc - 1, argv + 1);
     if (cmd == "midi2opj") return cmd_midi2opj(argc - 1, argv + 1);
     if (cmd == "import-midi") return cmd_import_midi(argc - 1, argv + 1);

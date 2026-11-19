@@ -141,5 +141,17 @@ out="$("$OPD" info "$TMP/lp.opj" | grep '^loop: ')"
 if [ "$out" = "loop: 0.5-1.5" ]; then echo "PASS loop_info_line"; else echo "FAIL loop_info_line: [$out]"; fails=$((fails+1)); fi
 out="$("$OPD" info "$TMP/lp_noloop.opj" | grep -c '^loop')"
 if [ "$out" = 0 ]; then echo "PASS loop_info_absent"; else echo "FAIL loop_info_absent: [$out]"; fails=$((fails+1)); fi
+
+# --- opd new (WP-0165): docs/spec/project-model.md §New project exit-code contract
+check new_no_args          2 "$OPD" new
+check new_bars_zero        2 "$OPD" new "$TMP/nv.opj" --bars 0
+if [ ! -e "$TMP/nv.opj" ]; then echo "PASS new_bars_zero_no_output"; else echo "FAIL new_bars_zero_no_output: file was created"; fails=$((fails+1)); fi
+check new_bad_track_kind   2 "$OPD" new "$TMP/nv.opj" --track D:drumkit
+if [ ! -e "$TMP/nv.opj" ]; then echo "PASS new_bad_track_no_output"; else echo "FAIL new_bad_track_no_output: file was created"; fails=$((fails+1)); fi
+check new_ok               0 "$OPD" new "$TMP/nw.opj"
+if [ -s "$TMP/nw.opj" ]; then echo "PASS new_output_written"; else echo "FAIL new_output_written"; fails=$((fails+1)); fi
+err="$("$OPD" new "$TMP/nw.opj" 2>&1 >/dev/null)"; got=$?
+if [ "$got" = 5 ] && [ "$err" = "error: write: $TMP/nw.opj already exists (use --force)" ]; then echo "PASS new_exists_refused (exit 5, spec message)"; else echo "FAIL new_exists_refused: exit $got stderr [$err]"; fails=$((fails+1)); fi
+check new_force            0 "$OPD" new "$TMP/nw.opj" --force
 echo "test_cli_errors: $fails failures"
 exit $((fails > 0 ? 1 : 0))

@@ -254,6 +254,39 @@ bool track_audible(const Project& p, std::size_t i) {
     return !t.mute && (!any_solo || t.solo);  // mute wins over solo (spec §mixer)
 }
 
+// WP-0165 (spec project-model.md §New project — additive): canonical new-project factory. Pure;
+// builds the Project directly (Document-free), no validation (callers validate). Voice defaults in
+// the struct already match the spec per kind (sine 440 Hz, synth 5/30 ms, metronome every 4); only
+// the sampler path is copied through, verbatim, unchecked.
+Project new_project(const NewProjectSpec& spec) {
+    Project p;
+    p.format_version = 0;
+    p.bpm = spec.bpm;
+    p.sample_rate = spec.sample_rate;
+    p.seed = 42;
+    p.length_bars = static_cast<double>(spec.bars);
+    p.beats_per_bar = spec.beats_per_bar;
+    const std::vector<NewTrackSpec> tracks = spec.tracks.empty()
+        ? std::vector<NewTrackSpec>{{"Synth", VoiceKind::Synth, ""}}  // default track (spec)
+        : spec.tracks;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        Track t;
+        t.name = tracks[i].name;
+        t.voice.kind = tracks[i].kind;
+        if (tracks[i].kind == VoiceKind::Sampler) t.voice.path = tracks[i].path;
+        p.tracks.push_back(std::move(t));
+        Pattern pat;
+        pat.track = static_cast<int>(i);
+        p.patterns.push_back(std::move(pat));
+        Clip c;
+        c.pattern = static_cast<int>(i);
+        c.start_bar = 0.0;
+        c.repeats = 1;
+        p.arrangement.push_back(c);
+    }
+    return p;
+}
+
 bool load_project(const std::string& path, Project& out, std::string& err) {
     out = Project{};  // full reset: loading into a dirty Project must never accumulate state
     std::ifstream f(path, std::ios::binary);

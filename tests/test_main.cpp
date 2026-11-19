@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <unistd.h>  // getpid — unique temp dirs for file-based tests (WP-0165)
 
 #include "doc/document.hpp"
 #include "engine/analyze.hpp"
@@ -3822,6 +3823,94 @@ static void test_aiff() {
     }
 }
 
+// ---------------------------------------------------------------- new_project factory (WP-0165)
+
+static void test_new_project() {
+    namespace fs = std::filesystem;
+    std::string err;
+
+    // Default spec: byte-exact canonical content fixed by docs/spec/project-model.md §New project.
+    const op::Project def = op::new_project(op::NewProjectSpec{});
+    const std::string expected = R"({
+  "arrangement": [
+    {
+      "pattern": 0,
+      "repeats": 1,
+      "start_bar": 0.0
+    }
+  ],
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 4.0,
+  "patterns": [
+    {
+      "notes": [],
+      "track": 0
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 42,
+  "tracks": [
+    {
+      "gain_db": 0.0,
+      "name": "Synth",
+      "pan": 0.0,
+      "voice": {
+        "attack_ms": 5.0,
+        "kind": "synth",
+        "release_ms": 30.0
+      }
+    }
+  ]
+}
+)";
+    CHECK(op::project_bytes(def) == expected, "new_project.default_bytes_exact");
+
+    // Pure + deterministic: two calls with the same spec produce identical bytes.
+    const op::Project def2 = op::new_project(op::NewProjectSpec{});
+    CHECK(op::project_bytes(def) == op::project_bytes(def2), "new_project.deterministic");
+
+    // 3-track spec (sine, sampler with path, metronome): loads back through the full validator.
+    op::NewProjectSpec s;
+    s.bpm = 140.0;
+    s.bars = 8;
+    s.beats_per_bar = 3;
+    s.sample_rate = 44100;
+    s.tracks = {{"Lead", op::VoiceKind::Sine, ""},
+                {"Kick", op::VoiceKind::Sampler, "kits/kick.wav"},
+                {"Click", op::VoiceKind::Metronome, ""}};
+    const fs::path dir = fs::temp_directory_path() / ("op_new_project_wp0165_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const std::string path = (dir / "three.opj").string();
+    {  // write the factory's bytes verbatim, then load_project must accept them
+        std::ofstream f(path, std::ios::binary);
+        f << op::project_bytes(op::new_project(s));
+    }
+    op::Project p;
+    CHECK(op::load_project(path, p, err), "new_project.three_track_loads");
+    CHECK(p.tracks.size() == 3 && p.patterns.size() == 3 && p.arrangement.size() == 3,
+          "new_project.three_track_sizes");
+    bool wiring_ok = true;
+    for (size_t i = 0; i < p.patterns.size(); ++i) {
+        if (p.patterns[i].track != static_cast<int>(i)) wiring_ok = false;
+        if (!p.patterns[i].notes.empty()) wiring_ok = false;
+        if (p.arrangement[i].pattern != static_cast<int>(i) || p.arrangement[i].start_bar != 0.0 ||
+            p.arrangement[i].repeats != 1)
+            wiring_ok = false;
+    }
+    CHECK(wiring_ok, "new_project.pattern_i_references_track_i");
+    bool voices_ok = p.tracks[0].voice.kind == op::VoiceKind::Sine && p.tracks[0].name == "Lead" &&
+                     p.tracks[1].voice.kind == op::VoiceKind::Sampler &&
+                     p.tracks[1].voice.path == "kits/kick.wav" &&  // stored verbatim
+                     p.tracks[2].voice.kind == op::VoiceKind::Metronome &&
+                     p.bpm == 140.0 && p.length_bars == 8.0 && p.beats_per_bar == 3 &&
+                     p.sample_rate == 44100 && p.seed == 42 && p.format_version == 0;
+    CHECK(voices_ok, "new_project.fields_and_sampler_path");
+    fs::remove(path);
+    fs::remove(dir);
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -3860,6 +3949,7 @@ int main() {
     test_step_sequencer();
     test_loop_region();
     test_sampler_trim();
+    test_new_project();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }
