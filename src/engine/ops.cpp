@@ -5,6 +5,7 @@
 // second set of validation rules; the original Project is only replaced at the very end.
 #include "engine/ops.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -268,6 +269,151 @@ bool apply_journal(Project& p, const std::string& jsonl_text, std::string& err,
     }
     p = std::move(work);
     if (outcome) outcome->applied = ops.size();
+    return true;
+}
+
+// ---- diff_projects (WP-0146): see engine/ops.hpp / docs/spec/operations.md §opd diff. ----
+namespace {
+
+// Canonical JSON omits default fields, so "absent" means the documented default: read a field
+// with that fallback. Pure; never throws (caller checked nothing; `o` is our own canonical dump).
+const json& field_or(const json& o, const char* key, const json& fallback) {
+    const auto it = o.find(key);
+    return it != o.end() ? it.value() : fallback;
+}
+
+}  // namespace
+
+bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, std::string& err) {
+    ops.clear();
+    err.clear();
+    const json ja = project_to_json(a);  // compare and emit from the canonical JSON (spec):
+    const json jb = project_to_json(b);  // "equal" here is exactly "saved bytes equal".
+
+    auto unsupported = [&](const std::string& field) {
+        ops.clear();
+        err = "unsupported difference: " + field;
+        return false;
+    };
+
+    // Fields no operation can change, checked in exactly the spec's order (first hit reports).
+    if (ja.at("format_version") != jb.at("format_version")) return unsupported("format_version");
+    if (ja.at("sample_rate") != jb.at("sample_rate")) return unsupported("sample_rate");
+    if (ja.at("seed") != jb.at("seed")) return unsupported("seed");
+    if (ja.at("beats_per_bar") != jb.at("beats_per_bar")) return unsupported("beats_per_bar");
+    static const json kEmptyArray = json::array();
+    const json& tempo_a = field_or(ja, "tempo_map", kEmptyArray);
+    const json& tempo_b = field_or(jb, "tempo_map", kEmptyArray);
+    if (tempo_a != tempo_b) return unsupported("tempo_map");
+
+    const json& tracks_a = ja.at("tracks");
+    const json& tracks_b = jb.at("tracks");
+    for (std::size_t i = 0; i < std::min(tracks_a.size(), tracks_b.size()); ++i)
+        if (tracks_a[i].at("voice") != tracks_b[i].at("voice"))
+            return unsupported("tracks[" + std::to_string(i) + "].voice");
+
+    const json& patterns_a = ja.at("patterns");
+    const json& patterns_b = jb.at("patterns");
+    for (std::size_t i = 0; i < std::min(patterns_a.size(), patterns_b.size()); ++i)
+        if (patterns_a[i].at("track") != patterns_b[i].at("track"))
+            return unsupported("patterns[" + std::to_string(i) + "].track");
+
+    const json& clips_a = field_or(ja, "arrangement", kEmptyArray);
+    const json& clips_b = field_or(jb, "arrangement", kEmptyArray);
+    for (std::size_t i = 0; i < std::min(clips_a.size(), clips_b.size()); ++i) {
+        if (clips_a[i].at("pattern") != clips_b[i].at("pattern"))
+            return unsupported("arrangement[" + std::to_string(i) + "].pattern");
+        if (clips_a[i].at("repeats") != clips_b[i].at("repeats"))
+            return unsupported("arrangement[" + std::to_string(i) + "].repeats");
+    }
+
+    // Operations can only append attachments: a's list must be a prefix of b's.
+    const json& atts_a = field_or(ja, "attachments", kEmptyArray);
+    const json& atts_b = field_or(jb, "attachments", kEmptyArray);
+    if (atts_a.size() > atts_b.size()) return unsupported("attachments");
+    for (std::size_t i = 0; i < atts_a.size(); ++i)
+        if (atts_a[i] != atts_b[i]) return unsupported("attachments");
+
+    // Everything that differs is expressible. Emit in the spec's fixed order — byte-stable.
+    // Removals first, descending: erasing a tail never shifts any index we touch later, and
+    // kept clips/patterns reference only b-valid indices (checked above), so no "in use" hits.
+    for (std::size_t i = clips_a.size(); i-- > clips_b.size();)
+        ops.push_back({{"op", "remove_clip"}, {"index", i}});
+    for (std::size_t i = patterns_a.size(); i-- > patterns_b.size();)
+        ops.push_back({{"op", "remove_pattern"}, {"index", i}});
+    for (std::size_t i = tracks_a.size(); i-- > tracks_b.size();)
+        ops.push_back({{"op", "remove_track"}, {"index", i}});
+
+    static const json kZeroDb = 0.0;   // canonical default of master/clip gain_db
+    static const json kFalse = false;  // canonical default of mute/solo (omitted at false)
+    if (ja.at("bpm") != jb.at("bpm")) ops.push_back({{"op", "set_bpm"}, {"bpm", jb.at("bpm")}});
+    if (ja.at("length_bars") != jb.at("length_bars"))
+        ops.push_back({{"op", "set_length_bars"}, {"length_bars", jb.at("length_bars")}});
+    const json& mg_a = field_or(ja, "master_gain_db", kZeroDb);
+    const json& mg_b = field_or(jb, "master_gain_db", kZeroDb);
+    if (mg_a != mg_b) ops.push_back({{"op", "set_master_gain"}, {"gain_db", mg_b}});
+
+    for (std::size_t i = 0; i < std::min(tracks_a.size(), tracks_b.size()); ++i) {
+        const json& ta = tracks_a[i];
+        const json& tb = tracks_b[i];
+        if (ta.at("name") != tb.at("name"))
+            ops.push_back({{"op", "rename_track"}, {"index", i}, {"name", tb.at("name")}});
+        if (ta.at("gain_db") != tb.at("gain_db"))
+            ops.push_back({{"op", "set_track_gain"}, {"index", i}, {"gain_db", tb.at("gain_db")}});
+        if (ta.at("pan") != tb.at("pan"))
+            ops.push_back({{"op", "set_track_pan"}, {"index", i}, {"pan", tb.at("pan")}});
+        const json& mute_b = field_or(tb, "mute", kFalse);
+        if (field_or(ta, "mute", kFalse) != mute_b)
+            ops.push_back({{"op", "set_track_mute"}, {"index", i}, {"mute", mute_b}});
+        const json& solo_b = field_or(tb, "solo", kFalse);
+        if (field_or(ta, "solo", kFalse) != solo_b)
+            ops.push_back({{"op", "set_track_solo"}, {"index", i}, {"solo", solo_b}});
+    }
+    for (std::size_t i = tracks_a.size(); i < tracks_b.size(); ++i)
+        ops.push_back({{"op", "add_track"}, {"track", tracks_b[i]}});
+
+    // Per shared pattern: keep the longest common note prefix, replace everything after it —
+    // removals descending (indices of earlier removals stay valid), additions ascending.
+    for (std::size_t i = 0; i < std::min(patterns_a.size(), patterns_b.size()); ++i) {
+        const json& notes_a = patterns_a[i].at("notes");
+        const json& notes_b = patterns_b[i].at("notes");
+        std::size_t k = 0;
+        while (k < notes_a.size() && k < notes_b.size() && notes_a[k] == notes_b[k]) ++k;
+        for (std::size_t j = notes_a.size(); j-- > k;)
+            ops.push_back({{"op", "remove_note"}, {"pattern", i}, {"index", j}});
+        for (std::size_t j = k; j < notes_b.size(); ++j)
+            ops.push_back({{"op", "add_note"}, {"pattern", i}, {"note", notes_b[j]}});
+    }
+    for (std::size_t i = patterns_a.size(); i < patterns_b.size(); ++i)
+        ops.push_back({{"op", "add_pattern"}, {"pattern", patterns_b[i]}});
+
+    // Shared clips: pattern/repeats are equal (checked above), so only position and gain can differ.
+    for (std::size_t i = 0; i < std::min(clips_a.size(), clips_b.size()); ++i) {
+        if (clips_a[i].at("start_bar") != clips_b[i].at("start_bar"))
+            ops.push_back({{"op", "move_clip"}, {"index", i}, {"start_bar", clips_b[i].at("start_bar")}});
+        const json& gain_b = field_or(clips_b[i], "gain_db", kZeroDb);
+        if (field_or(clips_a[i], "gain_db", kZeroDb) != gain_b)
+            ops.push_back({{"op", "set_clip_gain"}, {"index", i}, {"gain_db", gain_b}});
+    }
+    for (std::size_t i = clips_a.size(); i < clips_b.size(); ++i)
+        ops.push_back({{"op", "add_clip"}, {"clip", clips_b[i]}});
+
+    static const json kEmptyString = std::string();
+    for (std::size_t i = atts_a.size(); i < atts_b.size(); ++i) {
+        const json& ab = atts_b[i];
+        ops.push_back({{"op", "add_attachment"},
+                       {"path", ab.at("path")},
+                       {"kind", ab.at("kind")},
+                       {"producer", field_or(ab, "producer", kEmptyString)}});
+    }
+
+    // Safety net (spec): apply our own journal to a copy of a; it must reproduce b exactly.
+    Project work = a;
+    for (const json& o : ops) {
+        std::string apply_err;
+        if (!apply_op(work, o, apply_err)) return unsupported("(journal does not reproduce target)");
+    }
+    if (project_to_json(work) != jb) return unsupported("(journal does not reproduce target)");
     return true;
 }
 

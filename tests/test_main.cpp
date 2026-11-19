@@ -15,6 +15,7 @@
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
+#include "engine/model_json.hpp"
 #include "engine/ops.hpp"
 #include "engine/render.hpp"
 #include "engine/resample.hpp"
@@ -2287,6 +2288,156 @@ static void test_analyze() {
 
     // Determinism: analyzing the same buffer twice yields byte-identical JSON.
     CHECK(to_json(analyze_samples(s23, 2, fs)) == to_json(f23), "analyze.repeat_analysis_is_byte_identical");
+// ---- opd diff (WP-0146): diff_projects, docs/spec/operations.md §opd diff ----
+static std::string journal_text(const std::vector<nlohmann::json>& ops) {
+    std::string s;
+    for (const auto& o : ops) s += o.dump() + "\n";
+    return s;
+}
+
+// Hand-built project: 3 tracks, 3 patterns (one per track), 3 clips (one per pattern).
+static op::Project diff_base_project() {
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 4.0; p.sample_rate = 48000; p.seed = 5;
+    op::Track t0; t0.name = "Sine"; t0.voice.kind = op::VoiceKind::Sine; t0.voice.freq_hz = 220.0f;
+    op::Track t1; t1.name = "Metro"; t1.voice.kind = op::VoiceKind::Metronome;
+    op::Track t2; t2.name = "Sine2"; t2.voice.kind = op::VoiceKind::Sine; t2.voice.freq_hz = 330.0f;
+    p.tracks = {t0, t1, t2};
+    op::Pattern p0; p0.track = 0; p0.notes.push_back({0.0, 0.25});
+    op::Pattern p1; p1.track = 1; p1.notes.push_back({0.0, 1.0});
+    op::Pattern p2; p2.track = 2; p2.notes.push_back({0.5, 0.5});
+    p.patterns = {p0, p1, p2};
+    p.arrangement = {{0, 0.0, 1, 0.0}, {1, 1.0, 1, 0.0}, {2, 2.0, 1, 0.0}};
+    return p;
+}
+
+// Supported-operation journal sized from `a` (indices computed from a's counts, so it is valid
+// for every golden). Covers every operation family the diff is expected to reproduce.
+static std::vector<nlohmann::json> supported_journal(const op::Project& a) {
+    using nlohmann::json;
+    const int nt = static_cast<int>(a.tracks.size());
+    const int np = static_cast<int>(a.patterns.size());
+    const int nc = static_cast<int>(a.arrangement.size());
+    const int n0 = static_cast<int>(a.patterns[0].notes.size());
+    std::vector<json> ops;
+    ops.push_back(json{{"op", "set_bpm"}, {"bpm", 97.5}});
+    ops.push_back(json{{"op", "set_length_bars"}, {"length_bars", 9.0}});
+    ops.push_back(json{{"op", "set_master_gain"}, {"gain_db", -3.0}});
+    ops.push_back(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -2.5}});
+    ops.push_back(json{{"op", "set_track_pan"}, {"index", 0}, {"pan", 0.25}});
+    ops.push_back(json{{"op", "set_track_mute"}, {"index", 0}, {"mute", true}});
+    ops.push_back(json{{"op", "set_track_solo"}, {"index", 0}, {"solo", true}});
+    ops.push_back(json{{"op", "rename_track"}, {"index", 0}, {"name", "Renamed"}});
+    ops.push_back(json{{"op", "add_track"},
+                       {"track", json::parse(R"({"name":"Added","gain_db":0.0,"pan":0.0,)"
+                                             R"("voice":{"kind":"sine","freq_hz":330.0}})")}});
+    ops.push_back(json{{"op", "add_pattern"},
+                       {"pattern", json::parse(R"({"track":)" + std::to_string(nt) +
+                                               R"(,"notes":[{"t":0.0,"dur":1.0}]})")}});
+    ops.push_back(json{{"op", "remove_note"}, {"pattern", 0}, {"index", n0 - 1}});
+    ops.push_back(json{{"op", "add_note"}, {"pattern", 0}, {"note", json::parse(R"({"t":0.5,"dur":0.25,"vel":0.5})")}});
+    ops.push_back(json{{"op", "add_clip"},
+                       {"clip", json::parse(R"({"pattern":)" + std::to_string(np) +
+                                            R"(,"start_bar":2.0,"repeats":2})")}});
+    ops.push_back(json{{"op", "move_clip"}, {"index", nc}, {"start_bar", 3.0}});
+    ops.push_back(json{{"op", "set_clip_gain"}, {"index", nc}, {"gain_db", -6.0}});
+    ops.push_back(json{{"op", "add_attachment"}, {"path", "stems/x.wav"}, {"kind", "stem"}, {"producer", "test"}});
+    return ops;
+}
+
+static void test_opd_diff() {
+    using nlohmann::json;
+    std::string err;
+    std::vector<json> ops;
+    const std::string gdir = std::string(OP_TEST_DATA) + "/fixtures/goldens/";
+
+    // (a) identical projects -> success, empty journal
+    op::Project demo;
+    CHECK(op::load_project(gdir + "demo.opj", demo, err), "diff.load_demo");
+    ops.push_back(json{{"op", "stale"}});  // must be cleared on success
+    CHECK(op::diff_projects(demo, demo, ops, err) && ops.empty() && err.empty(), "diff.identical_empty_ok");
+
+    // (b) every golden: hand-made supported journal -> b; diff(a,b) replayed on a gives b
+    const char* names[] = {"demo", "mixer", "arranged", "panorama", "pitched", "tempo"};
+    for (const char* nm : names) {
+        const std::string check_name = std::string("diff.roundtrip_") + nm;
+        op::Project a, b;
+        std::string e;
+        bool ok = op::load_project(gdir + nm + ".opj", a, e);
+        b = a;
+        ok = ok && op::apply_journal(b, journal_text(supported_journal(a)), e);
+        std::vector<json> dops, dops2;
+        ok = ok && op::diff_projects(a, b, dops, e) && !dops.empty();
+        ok = ok && op::diff_projects(a, b, dops2, e) && journal_text(dops) == journal_text(dops2);  // determinism
+        op::Project c = a;
+        ok = ok && op::apply_journal(c, journal_text(dops), e) &&
+             op::project_to_json(c).dump() == op::project_to_json(b).dump();
+        CHECK(ok, check_name.c_str());
+    }
+
+    // (c) exact three-op example from the spec
+    op::Project ex = demo;
+    std::string ee;
+    bool built = op::apply_op(ex, json{{"op", "set_bpm"}, {"bpm", 90.0}}, ee) &&
+                 op::apply_op(ex, json{{"op", "set_master_gain"}, {"gain_db", -3.0}}, ee) &&
+                 op::apply_op(ex, json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -2.5}}, ee);
+    std::vector<json> eops;
+    CHECK(built && op::diff_projects(demo, ex, eops, ee) &&
+              journal_text(eops) ==
+                  "{\"bpm\":90.0,\"op\":\"set_bpm\"}\n"
+                  "{\"gain_db\":-3.0,\"op\":\"set_master_gain\"}\n"
+                  "{\"gain_db\":-2.5,\"index\":0,\"op\":\"set_track_gain\"}\n",
+          "diff.example_text_exact");
+
+    // (d) order rules: removals descending, remove_clip < remove_pattern < remove_track, then set_bpm
+    const op::Project big = diff_base_project();
+    op::Project small = big;
+    small.tracks.resize(1);
+    small.patterns.resize(1);
+    small.arrangement.resize(1);
+    small.bpm = 133.0;
+    std::vector<json> dord;
+    bool dok = op::diff_projects(big, small, dord, ee);
+    CHECK(dok && journal_text(dord) ==
+                     "{\"index\":2,\"op\":\"remove_clip\"}\n"
+                     "{\"index\":1,\"op\":\"remove_clip\"}\n"
+                     "{\"index\":2,\"op\":\"remove_pattern\"}\n"
+                     "{\"index\":1,\"op\":\"remove_pattern\"}\n"
+                     "{\"index\":2,\"op\":\"remove_track\"}\n"
+                     "{\"index\":1,\"op\":\"remove_track\"}\n"
+                     "{\"bpm\":133.0,\"op\":\"set_bpm\"}\n",
+          "diff.removal_order_exact");
+    op::Project rp = big;
+    CHECK(dok && op::apply_journal(rp, journal_text(dord), ee) &&
+              op::project_to_json(rp).dump() == op::project_to_json(small).dump(),
+          "diff.removal_order_replays");
+
+    // (e) unsupported differences: exact field strings, ops empty, nothing emitted
+    const op::Project base = diff_base_project();
+    auto expect_unsupported = [&](const op::Project& y, const std::string& field) {
+        std::vector<json> o;
+        o.push_back(json{{"op", "stale"}});
+        std::string e;
+        return !op::diff_projects(base, y, o, e) && o.empty() && e == "unsupported difference: " + field;
+    };
+    op::Project y = base;
+    y.seed = base.seed + 1;
+    CHECK(expect_unsupported(y, "seed"), "diff.unsupported_seed");
+    y = base;
+    y.sample_rate = 44100;
+    CHECK(expect_unsupported(y, "sample_rate"), "diff.unsupported_sample_rate");
+    y = base;
+    y.tracks[0].voice.freq_hz = 440.0f;
+    CHECK(expect_unsupported(y, "tracks[0].voice"), "diff.unsupported_voice_0");
+    y = base;
+    y.tempo_map = {op::TempoPoint{0.0, 120.0}};
+    CHECK(expect_unsupported(y, "tempo_map"), "diff.unsupported_tempo_map");
+
+    // (f) fixed check order: seed is reported before beats_per_bar
+    y = base;
+    y.seed = base.seed + 1;
+    y.beats_per_bar = 3;
+    CHECK(expect_unsupported(y, "seed"), "diff.unsupported_seed_before_beats");
 }
 
 int main() {
@@ -2318,6 +2469,7 @@ int main() {
     test_resample();
     test_project_bytes();
     test_analyze();
+    test_opd_diff();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

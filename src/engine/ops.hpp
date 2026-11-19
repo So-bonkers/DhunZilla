@@ -5,6 +5,7 @@
 #pragma once
 #include <cstddef>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -41,6 +42,21 @@ struct JournalOutcome {
 //   if (!op::apply_journal(proj, R"({"op":"set_bpm","bpm":90})\n", err, &oc)) { /* unchanged */ }
 bool apply_journal(Project& p, const std::string& jsonl_text, std::string& err,
                    JournalOutcome* outcome = nullptr);
+
+// Build the journal of existing operations that transforms `a` into `b` (docs/spec/operations.md
+// §opd diff): ops is cleared first, filled in the spec's fixed emission order, and left empty on
+// failure. "Equal" means equal canonical JSON (project_to_json), i.e. equal saved bytes. Fields
+// no operation can change (format_version, sample_rate, seed, beats_per_bar, tempo_map, existing
+// tracks' voice, patterns' track, clips' pattern/repeats, non-prefix attachments) make it return
+// false with err "unsupported difference: <field>" (0-based decimal indices). As a safety net the
+// journal is applied to a copy of `a` and must reproduce b; otherwise err ends in
+// "(journal does not reproduce target)". Example:
+//   std::vector<nlohmann::json> ops; std::string err;
+//   if (op::diff_projects(a, b, ops, err)) {  // applying ops to a yields exactly b
+//       for (const auto& o : ops) std::printf("%s\n", o.dump().c_str());
+//   }
+bool diff_projects(const Project& a, const Project& b, std::vector<nlohmann::json>& ops,
+                   std::string& err);
 
 // Undo/redo over apply_op using whole-project snapshots (spec §Undo/redo): projects are small,
 // snapshots are boring and obviously correct. Cap 256 undo entries — the oldest is dropped.

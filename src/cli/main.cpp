@@ -32,6 +32,7 @@ static void usage() {
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
         "  opd attach <proj.opj> --path P --kind stem|transcription|other [--producer S] [-o out]\n"
         "  opd apply <proj.opj> <ops.opjl> [-o out.opj]   (apply a JSON-Lines ops journal, all-or-nothing)\n"
+        "  opd diff <a.opj> <b.opj> -o <edits.opjl>   (write the journal that transforms a into b)\n"
         "  opd opj2mid <in.opj> -o <out.mid>\n"
         "  opd pack <in.opj> -o <song.opd>    (project + samples + attachments in one file)\n"
         "  opd unpack <song.opd> -d <out-dir>\n"
@@ -328,6 +329,36 @@ static int cmd_apply(int argc, char** argv) {
     return 0;
 }
 
+// opd diff (docs/spec/operations.md §opd diff): the output file is opened only after the diff
+// succeeded, so a usage/not-found/parse/diff failure never creates or modifies it.
+static int cmd_diff(int argc, char** argv) {
+    if (argc < 3) { usage(); return fail("usage", "diff needs <a.opj> <b.opj> -o <edits.opjl>"); }
+    const std::string a_path = argv[1], b_path = argv[2];
+    std::string out;
+    for (int i = 3; i < argc; ++i)
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+        else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
+    if (out.empty()) { usage(); return fail("usage", "diff needs -o <edits.opjl>"); }
+
+    std::string err;
+    if (!fs::exists(a_path)) return fail("not_found", a_path);
+    if (!fs::exists(b_path)) return fail("not_found", b_path);
+    op::Project a, b;
+    if (!op::load_project(a_path, a, err)) return fail("parse", err);
+    if (!op::load_project(b_path, b, err)) return fail("parse", err);
+
+    std::vector<nlohmann::json> ops;
+    if (!op::diff_projects(a, b, ops, err)) return fail("diff", err);
+
+    std::ofstream of(out, std::ios::binary | std::ios::trunc);
+    if (!of) return fail("write", "cannot open '" + out + "' for writing");
+    for (const auto& o : ops) of << o.dump() << "\n";  // zero ops → zero-byte file (spec)
+    of.close();
+    if (!of) return fail("write", "cannot write '" + out + "'");
+    std::printf("diff: %zu op(s) -> %s\n", ops.size(), out.c_str());
+    return 0;
+}
+
 static int cmd_info(int argc, char** argv) {
     if (argc < 2) { usage(); return fail("usage", "info needs a file"); }
     const std::string path = argv[1];
@@ -421,6 +452,7 @@ int main(int argc, char** argv) {
     if (cmd == "import-midi") return cmd_import_midi(argc - 1, argv + 1);
     if (cmd == "attach") return cmd_attach(argc - 1, argv + 1);
     if (cmd == "apply") return cmd_apply(argc - 1, argv + 1);
+    if (cmd == "diff") return cmd_diff(argc - 1, argv + 1);
     if (cmd == "opj2mid") return cmd_opj2mid(argc - 1, argv + 1);
     if (cmd == "pack") return cmd_pack(argc - 1, argv + 1);
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);

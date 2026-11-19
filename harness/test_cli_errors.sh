@@ -80,6 +80,19 @@ check analyze_ok_json_flag  0 "$OPD" analyze "$TMP/ok.wav" --json
 "$OPD" analyze "$TMP/ok.wav" > "$TMP/a1.json" 2>/dev/null
 "$OPD" analyze "$TMP/ok.wav" > "$TMP/a2.json" 2>/dev/null
 if [ -s "$TMP/a1.json" ] && cmp -s "$TMP/a1.json" "$TMP/a2.json"; then echo "PASS analyze_determinism (byte-identical JSON)"; else echo "FAIL analyze_determinism"; fails=$((fails+1)); fi
+# --- opd diff (WP-0146): journal CLI contract per docs/spec/operations.md §opd diff
+check diff_no_args         2 "$OPD" diff
+check diff_missing_out     2 "$OPD" diff "$TMP/ap.opj" "$TMP/ap_out.opj"
+check diff_not_found       3 "$OPD" diff "$TMP/nope.opj" "$TMP/ap_out.opj" -o "$TMP/d_nf.opjl"
+check diff_identical_ok    0 "$OPD" diff "$ROOT/tests/fixtures/goldens/demo.opj" "$ROOT/tests/fixtures/goldens/demo.opj" -o "$TMP/d_id.opjl"
+if [ -f "$TMP/d_id.opjl" ] && [ ! -s "$TMP/d_id.opjl" ]; then echo "PASS diff_identical_zero_bytes"; else echo "FAIL diff_identical_zero_bytes"; fails=$((fails+1)); fi
+check diff_ok              0 "$OPD" diff "$TMP/ap.opj" "$TMP/ap_out.opj" -o "$TMP/d_ok.opjl"
+"$OPD" apply "$TMP/ap.opj" "$TMP/d_ok.opjl" -o "$TMP/d_rt.opj" >/dev/null 2>&1
+if cmp -s "$TMP/d_rt.opj" "$TMP/ap_out.opj"; then echo "PASS diff_roundtrip_byte_identical"; else echo "FAIL diff_roundtrip_byte_identical"; fails=$((fails+1)); fi
+sed 's/"seed": 42/"seed": 43/' "$ROOT/tests/fixtures/goldens/demo.opj" > "$TMP/seed43.opj"
+err="$("$OPD" diff "$ROOT/tests/fixtures/goldens/demo.opj" "$TMP/seed43.opj" -o "$TMP/never_d.opjl" 2>&1 >/dev/null)"; got=$?
+if [ "$got" = 5 ] && [ "$err" = "error: diff: unsupported difference: seed" ]; then echo "PASS diff_unsupported (exit 5, stderr names field)"; else echo "FAIL diff_unsupported: exit $got stderr [$err]"; fails=$((fails+1)); fi
+if [ ! -e "$TMP/never_d.opjl" ]; then echo "PASS diff_unsupported_no_output"; else echo "FAIL diff_unsupported_no_output"; fails=$((fails+1)); fi
 
 echo "test_cli_errors: $fails failures"
 exit $((fails > 0 ? 1 : 0))
