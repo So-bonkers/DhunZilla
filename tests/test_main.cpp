@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <unistd.h>  // getpid() for per-test unique temp dirs (WP-0160 convention)
 
 #include "doc/document.hpp"
 #include "engine/analyze.hpp"
@@ -21,6 +22,7 @@
 #include "engine/render.hpp"
 #include "engine/resample.hpp"
 #include "engine/rng.hpp"
+#include "engine/sample_index.hpp"
 #include "engine/wav.hpp"
 
 #include "resample_reference.hpp"  // frozen pre-WP-0150 direct algorithm (bit-compare target)
@@ -3822,6 +3824,135 @@ static void test_aiff() {
     }
 }
 
+// --- opd samples index (WP-0163): docs/spec/sample-index.md. Fixture bytes are explicit LE/BE assembly
+// (mirrors the reader's expectations); the expected hashes below were computed with an independent
+// FNV-1a implementation over those exact byte strings, so the JSON assertion is not self-referential.
+namespace si_t {
+
+std::string wav_pcm16(uint16_t channels, uint32_t rate, const std::vector<int16_t>& pcm) {
+    auto u16 = [](std::string& s, uint16_t v) {
+        s += static_cast<char>(v & 0xffu);
+        s += static_cast<char>((v >> 8) & 0xffu);
+    };
+    auto u32 = [](std::string& s, uint32_t v) {
+        for (int i = 0; i < 4; ++i) s += static_cast<char>((v >> (8 * i)) & 0xffu);
+    };
+    std::string data;
+    for (const int16_t v : pcm) u16(data, static_cast<uint16_t>(v));
+    const uint32_t block_align = static_cast<uint32_t>(channels) * 2u;
+    std::string out;
+    out += "RIFF";
+    u32(out, 36u + static_cast<uint32_t>(data.size()));
+    out += "WAVE";
+    out += "fmt ";
+    u32(out, 16);
+    u16(out, 1);  // PCM
+    u16(out, channels);
+    u32(out, rate);
+    u32(out, rate * block_align);
+    u16(out, static_cast<uint16_t>(block_align));
+    u16(out, 16);  // bits
+    out += "data";
+    u32(out, static_cast<uint32_t>(data.size()));
+    out += data;
+    return out;
+}
+
+void put(const std::filesystem::path& p, const std::string& bytes) {
+    std::ofstream f(p, std::ios::binary);
+    f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+}  // namespace si_t
+
+static void test_sample_index() {
+    namespace fs = std::filesystem;
+    using op::sample_index::build_sample_index;
+    using op::sample_index::fnv1a64_hex;
+
+    const unsigned char* empty = reinterpret_cast<const unsigned char*>("");
+    CHECK(fnv1a64_hex(empty, 0) == "cbf29ce484222325", "samples.fnv1a_empty");
+    const std::string one = "a";
+    CHECK(fnv1a64_hex(reinterpret_cast<const unsigned char*>(one.data()), 1) == "af63dc4c8601ec8c",
+          "samples.fnv1a_a");
+
+    // Per-test unique temp dir (WP-0160 convention), removed at the end of this function.
+    const std::string pid = std::to_string(static_cast<long>(::getpid()));
+    const fs::path root = fs::temp_directory_path() / ("op_samples_wp0163_" + pid);
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "sub/deep");
+    fs::create_directories(root / ".hiddendir");
+    fs::create_directories(root / "empty");
+
+    const std::string a_bytes = si_t::wav_pcm16(2, 48000, {16384, -16384, 8192, -8192});  // peak 0.5
+    si_t::put(root / "a.wav", a_bytes);
+    si_t::put(root / "UPPER.WAV", a_bytes);            // uppercase ext: same bytes → same hash
+    si_t::put(root / "silence.wav", si_t::wav_pcm16(1, 48000, std::vector<int16_t>(48, 0)));
+    si_t::put(root / ".hidden.wav", a_bytes);          // hidden file: skipped
+    si_t::put(root / ".hiddendir/x.wav", a_bytes);     // hidden dir: not descended into
+    si_t::put(root / "sub/deep/.keep", "x");           // hidden in nested dir: skipped
+    si_t::put(root / "notes.txt", "hello");            // non-audio ext: ignored silently
+    si_t::put(root / "bad.wav", "not a wav at all!!"); // 18 bytes < 44 → reader error, listed under errors
+
+    aiff_t::Bytes pcm_be;
+    for (const int v : {16384, -16384, 8192, -8192, 16384, -16384, 8192, -8192})  // 4 stereo frames
+        aiff_t::app_u16(pcm_be, static_cast<uint16_t>(v));
+    const aiff_t::Bytes b_aiff = aiff_t::aiff_file(2, 4, 16, 48000, pcm_be);
+    si_t::put(root / "sub/b.aiff", std::string(b_aiff.begin(), b_aiff.end()));
+
+    fs::create_symlink("a.wav", root / "link.wav", ec);   // symlink to file: skipped
+    fs::create_directory_symlink("sub", root / "symdir", ec);  // symlink to dir: not followed
+
+    std::string out, err;
+    CHECK(build_sample_index(root.string(), out, err), "samples.tree_build_ok");
+
+    // Byte-exact expected JSON (single line + trailing newline). Key order, no spaces, %.6f durations,
+    // %.3f peak_dbfs (20*log10(0.5) = -6.021), null peak for silence, byte-wise sort
+    // ("UPPER.WAV" < "a.wav" < "silence.wav" < "sub/b.aiff"), hidden entries absent, symlinks absent,
+    // notes.txt absent, bad.wav under errors with the reader's verbatim text.
+    const std::string want =
+        "{\"version\":1,\"files\":["
+        "{\"path\":\"UPPER.WAV\",\"format\":\"wav\",\"sample_rate\":48000,\"channels\":2,\"frames\":2,"
+        "\"duration_s\":0.000042,\"peak_dbfs\":-6.021,\"hash\":\"5b4e7faeeeefe692\"},"
+        "{\"path\":\"a.wav\",\"format\":\"wav\",\"sample_rate\":48000,\"channels\":2,\"frames\":2,"
+        "\"duration_s\":0.000042,\"peak_dbfs\":-6.021,\"hash\":\"5b4e7faeeeefe692\"},"
+        "{\"path\":\"silence.wav\",\"format\":\"wav\",\"sample_rate\":48000,\"channels\":1,\"frames\":48,"
+        "\"duration_s\":0.001000,\"peak_dbfs\":null,\"hash\":\"5127a9f9cd28931f\"},"
+        "{\"path\":\"sub/b.aiff\",\"format\":\"aiff\",\"sample_rate\":48000,\"channels\":2,\"frames\":4,"
+        "\"duration_s\":0.000083,\"peak_dbfs\":-6.021,\"hash\":\"d1adb4fd9f17869e\"}"
+        "],\"errors\":[{\"path\":\"bad.wav\",\"error\":\"file too small for canonical WAV\"}]}\n";
+    CHECK(out == want, "samples.tree_exact_json");
+
+    CHECK(out.find("link.wav") == std::string::npos && out.find("symdir") == std::string::npos &&
+              out.find(".hidden") == std::string::npos && out.find("notes.txt") == std::string::npos,
+          "samples.symlinks_hidden_and_nonaudio_absent");
+
+    std::string empty_out;
+    CHECK(build_sample_index((root / "empty").string(), empty_out, err) &&
+              empty_out == "{\"version\":1,\"files\":[],\"errors\":[]}\n",
+          "samples.empty_dir_arrays");
+
+    const std::string twice_before = out;
+    CHECK(build_sample_index(root.string(), out, err) && out == twice_before,
+          "samples.determinism_identical_rerun");
+
+    fs::remove_all(root, ec);
+
+    // Nonexistent dir → false with err = the dir path (and nothing written to json_out by contract).
+    const std::string nope = (fs::temp_directory_path() / ("op_samples_wp0163_missing_" + pid)).string();
+    std::string e2;
+    CHECK(!build_sample_index(nope, out, e2) && e2 == nope, "samples.nonexistent_dir_false");
+
+    // A regular file passed as dir → false with err = the path, too.
+    const fs::path not_a_dir = fs::temp_directory_path() / ("op_samples_wp0163_file_" + pid);
+    si_t::put(not_a_dir, "x");
+    std::string e3;
+    CHECK(!build_sample_index(not_a_dir.string(), out, e3) && e3 == not_a_dir.string(),
+          "samples.file_as_dir_false");
+    fs::remove(not_a_dir, ec);
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -3860,6 +3991,7 @@ int main() {
     test_step_sequencer();
     test_loop_region();
     test_sampler_trim();
+    test_sample_index();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     return g_failures;
 }

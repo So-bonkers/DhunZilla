@@ -20,6 +20,7 @@
 #include "engine/model.hpp"
 #include "engine/ops.hpp"
 #include "engine/render.hpp"
+#include "engine/sample_index.hpp"
 #include "engine/wav.hpp"
 
 namespace fs = std::filesystem;
@@ -41,7 +42,8 @@ static void usage() {
         "  opd unpack <song.opd> -d <out-dir>\n"
         "  opd info <file>   (.wav | .opj | .opd | .mid)\n"
         "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
-        "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n");
+        "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
+        "  opd samples <dir> [-o <index.json>]   (JSON index of the audio files under a directory)\n");
 }
 
 static int fail(const char* code, const std::string& detail) {
@@ -555,6 +557,38 @@ static int cmd_steps(int argc, char** argv) {
     return 0;
 }
 
+// opd samples <dir> [-o <index.json>] (WP-0163, docs/spec/sample-index.md): deterministic JSON index of
+// the audio files under a directory. The index is built BEFORE any output is opened, so exit 2/3 never
+// creates the -o file. Exit codes: 0 ok (even with "errors"), 2 usage, 3 dir missing/not a directory,
+// 5 cannot write the -o file.
+static int cmd_samples(int argc, char** argv) {
+    std::string dir, out_path;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) {
+            out_path = argv[++i];
+        } else if (!dir.empty() || argv[i][0] == '-') {  // extra positional, unknown option, or bare "-o"
+            usage();
+            return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        } else {
+            dir = argv[i];
+        }
+    }
+    if (dir.empty()) { usage(); return fail("usage", "samples needs <dir>"); }
+
+    std::string json, err;
+    if (!op::sample_index::build_sample_index(dir, json, err)) return fail("not_found", err);  // err = dir
+    if (out_path.empty()) {
+        std::fwrite(json.data(), 1, json.size(), stdout);
+        return 0;
+    }
+    std::ofstream of(out_path, std::ios::binary | std::ios::trunc);
+    if (!of) return fail("write", "cannot open '" + out_path + "' for writing");
+    of.write(json.data(), static_cast<std::streamsize>(json.size()));
+    of.close();
+    if (!of) return fail("write", "cannot write '" + out_path + "'");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -572,6 +606,7 @@ int main(int argc, char** argv) {
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
+    if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
     usage();
     return 2;
 }
