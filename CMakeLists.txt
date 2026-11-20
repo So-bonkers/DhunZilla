@@ -20,6 +20,7 @@ target_include_directories(opengine PUBLIC src third_party)
 # WP-0141: JUCE-free document layer (open/save/dirty, undo/redo, gestures) for the app + CLI.
 add_library(dzdoc STATIC src/doc/document.cpp)
 target_link_libraries(dzdoc PUBLIC opengine)
+target_sources(opengine PRIVATE src/engine/normalize.cpp)  # WP-0169
 
 add_executable(opd src/cli/main.cpp)
 target_link_libraries(opd PRIVATE opengine)
@@ -30,8 +31,13 @@ target_link_libraries(op_tests PRIVATE opengine dzdoc)
 target_compile_definitions(op_tests PRIVATE OP_TEST_DATA="${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME unit COMMAND op_tests)
 
+add_executable(op_normalize_tests tests/test_normalize.cpp)
+target_link_libraries(op_normalize_tests PRIVATE opengine)
+add_test(NAME normalize COMMAND op_normalize_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc opd op_tests)
+list(APPEND DZ_OUR_TARGETS op_normalize_tests)  # WP-0169
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

@@ -18,6 +18,7 @@
 #include "engine/dsp.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
+#include "engine/normalize.hpp"
 #include "engine/ops.hpp"
 #include "engine/render.hpp"
 #include "engine/wav.hpp"
@@ -41,6 +42,7 @@ static void usage() {
         "  opd unpack <song.opd> -d <out-dir>\n"
         "  opd info <file>   (.wav | .opj | .opd | .mid)\n"
         "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
+        "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n");
 }
 
@@ -506,6 +508,74 @@ static int cmd_analyze(int argc, char** argv) {
     return 0;
 }
 
+// opd normalize (WP-0169, docs/spec/normalize.md): gain a WAV to a target integrated LUFS without the
+// sample peak exceeding a ceiling; mono input is duplicated to stereo. All usage checks happen before
+// the input file is touched and nothing is written on error. Exit 2 usage, 3 not-found, 4 parse,
+// 5 normalize (sample rate / plan_gain) or write.
+static int cmd_normalize(int argc, char** argv) {
+    std::string in_path, out_path, lufs_arg;
+    bool has_lufs = false;
+    std::string ceiling_arg;  // raw string for error messages ("<C as given>")
+    op::wav::SampleFormat fmt = op::wav::SampleFormat::Pcm16;  // default: pcm16 (same as render)
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
+        else if (!std::strcmp(argv[i], "--lufs") && i + 1 < argc) { lufs_arg = argv[++i]; has_lufs = true; }
+        else if (!std::strcmp(argv[i], "--ceiling-db") && i + 1 < argc) ceiling_arg = argv[++i];
+        else if (!std::strcmp(argv[i], "--format") && i + 1 < argc) {
+            const std::string f = argv[++i];  // validated here, before the input is touched (as in render)
+            if (f == "pcm16") fmt = op::wav::SampleFormat::Pcm16;
+            else if (f == "pcm24") fmt = op::wav::SampleFormat::Pcm24;
+            else if (f == "f32") fmt = op::wav::SampleFormat::F32;
+            else { usage(); return fail("usage", "unknown format '" + f + "' (expected pcm16, pcm24 or f32)"); }
+        }
+        else if (!in_path.empty() || argv[i][0] == '-') {  // extra positional or option without value
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        }
+        else in_path = argv[i];
+    }
+    if (in_path.empty()) { usage(); return fail("usage", "normalize needs <in.wav>"); }
+    if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
+    if (!has_lufs) { usage(); return fail("usage", "normalize needs --lufs <T>"); }
+    double target_lufs = 0.0, ceiling_db = -1.0;  // ceiling default per spec
+    if (!parse_bar_value(lufs_arg, target_lufs))
+        { usage(); return fail("usage", "bad --lufs value '" + lufs_arg + "'"); }
+    if (!ceiling_arg.empty() && !parse_bar_value(ceiling_arg, ceiling_db))
+        { usage(); return fail("usage", "bad --ceiling-db value '" + ceiling_arg + "'"); }
+    if (target_lufs < -70.0 || target_lufs > 0.0) { usage(); return fail("usage", "--lufs must be in [-70, 0]"); }
+    if (ceiling_db < -30.0 || ceiling_db > 0.0)
+        { usage(); return fail("usage", "--ceiling-db must be in [-30, 0]"); }
+
+    if (!fs::exists(in_path)) return fail("not_found", in_path);
+    auto rr = op::wav::read_audio(in_path);  // WAV or AIFF, dispatched by file signature (WP-0158)
+    if (!rr.ok) return fail("parse", rr.error);
+    if (rr.sample_rate < 8000 || rr.sample_rate > 192000)
+        return fail("normalize", "unsupported sample rate " + std::to_string(rr.sample_rate));
+
+    // Mono input is duplicated into stereo (L = R): loudness is measured on that stereo buffer, so the
+    // written file measures at the target, and the output is always stereo (docs/spec/normalize.md).
+    std::vector<float> samples;
+    if (rr.channels == 1) {
+        samples.reserve(rr.samples.size() * 2u);
+        for (const float s : rr.samples) { samples.push_back(s); samples.push_back(s); }
+    } else {
+        samples = rr.samples;
+    }
+
+    op::normalize::GainPlan plan;
+    std::string err;
+    if (!op::normalize::plan_gain(samples, 2, rr.sample_rate, target_lufs, ceiling_db, plan, err))
+        return fail("normalize", err);
+    op::normalize::apply_gain_db(samples, plan.gain_db);
+
+    op::wav::StereoBuffer buf;
+    buf.sample_rate = rr.sample_rate;  // output stays at the input sample rate
+    buf.interleaved = std::move(samples);
+    if (!op::wav::write_wav_stereo(out_path, buf, fmt, err)) return fail("write", err);
+    std::printf("{\"input_lufs\":%.4f,\"input_peak_dbfs\":%.4f,\"gain_db\":%.4f,\"limited\":%s}\n",
+                plan.input_lufs, plan.input_peak_dbfs, plan.gain_db, plan.limited ? "true" : "false");
+    return 0;
+}
+
 // Parse a decimal argument that must be all digits and fit in [0, max]. Rejects "", "-1", "1.0",
 // "x" and anything that would overflow. Example: parse_decimal("16", 256, v) → true, v == 16.
 static bool parse_decimal(const std::string& s, long long max, long long& out) {
@@ -571,6 +641,7 @@ int main(int argc, char** argv) {
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
+    if (cmd == "normalize") return cmd_normalize(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     usage();
     return 2;
