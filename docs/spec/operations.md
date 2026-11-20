@@ -331,3 +331,34 @@ ruleset). Argument checks, in this order, error strings `set_synth_params: <reas
 Keys not mentioned are left as they are. Setting every param to `null` restores a never-edited voice and the
 canonical save is then byte-identical to the original legacy bytes. Undo/redo: whole-project snapshots, byte-exact.
 `opd diff` does not emit this op.
+
+## Pattern length operations — additive (WP-0162)
+Two more operations, same Apply semantics and strict-argument rules as above (`check_keys`, missing/mistyped
+rejection, integer-only indices, `<op>: <reason>` errors). Semantics of the field: project-model.md §Explicit
+pattern length.
+
+| op | arguments | effect |
+|---|---|---|
+| `set_pattern_length` | `pattern`, `length_beats` | `patterns[pattern].length_beats = length_beats` |
+| `clear_pattern_length` | `pattern` | removes `length_beats` from that pattern; no-op success when absent |
+
+- `set_pattern_length` validation order: keys (`op, pattern, length_beats` only → `unknown argument '<key>'`);
+  `pattern` integer in `[0, #patterns)` (`missing argument 'pattern'` / `'pattern' must be an integer` /
+  `'pattern' out of range`); `length_beats` a JSON number (`missing argument 'length_beats'` /
+  `'length_beats' must be a number`). The positivity/finiteness rule is NOT re-implemented; the model parse
+  gives `set_pattern_length: pattern.length_beats must be a finite number > 0` for `0`, negatives, etc.
+- `clear_pattern_length`: keys (`op, pattern` only), then `pattern` as above. A successful call on a pattern
+  without the field still pushes an undo snapshot (like `clear_loop`).
+- Undo/redo: whole-project snapshots, byte-exact per the invariant above.
+
+### `opd diff` and pattern length (WP-0162 amendment)
+`length_beats` is expressible, never an "unsupported difference". New emission step **7b**, after step 7 (note
+edits) and before step 8 (`add_pattern`): for pattern i = 0.. (i < min pattern count), `set_pattern_length`
+(`length_beats` = b's canonical value) if b has the field and a lacks it or its value differs, else
+`clear_pattern_length` if a has it and b does not. Patterns added by step 8 carry their own `length_beats` in
+the `pattern` JSON. Projects without the field produce exactly the same journals as before.
+
+### `opd steps` default width (WP-0162 amendment)
+When `--steps` is NOT given and the pattern has `length_beats`, the width is `ceil(length_beats * 4)` clamped
+to `[1, 256]` (so `length_beats` 4 gives 16 steps, 8 gives 32, 0.5 gives 2). An explicit `--steps N` always
+wins. Without `length_beats` the default stays 16. `step_grid` itself is unchanged.

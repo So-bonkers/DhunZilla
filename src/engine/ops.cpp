@@ -377,6 +377,15 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
                 else kept.push_back(n);
             }
             if (any) pj["notes"] = std::move(kept);
+        } else if (name == "set_pattern_length") {  // WP-0162: positivity/finiteness come from the model parse
+            if (!check_keys(op_json, {"pattern", "length_beats"}, err)) return false;
+            if (!arg_index(op_json, "pattern", j["patterns"].size(), idx, err) ||
+                !has_number(op_json, "length_beats", err)) return false;
+            j["patterns"][idx]["length_beats"] = op_json.at("length_beats");
+        } else if (name == "clear_pattern_length") {
+            if (!check_keys(op_json, {"pattern"}, err)) return false;
+            if (!arg_index(op_json, "pattern", j["patterns"].size(), idx, err)) return false;
+            j["patterns"][idx].erase("length_beats");  // no-op when absent; still a successful (undoable) apply
         } else {
             err = "unknown op"; return false;
         }
@@ -575,6 +584,17 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
             ops.push_back({{"op", "remove_note"}, {"pattern", i}, {"index", j}});
         for (std::size_t j = k; j < notes_b.size(); ++j)
             ops.push_back({{"op", "add_note"}, {"pattern", i}, {"note", notes_b[j]}});
+    }
+    // Step 7b (WP-0162): pattern length on shared patterns, after the note edits and before
+    // add_pattern — patterns added by step 8 carry their own length_beats in the pattern JSON.
+    for (std::size_t i = 0; i < std::min(patterns_a.size(), patterns_b.size()); ++i) {
+        const bool has_a = patterns_a[i].contains("length_beats");
+        const bool has_b = patterns_b[i].contains("length_beats");
+        if (has_b && (!has_a || patterns_a[i].at("length_beats") != patterns_b[i].at("length_beats")))
+            ops.push_back({{"op", "set_pattern_length"}, {"pattern", i},
+                           {"length_beats", patterns_b[i].at("length_beats")}});
+        else if (has_a && !has_b)
+            ops.push_back({{"op", "clear_pattern_length"}, {"pattern", i}});
     }
     for (std::size_t i = patterns_a.size(); i < patterns_b.size(); ++i)
         ops.push_back({{"op", "add_pattern"}, {"pattern", patterns_b[i]}});

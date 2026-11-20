@@ -461,3 +461,30 @@ failure wins, each only when its key is present). Messages are exact:
 5. `resonance` not a number in `[0.5, 20]` → `voice.resonance must be a number in [0.5, 20]`.
 `opd` reports these like every other parse error (`error: parse: <message>`, exit 4).
 `opd diff` is unchanged: a synth-params difference is `unsupported difference: tracks[i].voice`.
+
+## Explicit pattern length — additive (WP-0162)
+A pattern accepts an optional `"length_beats": <number>` (finite, `> 0`; any JSON number, integer or
+float, is read as a double). It is the pattern's **extent** (loop period, in beats) and replaces the
+derived `max(note.t + note.dur)` of §Arrangement. Rationale: a 16-step drum pattern whose last steps are
+empty would otherwise loop early and drift out of the bar.
+
+- **Validation** (model parse, so every entry point shares it): present but not a JSON number, zero,
+  negative or non-finite → `pattern.length_beats must be a finite number > 0` (a literal such as `1e999` never
+  gets that far: the JSON lexer itself rejects the overflow, exit 4 with the lexer's own message). There is
+  no upper bound and no relation to the notes is checked.
+- **Extent rule (normative):** `extent(pattern) = length_beats` if present, else the derived value
+  (unchanged). Engine helper `double op::pattern_extent(const Pattern&)` in `engine/model.hpp`; the renderer
+  and `opd opj2mid` both use it (MIDI export placement therefore matches the renderer).
+- **Repeats:** with `length_beats` present `extent > 0` always, so `repeats` is always honored (even for an
+  empty pattern, which then simply plays nothing `repeats` times). Absent: the existing rule
+  (`extent <= 0` forces `repeats` to 1) is unchanged.
+- **Notes are never truncated, wrapped or dropped by the length.** Every note of every repetition is
+  placed at `base + r * extent + note.t` exactly as before, including notes whose `t + dur` runs past
+  `length_beats` (their tail overlaps the next repetition) and notes with `t >= length_beats` (they play
+  late, inside or after the next repetition). `length_beats` only changes the spacing between repetitions.
+- **No arrangement:** legacy semantics apply (each pattern plays once from beat 0), so `length_beats` has no
+  effect on the render.
+- **Canonical save** emits `"length_beats"` (as a double, e.g. `4.0`) only when present; object keys are
+  dumped alphabetically, so it lands before `"notes"` in the pattern object. Projects without the field save
+  byte-identically to before (goldens prove it).
+- `opd steps` default width and `opd diff` / operations: see `docs/spec/operations.md` §Pattern length operations.

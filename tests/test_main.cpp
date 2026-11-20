@@ -4031,6 +4031,235 @@ static void test_aiff() {
     }
 }
 
+// --- explicit pattern length (WP-0162, spec project-model.md §Explicit pattern length +
+// operations.md §Pattern length operations): extent, render spacing, parse/save, ops, diff, steps.
+static std::string run_cmd(const std::string& cmd) {  // capture stdout of a shell command
+    std::string out;
+    FILE* pipe = ::popen(cmd.c_str(), "r");
+    if (!pipe) return out;
+    char buf[256];
+    while (std::fgets(buf, sizeof buf, pipe)) out += buf;
+    ::pclose(pipe);
+    return out;
+}
+
+static void test_pattern_length() {
+    namespace fs = std::filesystem;
+    using nlohmann::json;
+    // Per-test unique temp dir (pid-scoped): parallel test runs never collide on files.
+    const fs::path dir = fs::path(tmp_file("op_wp0162"));
+    std::error_code fec;
+    fs::create_directories(dir, fec);
+    std::string err;
+
+    // pattern_extent helper: derived max(t+dur) when absent (0.0 for empty), explicit value wins.
+    op::Pattern pe;
+    CHECK(op::pattern_extent(pe) == 0.0, "plen.extent_empty_zero");
+    pe.notes = {{0.0, 0.25}, {3.0, 0.25}, {1.0, 0.5}};
+    CHECK(op::pattern_extent(pe) == 3.25, "plen.extent_derived_max");
+    pe.length_beats = 4.0;
+    CHECK(op::pattern_extent(pe) == 4.0, "plen.extent_explicit_wins");
+    pe.length_beats = 1.5;  // shorter than the notes: still the extent (notes are never truncated)
+    CHECK(op::pattern_extent(pe) == 1.5, "plen.extent_shorter_than_notes");
+
+    // Base project: 1 sine track @120bpm/48kHz → 1 beat = 24000 samples; notes at beats 0..3 (dur .25).
+    auto base_text = [&](const std::string& len_key) {  // len_key: "" or `,"length_beats":<json>`
+        return std::string(R"({"format_version":0,"bpm":120,"length_bars":3,"sample_rate":48000,)"
+                           R"("tracks":[{"name":"T","voice":{"kind":"sine","freq_hz":440.0}}],)"
+                           R"("patterns":[{"track":0,"notes":[)"
+                           R"({"t":0.0,"dur":0.25},{"t":1.0,"dur":0.25},{"t":2.0,"dur":0.25},{"t":3.0,"dur":0.25}])") +
+                           len_key +
+                           R"(}],"arrangement":[{"pattern":0,"start_bar":0.0,"repeats":3}]})";
+    };
+    const std::string e_len = "pattern.length_beats must be a finite number > 0";
+
+    // (1) length_beats=4, repeats=3 → onsets at beats 0..11 (spacing 4), gaps inside each bar.
+    op::Project pl;
+    CHECK(parse_text(base_text(R"(,"length_beats":4)"), pl, err) && pl.patterns[0].length_beats &&
+              *pl.patterns[0].length_beats == 4.0,
+          "plen.parse_field");
+    const auto mean_sq = [](const op::wav::StereoBuffer& b, long long a, long long z) {
+        double s = 0.0;
+        for (long long i = a * 2; i < z * 2 && i + 1 < static_cast<long long>(b.interleaved.size()); i += 2)
+            s += double(b.interleaved[i]) * b.interleaved[i];
+        return s / double(z - a);
+    };
+    const auto sound = [&](const op::wav::StereoBuffer& b, double beat) {
+        return mean_sq(b, static_cast<long long>(beat * 24000) + 300,
+                       static_cast<long long>(beat * 24000) + 5700) > 0.01;
+    };
+    op::wav::StereoBuffer bl;
+    CHECK(op::render_project(pl, "", bl, err), "plen.render_with_length_ok");
+    bool onsets_0_to_11 = true;
+    for (int b = 0; b <= 11; ++b) onsets_0_to_11 = onsets_0_to_11 && sound(bl, static_cast<double>(b));
+    CHECK(onsets_0_to_11, "plen.length_loops_on_the_bar_beats_0_to_11");
+    CHECK(!sound(bl, 3.25) && !sound(bl, 7.25), "plen.length_gaps_inside_bar");
+
+    // (2) same project WITHOUT the field: derived extent 3.25 → drifts to 3.25, 4.25, ...
+    op::Project pd;
+    CHECK(parse_text(base_text(""), pd, err) && !pd.patterns[0].length_beats, "plen.parse_absent");
+    op::wav::StereoBuffer bd;
+    CHECK(op::render_project(pd, "", bd, err), "plen.render_without_length_ok");
+    CHECK(sound(bd, 3.25) && sound(bd, 4.25) && !sound(bd, 4.0), "plen.derived_loops_early_drifts");
+
+    // (2b) MIDI export placement matches the renderer: length_beats=4 → onsets at beats 0..11.
+    CHECK(op::save_midi((dir / "len.mid").string(), pl, err), "plen.midi_saved");
+    {
+        op::Project mid_back;
+        CHECK(op::load_midi((dir / "len.mid").string(), mid_back, err), "plen.midi_reloaded");
+        std::vector<double> onsets;
+        for (const auto& q : mid_back.patterns)
+            for (const auto& n : q.notes) onsets.push_back(n.t_beats);
+        std::sort(onsets.begin(), onsets.end());
+        bool beats_0_to_11 = onsets.size() == 12;
+        for (size_t i = 0; i < onsets.size() && i < 12; ++i)
+            beats_0_to_11 = beats_0_to_11 && std::fabs(onsets[i] - static_cast<double>(i)) < 1e-6;
+        CHECK(beats_0_to_11, "plen.midi_onsets_match_renderer_beats_0_to_11");
+    }
+
+    // (3) a note past the length is kept, not truncated/wrapped: t=2.5 in a length_beats=2 pattern
+    // with repeats=2 plays at beats 2.5 and 4.5 (= base + r*2 + 2.5).
+    {
+        json j = json::parse(R"({"format_version":0,"bpm":120,"length_bars":2,"sample_rate":48000,)"
+                             R"("tracks":[{"name":"T","voice":{"kind":"sine","freq_hz":440.0}}],)"
+                             R"("patterns":[{"track":0,"notes":[{"t":2.5,"dur":0.25}],"length_beats":2}],)"
+                             R"("arrangement":[{"pattern":0,"start_bar":0.0,"repeats":2}]})");
+        write_text((dir / "past.opj").string(), j.dump());
+        op::Project pp;
+        CHECK(op::load_project((dir / "past.opj").string(), pp, err), "plen.note_past_parse");
+        op::wav::StereoBuffer bp;
+        bool ok = op::render_project(pp, "", bp, err);
+        CHECK(ok && sound(bp, 2.5) && sound(bp, 4.5) && !sound(bp, 0.5), "plen.note_past_length_kept");
+    }
+
+    // (4) validation errors, exact strings: 0, -1, string; check happens after the notes.
+    auto expect_len_err = [&](const std::string& len_json, const char* name) {
+        op::Project q;
+        std::string e;
+        const bool ok = parse_text(base_text("," + len_json), q, e);
+        CHECK(!ok && e == e_len, name);
+    };
+    expect_len_err(R"("length_beats":0)", "plen.err_zero");
+    expect_len_err(R"("length_beats":-1)", "plen.err_negative");
+    expect_len_err(R"("length_beats":"4")", "plen.err_string");
+    {  // inf/NaN are unspellable in JSON text — inject through the engine-internal parse
+        json jinf = json::parse(base_text(R"(,"length_beats":4)"));
+        jinf["patterns"][0]["length_beats"] = std::numeric_limits<double>::infinity();
+        op::Project q;
+        CHECK(!op::project_from_json(jinf, q, err) && err == e_len, "plen.err_not_finite");
+    }
+    {  // notes are validated first: bad note + bad length reports the note error
+        op::Project q;
+        std::string e;
+        const bool ok = parse_text(
+            R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],)"
+            R"("patterns":[{"track":0,"notes":[{"t":-1,"dur":0.25}],"length_beats":0}]})", q, e);
+        CHECK(!ok && e == "note needs t >= 0 and dur > 0", "plen.err_notes_checked_first");
+    }
+
+    // (5) canonical save: key omitted when absent; emitted as double before "notes"; round-trips.
+    const std::string bytes_absent = op::project_bytes(pd);
+    CHECK(bytes_absent.find("length_beats") == std::string::npos, "plen.save_omits_absent");
+    const std::string bytes_len = op::project_bytes(pl);
+    CHECK(bytes_len.find("\"length_beats\": 4.0") != std::string::npos &&
+              bytes_len.find("\"length_beats\"") < bytes_len.find("\"notes\""),
+          "plen.save_emits_double");
+    op::Project back;
+    CHECK(parse_text(bytes_len, back, err) && back.patterns[0].length_beats &&
+              *back.patterns[0].length_beats == 4.0 && op::project_bytes(back) == bytes_len,
+          "plen.save_roundtrip_stable");
+
+    // (6) ops: set/clear with History undo/redo byte-exact; clear on absent is a no-op success.
+    op::Project q;
+    CHECK(parse_text(base_text(""), q, err), "plen.ops_base_parse");
+    const std::string base_bytes = op::project_bytes(q);
+    op::History h;
+    CHECK(h.apply(q, json{{"op", "set_pattern_length"}, {"pattern", 0}, {"length_beats", 4.0}}, err) &&
+              q.patterns[0].length_beats && *q.patterns[0].length_beats == 4.0,
+          "plen.op_set");
+    const std::string with_len = op::project_bytes(q);
+    CHECK(h.apply(q, json{{"op", "clear_pattern_length"}, {"pattern", 0}}, err) &&
+              !q.patterns[0].length_beats,
+          "plen.op_clear");
+    CHECK(op::project_bytes(q) == base_bytes, "plen.op_clear_bytes_match_base");
+    CHECK(h.undo(q) && op::project_bytes(q) == with_len, "plen.undo_clear_restores_length");
+    CHECK(h.undo(q) && op::project_bytes(q) == base_bytes, "plen.undo_set_restores_bytes");
+    CHECK(h.redo(q) && op::project_bytes(q) == with_len, "plen.redo_set");
+    CHECK(op::apply_op(q, json{{"op", "clear_pattern_length"}, {"pattern", 0}}, err), "plen.op_clear_noop_ok");
+
+    // (7) op argument rules: exact error strings; positivity comes from the model parse.
+    op::Project r;
+    CHECK(parse_text(base_text(""), r, err), "plen.rules_base_parse");
+    const std::string base_r = op::project_bytes(r);
+    CHECK(!op::apply_op(r, json{{"op", "set_pattern_length"}, {"pattern", 0}}, err) &&
+              err == "set_pattern_length: missing argument 'length_beats'", "plen.op_set_missing_len");
+    CHECK(!op::apply_op(r, json{{"op", "set_pattern_length"}, {"pattern", 0}, {"length_beats", "4"}}, err) &&
+              err == "set_pattern_length: 'length_beats' must be a number", "plen.op_set_not_number");
+    CHECK(!op::apply_op(r, json{{"op", "set_pattern_length"}, {"pattern", 0}, {"length_beats", 0}}, err) &&
+              err == "set_pattern_length: pattern.length_beats must be a finite number > 0",
+          "plen.op_set_zero_rejected_by_parse");
+    CHECK(!op::apply_op(r, json{{"op", "set_pattern_length"}, {"pattern", 1}, {"length_beats", 4}}, err) &&
+              err == "set_pattern_length: 'pattern' out of range", "plen.op_set_pattern_oob");
+    CHECK(!op::apply_op(r, json{{"op", "clear_pattern_length"}, {"pattern", 0}, {"x", 1}}, err) &&
+              err == "clear_pattern_length: unknown argument 'x'", "plen.op_clear_unknown_arg");
+    CHECK(op::project_bytes(r) == base_r, "plen.failed_ops_leave_project_untouched");
+
+    // (8) opd diff step 7b, both directions + value change; identical projects emit nothing.
+    op::Project da = q;  // no length
+    op::Project db = q;
+    db.patterns[0].length_beats = 4.0;
+    op::Project dc = q;
+    dc.patterns[0].length_beats = 2.0;
+    auto diff_expect = [&](const op::Project& x, const op::Project& y, const json& want_first,
+                           const char* name) {
+        std::vector<json> ops;
+        std::string e;
+        if (!op::diff_projects(x, y, ops, e)) { CHECK(false, name); return; }
+        bool first_ok = ops.size() == 1 && ops[0] == want_first;
+        op::Project work = x;
+        bool applied = true;
+        for (const json& o : ops) applied = applied && op::apply_op(work, o, e);
+        CHECK(first_ok && applied && op::project_bytes(work) == op::project_bytes(y), name);
+    };
+    diff_expect(da, db, json{{"op", "set_pattern_length"}, {"pattern", 0}, {"length_beats", 4.0}},
+                "plen.diff_add");
+    diff_expect(db, da, json{{"op", "clear_pattern_length"}, {"pattern", 0}}, "plen.diff_remove");
+    diff_expect(db, dc, json{{"op", "set_pattern_length"}, {"pattern", 0}, {"length_beats", 2.0}},
+                "plen.diff_change");
+    std::vector<json> same_ops;
+    CHECK(op::diff_projects(db, db, same_ops, err) && same_ops.empty(), "plen.diff_same_no_ops");
+
+    // (9) `opd steps` default width: ceil(length_beats*4) clamped [1,256]; explicit --steps wins.
+    const std::string opd = OPD_BIN;
+    auto steps_out = [&](const std::string& opj, int pat, const std::string& extra) {
+        return run_cmd("\"" + opd + "\" steps \"" + opj + "\" " + std::to_string(pat) + extra);
+    };
+    // length_beats=4 with notes at beats 0..3 → exactly the 16-step grid "x...x...x...x...".
+    const fs::path proj_lb = dir / "steps.opj";
+    write_text(proj_lb.string(), base_text(R"(,"length_beats":4)"));
+    CHECK(steps_out(proj_lb.string(), 0, "") == "x...x...x...x...\n", "plen.steps_default_width_16");
+    // ceil(8*4)=32 and ceil(0.5*4)=2: width follows the length; marks only where notes are on-grid.
+    json j8 = json::parse(base_text(R"(,"length_beats":8)"));
+    const fs::path proj8 = dir / "steps8.opj";
+    write_text(proj8.string(), j8.dump());
+    CHECK(steps_out(proj8.string(), 0, "") == "x...x...x...x..." + std::string(16, '.') + "\n",
+          "plen.steps_width_32");
+    json jhalf = json::parse(base_text(R"(,"length_beats":0.5)"));
+    const fs::path proj_half = dir / "steps_half.opj";
+    write_text(proj_half.string(), jhalf.dump());
+    CHECK(steps_out(proj_half.string(), 0, "") == "x.\n", "plen.steps_width_2");
+    // ceil(1e6*4) clamps to 256 columns; an explicit --steps always wins.
+    json jbig = json::parse(base_text(R"(,"length_beats":1e6)"));
+    const fs::path proj_big = dir / "steps_big.opj";
+    write_text(proj_big.string(), jbig.dump());
+    CHECK(steps_out(proj_big.string(), 0, "") == "x...x...x...x..." + std::string(240, '.') + "\n",
+          "plen.steps_width_clamped_256");
+    CHECK(steps_out(proj_lb.string(), 0, " --steps 8") == "x...x...\n", "plen.steps_explicit_wins");
+    const fs::path proj_nolen = dir / "steps_nolen.opj";
+    write_text(proj_nolen.string(), base_text(""));
+    CHECK(steps_out(proj_nolen.string(), 0, "") == "x...x...x...x...\n", "plen.steps_default_16_without_field");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -4070,6 +4299,7 @@ int main() {
     test_loop_region();
     test_sampler_trim();
     test_synth_v1();
+    test_pattern_length();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     if (g_failures == 0) {
         std::error_code ec;
