@@ -21,6 +21,7 @@ target_sources(opengine PRIVATE src/engine/loudness.cpp)  # WP-0168
 # WP-0141: JUCE-free document layer (open/save/dirty, undo/redo, gestures) for the app + CLI.
 add_library(dzdoc STATIC src/doc/document.cpp)
 target_link_libraries(dzdoc PUBLIC opengine)
+target_sources(opengine PRIVATE src/engine/normalize.cpp)  # WP-0169
 
 add_executable(opd src/cli/main.cpp)
 target_link_libraries(opd PRIVATE opengine)
@@ -44,9 +45,14 @@ add_executable(op_loudness_tests tests/test_loudness.cpp)
 target_link_libraries(op_loudness_tests PRIVATE opengine)
 add_test(NAME loudness COMMAND op_loudness_tests)
 
+add_executable(op_normalize_tests tests/test_normalize.cpp)
+target_link_libraries(op_normalize_tests PRIVATE opengine)
+add_test(NAME normalize COMMAND op_normalize_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
+list(APPEND DZ_OUR_TARGETS op_normalize_tests)  # WP-0169
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
