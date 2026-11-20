@@ -33,8 +33,9 @@ import json
 import logging
 import os
 import shutil
+import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, get_args
 
@@ -76,6 +77,8 @@ class JobRecord:
     result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
     cancel_requested: bool = False
+    events: list[dict[str, Any]] = field(default_factory=list)
+    _events_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def snapshot(self) -> dict[str, Any]:
         """JSON-ready view per the GET /jobs/{job_id} contract."""
@@ -92,6 +95,32 @@ class JobRecord:
             snap["error"] = self.error
         return snap
 
+    def publish(self) -> None:
+        """Append the current snapshot to the event log when it changed (WP-0172).
+
+        The log is append-only with contiguous 1-based ``seq`` numbers. A snapshot
+        whose state matches the last event's and whose progress is equal to it — or
+        both numbers closer than ``0.001`` — is coalesced away (progress on the job
+        itself is still updated by the caller). Callers must invoke this right after
+        every mutation of ``state`` or ``progress``; backends never call it.
+
+        Usage example::
+
+            record.state = "running"
+            record.publish()   # -> events[-1]["seq"] == 2, {"state": "running", ...}
+        """
+        with self._events_lock:
+            snap = self.snapshot()
+            last = self.events[-1] if self.events else None
+            if last is not None and last.get("state") == snap["state"]:
+                prev, cur = last.get("progress"), snap["progress"]
+                if prev == cur or (
+                    prev is not None and cur is not None and abs(float(prev) - float(cur)) < 0.001
+                ):
+                    return
+            snap["seq"] = len(self.events) + 1
+            self.events.append(snap)
+
 
 def _finish_cancelled(record: JobRecord) -> None:
     """End *record* as cancelled — the ONE path that does (WP-0151).
@@ -105,6 +134,7 @@ def _finish_cancelled(record: JobRecord) -> None:
     record.result = None
     record.error = None
     shutil.rmtree(record.out_dir, ignore_errors=True)
+    record.publish()
 
 
 class JobRunner:
@@ -163,6 +193,7 @@ class JobRunner:
             id=job_id, backend=backend, task=task, params=params, out_dir=out_dir
         )
         self._records[job_id] = record
+        record.publish()  # event seq 1: queued (before the job can be picked up)
         await self._queue.put(job_id)
         return job_id
 
@@ -213,6 +244,7 @@ class JobRunner:
             _finish_cancelled(record)
         elif record.state == "running":
             record.state = "cancelling"
+            record.publish()  # exactly one cancelling event however often cancel is called
         # "cancelling": already requested — idempotent, nothing left to change.
         return True
 
@@ -258,6 +290,7 @@ class JobRunner:
                 _finish_cancelled(record)  # cancelled while queued / waiting for the lock
                 return
             record.state = "running"
+            record.publish()
 
             def _progress(p: float) -> None:
                 self._report(record, p)
@@ -288,6 +321,7 @@ class JobRunner:
                 record.error = {"code": code, "message": str(exc), "retryable": retryable}
                 logger.warning("job %s failed (%s): %s", record.id, code, exc)
                 record.state = "failed"
+                record.publish()  # terminal event carries the error
                 return
             finally:
                 JOB_CONTEXT.reset(token)
@@ -304,11 +338,13 @@ class JobRunner:
                 "message": f"backend broke its contract: {exc}",
                 "retryable": False,
             }
+            record.publish()
 
     def _report(self, record: JobRecord, value: float) -> None:
         # Called from the backend's worker thread; plain attribute write is GIL-safe.
         if record.state == "running" and not record.cancel_requested:
             record.progress = min(1.0, max(0.0, float(value)))
+            record.publish()
 
 
 def params_seed(params: dict[str, Any]) -> int | None:
@@ -392,3 +428,4 @@ def finalize_done(record: JobRecord, inst: BackendBase, job_result: JobResult) -
     }
     record.state = "done"
     record.progress = 1.0
+    record.publish()  # terminal done event: the final snapshot plus seq

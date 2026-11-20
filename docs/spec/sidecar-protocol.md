@@ -83,3 +83,47 @@ a job that stays `running` until cancelled, with no sleeps in the test.
 each element is exactly what `GET /jobs/{job_id}` returns for that job. Optional query `?state=<s>` keeps
 only jobs in that state; an unknown state value is `422` with `{"error": {"code": "bad_request", ...}}`.
 Empty list when there are no jobs.
+
+## Job event log and resumable events — additive (WP-0172)
+Every job keeps an append-only **event log** so a client (the app's progress bar, a reconnecting SSE
+client) sees every state/progress change, not just the latest one.
+
+### Event shape
+An event is the job snapshot (exactly what `GET /jobs/{job_id}` returns at that moment: `job_id`,
+`backend`, `task`, `state`, `progress`, plus `result` / `error` when the snapshot has them) with one extra
+key `seq`: an integer, 1-based, contiguous, unique per job. `seq` 1 is always the `queued` event.
+
+### When an event is appended
+After every change of `state` and every change of `progress` while `running`. Nothing is appended when
+the state is unchanged and the progress is equal to the last event's progress, or both are numbers closer
+than `0.001` (coalescing; `progress` on the job itself is still updated). A normal job therefore logs
+`queued`, `running` (progress null), `running` 0.0 … `running` 1.0, `done`. A job cancelled while queued
+logs `queued`, `cancelled`; one cancelled while running logs `…, cancelling, cancelled` (each exactly
+once however many times cancel is called). A failed job ends with a `failed` event carrying `error`. The
+last event of a finished job is always terminal (`done`, `failed` or `cancelled`) and equals the final
+snapshot plus `seq`.
+
+### GET /jobs/{job_id}/event-log
+`200 {"job_id": "<id>", "events": [<event>, ...]}` — events with `seq > after`, in order. Unknown job:
+`404 unknown_job`.
+
+### GET /jobs/{job_id}/events (SSE, replaces the poll-latest behaviour)
+Streams events with `seq > after`, replaying history first, then new events as they happen. Each frame:
+```
+id: <seq>
+event: job
+data: <event JSON, sort_keys>
+
+```
+The stream ends right after the first terminal event has been sent. If the client resumes at or past the
+terminal event's `seq` (including a far-too-large value) the stream ends immediately with an empty body.
+
+### Resume cursor (both endpoints)
+`after` = query `?after=<n>` if present, else the `Last-Event-ID` request header if present and
+non-empty, else `0`. It must be a non-negative integer; otherwise `422` with
+`{"error": {"code": "bad_request", "message": "after must be a non-negative integer, got '<raw>'", ...}}`.
+
+### Notes
+- Events live in memory with the job record (same lifetime as `GET /jobs/{id}`); there is no persistence.
+- Python surface: `JobRecord.events: list[dict]`, `JobRecord.publish()` (called by the runner at each
+  mutation; backends never call it).
