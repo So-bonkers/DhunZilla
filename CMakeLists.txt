@@ -17,6 +17,7 @@ option(DZ_SANITIZE "Build with ASAN+UBSAN" OFF)
 add_library(opengine STATIC src/engine/model.cpp src/engine/ops.cpp src/engine/render.cpp src/engine/resample.cpp src/engine/wav.cpp src/engine/midi.cpp src/engine/bundle.cpp src/engine/analyze.cpp src/engine/sample_index.cpp)
 target_include_directories(opengine PUBLIC src third_party)
 target_sources(opengine PRIVATE src/engine/loudness.cpp)  # WP-0168
+target_sources(opengine PRIVATE src/engine/lint.cpp)  # WP-0170
 
 # WP-0141: JUCE-free document layer (open/save/dirty, undo/redo, gestures) for the app + CLI.
 add_library(dzdoc STATIC src/doc/document.cpp)
@@ -49,10 +50,15 @@ add_executable(op_normalize_tests tests/test_normalize.cpp)
 target_link_libraries(op_normalize_tests PRIVATE opengine)
 add_test(NAME normalize COMMAND op_normalize_tests)
 
+add_executable(op_lint_tests tests/test_lint.cpp)
+target_link_libraries(op_lint_tests PRIVATE opengine)
+add_test(NAME lint COMMAND op_lint_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
 list(APPEND DZ_OUR_TARGETS op_normalize_tests)  # WP-0169
+list(APPEND DZ_OUR_TARGETS op_lint_tests)  # WP-0170
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

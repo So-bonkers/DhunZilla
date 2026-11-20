@@ -16,6 +16,7 @@
 #include "engine/analyze.hpp"
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
+#include "engine/lint.hpp"
 #include "engine/loudness.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
@@ -46,6 +47,7 @@ static void usage() {
         "  opd unpack <song.opd> -d <out-dir>\n"
         "  opd info <file>   (.wav | .opj | .opd | .mid)\n"
         "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
+        "  opd lint <proj.opj> [--json]   (read-only project sanity checks as JSON)\n"
         "  opd loudness <in.wav> [--json]   (true peak dBTP, momentary/short-term max LUFS, loudness range as JSON)\n"
         "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
@@ -705,6 +707,35 @@ static int cmd_normalize(int argc, char** argv) {
     return 0;
 }
 
+// opd lint <proj.opj> [--json] — read-only project sanity checks as canonical JSON (docs/spec/lint.md).
+// --json is accepted for forward-compatibility (JSON is the only output today). base_dir is the project
+// file's parent directory, same as opd render. Exit codes: 0 = no error-severity issue (warnings/infos
+// alone -> 0); 1 = at least one error-severity issue (JSON is still printed); 2 usage (no file, extra or
+// unknown argument); 3 project file not found; 4 project does not parse. Cases 2-4 write nothing to stdout.
+static int cmd_lint(int argc, char** argv) {
+    std::string path;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--json")) continue;
+        if (!path.empty() || argv[i][0] == '-') { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
+        path = argv[i];
+    }
+    if (path.empty()) { usage(); return fail("usage", "lint needs <proj.opj>"); }
+    if (!fs::exists(path)) return fail("not_found", path);
+
+    op::Project p;
+    std::string err;
+    if (!op::load_project(path, p, err)) return fail("parse", err);
+
+    const std::string base_dir = fs::path(path).parent_path().string();
+    const std::vector<op::lint::Issue> issues = op::lint::lint_project(p, base_dir);
+    size_t errors = 0;
+    for (const auto& is : issues)
+        if (is.severity == "error") ++errors;
+    const std::string json = op::lint::to_json(issues);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return errors > 0 ? 1 : 0;
+}
+
 // Parse a decimal argument that must be all digits and fit in [0, max]. Rejects "", "-1", "1.0",
 // "x" and anything that would overflow. Example: parse_decimal("16", 256, v) → true, v == 16.
 static bool parse_decimal(const std::string& s, long long max, long long& out) {
@@ -816,6 +847,7 @@ int main(int argc, char** argv) {
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
+    if (cmd == "lint") return cmd_lint(argc - 1, argv + 1);
     if (cmd == "loudness") return cmd_loudness(argc - 1, argv + 1);
     if (cmd == "normalize") return cmd_normalize(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
