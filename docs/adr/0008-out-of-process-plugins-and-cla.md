@@ -1,6 +1,6 @@
 # ADR-0008: Out-of-process plugin protocol ("everything is a plugin") + CLA before outside contributions
 
-**Status:** Proposed · 2026-11-20 · awaiting product-owner approval. Context: the owner deferred the monetisation
+**Status:** Accepted · 2026-11-20 (approved by the product owner). Context: the owner deferred the monetisation
 decision until the prototype has real users (plan §6a) and asked that no option be closed off in the meantime.
 These two choices are what keep every option open; everything else about monetisation stays undecided.
 
