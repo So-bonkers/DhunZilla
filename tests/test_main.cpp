@@ -3519,6 +3519,196 @@ static void test_sampler_trim() {
     std::printf("INFO sampler trim: slice frames [96,480) checked against untrimmed reference\n");
 }
 
+// --- Synth voice v1 (WP-0161): parse of waveform/adsr/cutoff_hz/resonance, defaults, exact
+// validation messages, canonical save, release tail, and the set_synth_params op.
+static void test_synth_v1() {
+    namespace fs = std::filesystem;
+    using nlohmann::json;
+    std::string err;
+
+    // Scratch dir under the per-process tmp_dir() (WP-0160 helpers).
+    const fs::path dir = fs::path(tmp_file("op_synth_v1"));
+    std::error_code fec;
+    fs::remove_all(dir, fec);
+    fs::create_directories(dir, fec);
+
+    auto parse_voice = [](const json& voice, op::Project& p, std::string& err) {
+        json j;
+        j["format_version"] = 0; j["bpm"] = 120.0; j["sample_rate"] = 48000; j["seed"] = 161;
+        j["length_bars"] = 1.0; j["beats_per_bar"] = 4;
+        json tj; tj["name"] = "T"; tj["voice"] = voice;
+        j["tracks"] = json::array({tj});
+        return op::project_from_json(j, p, err);
+    };
+
+    // (1) Parse of every new key: fields land on the model.
+    op::Project pv;
+    json v1;
+    v1["kind"] = "synth";
+    v1["waveform"] = "square";
+    v1["adsr"] = {{"attack_s", 0.02}, {"decay_s", 0.3}, {"sustain", 0.6}, {"release_s", 0.4}};
+    v1["cutoff_hz"] = 1234.0;
+    v1["resonance"] = 5.5;
+    CHECK(parse_voice(v1, pv, err) &&
+              pv.tracks[0].voice.waveform == op::Waveform::Square && pv.tracks[0].voice.has_adsr &&
+              pv.tracks[0].voice.attack_s == 0.02 && pv.tracks[0].voice.decay_s == 0.3 &&
+              pv.tracks[0].voice.sustain == 0.6 && pv.tracks[0].voice.release_s == 0.4 &&
+              pv.tracks[0].voice.cutoff_hz == 1234.0 && pv.tracks[0].voice.resonance == 5.5,
+          "synth_v1.parse_all_keys");
+
+    // (2) Waveform strings map to the enum; absent = Legacy (which is NOT Sine).
+    op::Project psine, psaw, pleg;
+    CHECK(parse_voice({{"kind", "synth"}, {"waveform", "sine"}}, psine, err) &&
+              psine.tracks[0].voice.waveform == op::Waveform::Sine, "synth_v1.parse_waveform_sine");
+    CHECK(parse_voice({{"kind", "synth"}, {"waveform", "saw"}}, psaw, err) &&
+              psaw.tracks[0].voice.waveform == op::Waveform::Saw, "synth_v1.parse_waveform_saw");
+    CHECK(parse_voice({{"kind", "synth"}}, pleg, err) &&
+              pleg.tracks[0].voice.waveform == op::Waveform::Legacy && !pleg.tracks[0].voice.has_adsr &&
+              pleg.tracks[0].voice.cutoff_hz == 0.0 && pleg.tracks[0].voice.resonance == 0.7071,
+          "synth_v1.parse_defaults_absent");
+
+    // (3) adsr present but empty → inner defaults 0.005 / 0 / 1 / 0.03.
+    op::Project pad;
+    CHECK(parse_voice({{"kind", "synth"}, {"adsr", json::object()}}, pad, err) &&
+              pad.tracks[0].voice.has_adsr && pad.tracks[0].voice.attack_s == 0.005 &&
+              pad.tracks[0].voice.decay_s == 0.0 && pad.tracks[0].voice.sustain == 1.0 &&
+              pad.tracks[0].voice.release_s == 0.03, "synth_v1.adsr_empty_defaults");
+
+    // (4) Validation messages, character-exact, first failure wins.
+    op::Project scratch;
+    CHECK(!parse_voice({{"kind", "synth"}, {"waveform", "triangle"}}, scratch, err) &&
+              err == "voice.waveform must be sine|saw|square", "synth_v1.e_waveform_value");
+    CHECK(!parse_voice({{"kind", "synth"}, {"waveform", 5}}, scratch, err) &&
+              err == "voice.waveform must be sine|saw|square", "synth_v1.e_waveform_not_string");
+    CHECK(!parse_voice({{"kind", "synth"}, {"adsr", 5}}, scratch, err) &&
+              err == "voice.adsr must be an object", "synth_v1.e_adsr_not_object");
+    CHECK(!parse_voice({{"kind", "synth"}, {"adsr", {{"wobble", 1}}}}, scratch, err) &&
+              err == "voice.adsr has unknown key 'wobble'", "synth_v1.e_adsr_unknown_key");
+    CHECK(!parse_voice({{"kind", "synth"}, {"adsr", {{"sustain", 2}}}}, scratch, err) &&
+              err == "voice.adsr.sustain must be a number in [0, 1]", "synth_v1.e_adsr_sustain_range");
+    CHECK(!parse_voice({{"kind", "synth"}, {"adsr", {{"release_s", -1}}}}, scratch, err) &&
+              err == "voice.adsr.release_s must be a number in [0, 10]", "synth_v1.e_adsr_release_range");
+    CHECK(!parse_voice({{"kind", "synth"}, {"cutoff_hz", 10}}, scratch, err) &&
+              err == "voice.cutoff_hz must be a number in [20, 20000]", "synth_v1.e_cutoff_range");
+    CHECK(!parse_voice({{"kind", "synth"}, {"resonance", 40}}, scratch, err) &&
+              err == "voice.resonance must be a number in [0.5, 20]", "synth_v1.e_resonance_range");
+    // Non-synth voice: the first present key in spec order (waveform, adsr, cutoff_hz, resonance).
+    CHECK(!parse_voice({{"kind", "metronome"}, {"resonance", 3.0}, {"cutoff_hz", 100.0}}, scratch, err) &&
+              err == "voice.cutoff_hz is only valid for synth voices", "synth_v1.e_non_synth_cutoff_first");
+    CHECK(!parse_voice({{"kind", "metronome"}, {"resonance", 3.0}, {"adsr", json::object()}}, scratch, err) &&
+              err == "voice.adsr is only valid for synth voices", "synth_v1.e_non_synth_adsr_first");
+
+    // (5) Canonical save: adsr writes all four inner keys; set resonance written; default
+    // resonance/waveform/cutoff_hz omitted; legacy voice emits none of the new keys.
+    const std::string bytes_v1 = op::project_bytes(pv);
+    CHECK(bytes_v1.find("\"attack_s\"") != std::string::npos &&
+              bytes_v1.find("\"decay_s\"") != std::string::npos &&
+              bytes_v1.find("\"sustain\"") != std::string::npos &&
+              bytes_v1.find("\"release_s\"") != std::string::npos &&
+              bytes_v1.find("\"resonance\": 5.5") != std::string::npos, "synth_v1.canonical_adsr_all_four");
+    const std::string bytes_pad = op::project_bytes(pad);  // adsr present, everything else default
+    CHECK(bytes_pad.find("\"adsr\"") != std::string::npos &&
+              bytes_pad.find("\"resonance\"") == std::string::npos &&
+              bytes_pad.find("\"waveform\"") == std::string::npos &&
+              bytes_pad.find("\"cutoff_hz\"") == std::string::npos, "synth_v1.canonical_omits_defaults");
+    const std::string bytes_leg = op::project_bytes(pleg);
+    CHECK(bytes_leg.find("waveform") == std::string::npos && bytes_leg.find("adsr") == std::string::npos &&
+              bytes_leg.find("cutoff_hz") == std::string::npos && bytes_leg.find("resonance") == std::string::npos,
+          "synth_v1.legacy_voice_bytes_unchanged");
+    op::Project back;
+    CHECK(op::project_from_json(json::parse(bytes_v1), back, err) && op::project_bytes(back) == bytes_v1,
+          "synth_v1.canonical_roundtrip_stable");
+
+    // (6) File save/load through a temp dir named with the pid.
+    const fs::path rt = dir / "roundtrip.opj";
+    op::Project back2;
+    CHECK(op::save_project(rt.string(), pv, err) && op::load_project(rt.string(), back2, err) &&
+              back2.tracks[0].voice.waveform == op::Waveform::Square &&
+              back2.tracks[0].voice.has_adsr && back2.tracks[0].voice.cutoff_hz == 1234.0,
+          "synth_v1.file_save_load_roundtrip");
+
+    // (7) Release tail: sine + adsr{A=0,D=0,S=0.5,R=0.1}, note 0.25 beats @120bpm → len=6000,
+    // tail=ceil(0.1*48000)=4800: audio after note-off, silent from len+tail on; repeat render bit-exact.
+    op::Project pt;
+    pt.bpm = 120.0; pt.length_bars = 1.0; pt.beats_per_bar = 4; pt.sample_rate = 48000;
+    op::Track vt; vt.name = "V";
+    vt.voice.kind = op::VoiceKind::Synth;
+    vt.voice.waveform = op::Waveform::Sine;
+    vt.voice.has_adsr = true;
+    vt.voice.attack_s = 0.0; vt.voice.decay_s = 0.0; vt.voice.sustain = 0.5; vt.voice.release_s = 0.1;
+    pt.tracks.push_back(vt);
+    op::Pattern pat; pat.track = 0;
+    op::Note nt; nt.t_beats = 0.0; nt.dur_beats = 0.25; nt.midi_note = 69;
+    pat.notes.push_back(nt);
+    pt.patterns.push_back(pat);
+
+    const long long len = static_cast<long long>(std::llround(0.25 * 24000.0));
+    const long long tail = static_cast<long long>(std::ceil(vt.voice.release_s * 48000.0));
+    op::wav::StereoBuffer bt;
+    CHECK(op::render_project(pt, "", bt, err), "synth_v1.tail_render_ok");
+    bool tail_nonzero = false;
+    for (long long n = len; n < len + tail; ++n)
+        if (bt.interleaved[static_cast<size_t>(n) * 2] != 0.0f) { tail_nonzero = true; break; }
+    CHECK(tail_nonzero, "synth_v1.release_tail_present_after_note_off");
+    bool silent_after = true;
+    for (size_t n = static_cast<size_t>(len + tail); n * 2 < bt.interleaved.size(); ++n)
+        if (bt.interleaved[n * 2] != 0.0f || bt.interleaved[n * 2 + 1] != 0.0f) { silent_after = false; break; }
+    CHECK(silent_after, "synth_v1.silent_after_len_plus_tail");
+    op::wav::StereoBuffer bt2;
+    CHECK(op::render_project(pt, "", bt2, err) && bt.interleaved == bt2.interleaved,
+          "synth_v1.render_bitexact_repeat");
+
+    // (8) e_off rule: decay completes before note-off with sustain 0 → note-off level 0 → the
+    // release tail is silent (hard silence from frame len on).
+    op::Project pz = pt;
+    pz.tracks[0].voice.decay_s = 0.05; pz.tracks[0].voice.sustain = 0.0; pz.tracks[0].voice.release_s = 0.2;
+    op::wav::StereoBuffer bz;
+    bool body_nonzero = false;
+    CHECK(op::render_project(pz, "", bz, err), "synth_v1.eoff_render_ok");
+    for (long long n = 0; n < len; ++n)
+        if (bz.interleaved[static_cast<size_t>(n) * 2] != 0.0f) { body_nonzero = true; break; }
+    bool silent_eoff = true;
+    for (size_t n = static_cast<size_t>(len); n * 2 < bz.interleaved.size(); ++n)
+        if (bz.interleaved[n * 2] != 0.0f) { silent_eoff = false; break; }
+    CHECK(body_nonzero && silent_eoff, "synth_v1.e_off_zero_tail_silent");
+
+    // (9) set_synth_params: sets (inner adsr defaults for keys not given), null resets all four
+    // keys byte-identically, rejects non-synth track / no params / unknown key / bad ranges.
+    op::Project po;
+    op::Track tk; tk.name = "S"; tk.voice.kind = op::VoiceKind::Synth;
+    op::Track mk; mk.name = "M"; mk.voice.kind = op::VoiceKind::Metronome;
+    po.bpm = 120.0; po.length_bars = 1.0; po.beats_per_bar = 4; po.sample_rate = 48000;
+    po.tracks.push_back(tk); po.tracks.push_back(mk);
+    const std::string bytes_orig = op::project_bytes(po);
+
+    CHECK(op::apply_op(po, json{{"op", "set_synth_params"}, {"index", 0}, {"waveform", "saw"},
+                                {"adsr", {{"attack_s", 0.02}}}, {"cutoff_hz", 800.0}}, err) &&
+              po.tracks[0].voice.waveform == op::Waveform::Saw && po.tracks[0].voice.has_adsr &&
+              po.tracks[0].voice.attack_s == 0.02 && po.tracks[0].voice.decay_s == 0.0 &&
+              po.tracks[0].voice.sustain == 1.0 && po.tracks[0].voice.release_s == 0.03 &&
+              po.tracks[0].voice.cutoff_hz == 800.0, "synth_v1.op_set_params_inner_defaults");
+
+    CHECK(op::apply_op(po, json{{"op", "set_synth_params"}, {"index", 0}, {"waveform", nullptr},
+                                {"adsr", nullptr}, {"cutoff_hz", nullptr}, {"resonance", nullptr}}, err) &&
+              !po.tracks[0].voice.has_adsr && po.tracks[0].voice.waveform == op::Waveform::Legacy &&
+              po.tracks[0].voice.cutoff_hz == 0.0 && op::project_bytes(po) == bytes_orig,
+          "synth_v1.op_null_reset_byte_identical");
+
+    CHECK(rejected_unchanged(po, json{{"op", "set_synth_params"}, {"index", 1}, {"waveform", "sine"}}, err) &&
+              err == "set_synth_params: track is not a synth voice", "synth_v1.op_reject_not_synth");
+    CHECK(rejected_unchanged(po, json{{"op", "set_synth_params"}, {"index", 0}}, err) &&
+              err == "set_synth_params: no synth parameters given", "synth_v1.op_reject_no_params");
+    CHECK(rejected_unchanged(po, json{{"op", "set_synth_params"}, {"index", 0}, {"bogus", 1}}, err) &&
+              err == "set_synth_params: unknown argument 'bogus'", "synth_v1.op_reject_unknown_key");
+    CHECK(rejected_unchanged(po, json{{"op", "set_synth_params"}, {"index", 0}, {"waveform", "triangle"}}, err) &&
+              err == "set_synth_params: voice.waveform must be sine|saw|square", "synth_v1.op_reject_waveform_value");
+    CHECK(rejected_unchanged(po, json{{"op", "set_synth_params"}, {"index", 0}, {"cutoff_hz", 5.0}}, err) &&
+              err == "set_synth_params: voice.cutoff_hz must be a number in [20, 20000]", "synth_v1.op_reject_cutoff_range");
+
+    fs::remove_all(dir, fec);
+    std::printf("INFO synth v1: %lld-frame release tail verified after note-off\n", tail);
+}
+
 // --- AIFF / AIFF-C reader (WP-0158): test-side byte builders (big-endian, explicit assembly).
 namespace aiff_t {
 using Bytes = std::vector<uint8_t>;
@@ -3879,6 +4069,7 @@ int main() {
     test_step_sequencer();
     test_loop_region();
     test_sampler_trim();
+    test_synth_v1();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     if (g_failures == 0) {
         std::error_code ec;
