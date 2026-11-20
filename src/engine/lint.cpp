@@ -17,13 +17,6 @@ namespace {
 // JSON string escaping — the spec pins this exact mechanism (nlohmann is on the include path via opengine).
 std::string esc(const std::string& s) { return nlohmann::json(s).dump(); }
 
-// A pattern's extent = max(t_beats + dur_beats) over its notes (0 if none). Spec §API.
-double pattern_extent_of(const Pattern& pat) {
-    double ext = 0.0;
-    for (const Note& n : pat.notes) ext = std::max(ext, n.t_beats + n.dur_beats);
-    return ext;
-}
-
 }  // namespace
 
 std::vector<Issue> lint_project(const Project& p, const std::string& base_dir) {
@@ -86,7 +79,7 @@ std::vector<Issue> lint_project(const Project& p, const std::string& base_dir) {
         }
         double extent = 0.0;
         if (c.pattern >= 0 && static_cast<std::size_t>(c.pattern) < p.patterns.size())
-            extent = pattern_extent_of(p.patterns[static_cast<std::size_t>(c.pattern)]);
+            extent = pattern_extent(p.patterns[static_cast<std::size_t>(c.pattern)]);  // honours length_beats (WP-0162)
         if (extent > 0.0 && c.start_bar * bpb + c.repeats * extent > len_beats + 1e-9)
             out.push_back({"warning", "clip_overruns_length", path, "clip ends after length_bars"});
     }

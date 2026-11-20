@@ -141,6 +141,17 @@ static void test_rule6_boundary_exact_end() {
     CHECK(find(issues, "clip_overruns_length") == nullptr, "rule6_exact_end_not_flagged");
 }
 
+static void test_rule6_honours_length_beats() {  // WP-0162 integration: explicit length_beats is the extent
+    auto p = clean_project();  // notes extent = 1.0 beat, len_beats = 16
+    p.patterns[0].length_beats = 4.0;
+    p.arrangement[0].start_bar = 3.0;
+    p.arrangement[0].repeats = 2;  // 3*4 + 2*4 = 20 > 16 → overrun (would be 14 with the note extent)
+    CHECK(find(op::lint::lint_project(p, ""), "clip_overruns_length") != nullptr, "rule6_length_beats_overrun");
+    p.patterns[0].length_beats = 0.5;
+    p.arrangement[0].start_bar = 3.75;  // 3.75*4 + 2*0.5 = 16 == len_beats → NOT an overrun (17 by notes)
+    CHECK(find(op::lint::lint_project(p, ""), "clip_overruns_length") == nullptr, "rule6_length_beats_exact_end");
+}
+
 static void test_rule7_notes_past_end() {
     auto p = clean_project();
     p.arrangement.clear();  // legacy semantics: patterns play once from bar 0
@@ -261,6 +272,7 @@ int main() {
     test_rule5_clip_past_end();
     test_rule6_clip_overruns_length();
     test_rule6_boundary_exact_end();
+    test_rule6_honours_length_beats();
     test_rule7_notes_past_end();
     test_rule8_sampler_missing();
     test_rule8_sampler_present();

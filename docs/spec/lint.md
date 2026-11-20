@@ -26,8 +26,8 @@ the human and for the AI copilot. It never modifies a project.
   `if (cmd == "lint") return cmd_lint(argc - 1, argv + 1);` immediately BEFORE the `if (cmd == "steps")` line.
   No existing line may be modified or removed.
 - Do NOT edit `src/engine/model.*`, `ops.cpp`, `render.cpp` or any other engine file: lint only READS
-  `op::Project` through `engine/model.hpp` as it is today (do not use `pattern_extent` or any helper that does
-  not exist at the base; compute extents locally).
+  `op::Project` through `engine/model.hpp` as it is today (extents were computed locally at the base; after WP-0162
+  the integrated tree uses `op::pattern_extent`).
 
 ## API (exactly this, namespace `op::lint`)
 ```cpp
@@ -44,7 +44,9 @@ std::string to_json(const std::vector<Issue>& issues);
 `severity` is `"error"`, `"warning"` or `"info"`. `lint_project` is a pure function of `p`, `base_dir` and (for
 rule 8 only) the filesystem. Issues are emitted rule by rule in the order below; within a rule in ascending
 index order. Let `bpb = beats_per_bar` and `len_beats = length_bars * bpb`. A pattern's `extent` is
-`max(t_beats + dur_beats)` over its notes (0 if none).
+`op::pattern_extent(pattern)`: its explicit `length_beats` when present (WP-0162), else
+`max(t_beats + dur_beats)` over its notes (0 if none). Rule 6 uses this extent; rule 7 (empty arrangement,
+legacy playback) is unaffected because `length_beats` has no effect without an arrangement.
 
 | # | severity | code | path | message | condition |
 |---|---|---|---|---|---|
