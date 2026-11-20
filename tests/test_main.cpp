@@ -11,6 +11,8 @@
 #include <vector>
 #include <unistd.h>
 
+#include <unistd.h>  // getpid(): unique temp dir for generated sampler assets (WP-0167)
+
 #include "doc/document.hpp"
 #include "engine/analyze.hpp"
 #include "engine/bundle.hpp"
@@ -3890,6 +3892,291 @@ static void test_pattern_swing() {
     fs::remove_all(dir);
 }
 
+// ---------------------------------------------------------------- sampler repitch (WP-0167)
+// Ratio table and read-position rule transcribed straight from docs/spec/project-model.md
+// §Sampler repitch so the test checks the engine against the spec text, not just against itself.
+static double rp_ratio(int shift) {
+    static const double kT[12] = {1.0,               1.0594630943592953, 1.122462048309373,
+                                  1.189207115002721, 1.2599210498948732, 1.3348398541700344,
+                                  1.4142135623730951, 1.4983070768766815, 1.5874010519681996,
+                                  1.681792830507429, 1.7817974362806785, 1.887748625363387};
+    int q = shift / 12;          // truncating division → fix up to floor for negative shifts
+    int r = shift - 12 * q;
+    if (r < 0) { r += 12; --q; }
+    double ratio = kT[r];
+    for (int i = 0; i < q; ++i) ratio *= 2.0;
+    for (int i = 0; i > q; --i) ratio /= 2.0;
+    return ratio;
+}
+
+// The spec's output frame n of the repitched slice x[from .. from+len); false when the source has run
+// out (the interpolation needs x[k+1]). Usage: rp_sample(x, 0, x.size(), rp_ratio(7), 3, y).
+static bool rp_sample(const std::vector<float>& x, size_t from, size_t len, double ratio, long long n, float& y) {
+    const double pos = static_cast<double>(n) * ratio;
+    const long long k = static_cast<long long>(pos);  // pos >= 0 → truncation IS the floor
+    if (k + 1 >= static_cast<long long>(len)) return false;
+    const double frac = pos - static_cast<double>(k);
+    const double a = x[from + static_cast<size_t>(k)], b = x[from + static_cast<size_t>(k) + 1];
+    y = static_cast<float>(a + frac * (b - a));
+    return true;
+}
+
+// One-track sampler project; pan -1 → left gain exactly 1.0, pan +1 → right gain exactly 1.0, so a
+// channel can be compared to the raw source without any gain arithmetic. Notes carry optional "note" pitch.
+static bool rp_parse(const nlohmann::json& voice, const nlohmann::json& notes, op::Project& p, std::string& err,
+                     double pan = -1.0) {
+    nlohmann::json j;
+    j["format_version"] = 0; j["bpm"] = 120.0; j["sample_rate"] = 48000;
+    j["length_bars"] = 1.0; j["beats_per_bar"] = 4; j["seed"] = 7;
+    nlohmann::json tk = {{"name", "S"}, {"gain_db", 0.0}, {"pan", pan}, {"voice", voice}};
+    j["tracks"] = nlohmann::json::array();
+    j["tracks"].push_back(tk);
+    nlohmann::json pat = {{"track", 0}};
+    pat["notes"] = notes;
+    j["patterns"] = nlohmann::json::array();
+    j["patterns"].push_back(pat);
+    return op::project_from_json(j, p, err);
+}
+
+// Full interleaved buffer of a render with base_dir `dir` (assets live in the WP-0167 temp dir).
+static bool rp_render(const op::Project& p, const std::string& dir, op::wav::StereoBuffer& b, std::string& err) {
+    return op::render_project(p, dir, b, err);
+}
+
+static void test_sampler_repitch() {
+    using nlohmann::json;
+    std::string err;
+
+    // Unique temp dir for generated assets (parallel CI runs must not collide); removed at the end.
+    const std::filesystem::path tmp = tmp_file("op_repitch");
+    std::filesystem::remove_all(tmp);
+    std::filesystem::create_directories(tmp);
+    const std::string dir = tmp.string();
+
+    // Assets: mono ramp frame i = i/32768 (PCM16-exact); stereo ramp L[i]=i/32768, R[i]=(999-i)/32768.
+    const size_t N = 1000;
+    std::vector<float> ramp(N);
+    for (size_t i = 0; i < N; ++i) ramp[i] = static_cast<float>(i) / 32768.0f;
+    write_mono_pcm16(dir + "/op_rp_ramp.wav", 48000, ramp);
+    {
+        op::wav::StereoBuffer sb;
+        sb.sample_rate = 48000;
+        sb.interleaved.resize(N * 2);
+        for (size_t i = 0; i < N; ++i) {
+            sb.interleaved[2 * i] = ramp[i];
+            sb.interleaved[2 * i + 1] = static_cast<float>(999 - i) / 32768.0f;
+        }
+        CHECK(op::wav::write_wav_stereo(dir + "/op_rp_stereo.wav", sb, op::wav::SampleFormat::Pcm16, err),
+              "repitch.stereo_asset_written");
+    }
+
+    // (1)-(2) parse: root stored; absent stays -1.
+    op::Project pa;
+    const json va = {{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"root_note", 60}};
+    CHECK(rp_parse(va, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 72}}}), pa, err) &&
+              pa.tracks[0].voice.root_note == 60,
+          "repitch.parse_stored");
+    op::Project pd;
+    const json vd = {{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}};
+    CHECK(rp_parse(vd, json::array({{{"t", 0.0}, {"dur", 4.0}}}), pd, err) && pd.tracks[0].voice.root_note == -1,
+          "repitch.parse_default_absent");
+
+    // (3)-(8) parse errors: exact strings; trim keys still checked first (WP-0156 order).
+    op::Project scratch;
+    CHECK(!rp_parse({{"kind", "metronome"}, {"root_note", 60}}, json::array(), scratch, err) &&
+              err == "voice.root_note is only valid for sampler voices", "repitch.e_non_sampler");
+    const std::string e_int = "voice.root_note must be an integer 0..127";
+    CHECK(!rp_parse({{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"root_note", "60"}}, json::array(), scratch,
+                    err) && err == e_int, "repitch.e_string");
+    CHECK(!rp_parse({{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"root_note", 60.0}}, json::array(), scratch,
+                    err) && err == e_int, "repitch.e_float");
+    CHECK(!rp_parse({{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"root_note", nullptr}}, json::array(), scratch,
+                    err) && err == e_int, "repitch.e_null");
+    CHECK(!rp_parse({{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"root_note", -1}}, json::array(), scratch,
+                    err) && err == e_int, "repitch.e_below_range");
+    CHECK(!rp_parse({{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"root_note", 128}}, json::array(), scratch,
+                    err) && err == e_int, "repitch.e_above_range");
+    CHECK(!rp_parse({{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"start_s", -1.0}, {"root_note", 60}},
+                    json::array(), scratch, err) &&
+              err == "voice.start_s must be a finite number >= 0", "repitch.e_trim_first");
+
+    // (9)-(11) canonical save: omitted when absent; emitted after end_s when present; round-trip stable.
+    const std::string bytes_absent = op::project_bytes(pd);
+    CHECK(bytes_absent.find("root_note") == std::string::npos, "repitch.canonical_omits_missing");
+    op::Project pwe;
+    const json vwe = {{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"end_s", 0.5}, {"root_note", 60}};
+    CHECK(rp_parse(vwe, json::array({{{"t", 0.0}, {"dur", 4.0}}}), pwe, err), "repitch.parse_end_plus_root_ok");
+    const std::string bytes_both = op::project_bytes(pwe);
+    const size_t pos_end = bytes_both.find("\"end_s\"");
+    const size_t pos_root = bytes_both.find("\"root_note\": 60");
+    CHECK(pos_end != std::string::npos && pos_root != std::string::npos && pos_end < pos_root,
+          "repitch.canonical_emits_after_end_s");
+    op::Project back;
+    CHECK(op::project_from_json(json::parse(bytes_both), back, err) && op::project_bytes(back) == bytes_both &&
+              back.tracks[0].voice.root_note == 60, "repitch.canonical_roundtrip_stable");
+
+    // (12)-(13) +12 semitones: ratio exactly 2.0 → out[n] == x[2n]; source runs out at n = 500.
+    op::Project p12;
+    const json v12 = {{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"root_note", 60}};
+    CHECK(rp_parse(v12, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 72}}}), p12, err), "repitch.p12_parse");
+    op::wav::StereoBuffer b12;
+    CHECK(rp_render(p12, dir, b12, err), "repitch.p12_render");
+    bool doublings_exact = true;
+    for (long long n = 0; n < 500; ++n) {
+        const float want = ramp[static_cast<size_t>(2 * n)];
+        doublings_exact = doublings_exact && b12.interleaved[2 * n] == want && b12.interleaved[2 * n + 1] == 0.0f;
+    }
+    CHECK(doublings_exact, "repitch.p12_out_equals_x2n");
+    bool silent_after_12 = true;
+    for (size_t n = 500; n < b12.frames(); ++n) silent_after_12 = silent_after_12 && b12.interleaved[2 * n] == 0.0f;
+    CHECK(silent_after_12 && b12.interleaved[998] != 0.0f, "repitch.p12_source_runout_silence");
+
+    // (14)-(15) -12 semitones: ratio exactly 0.5 → even frames copy x[m], odd frames exact midpoints.
+    op::Project pm12;
+    CHECK(rp_parse(v12, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 48}}}), pm12, err), "repitch.pm12_parse");
+    op::wav::StereoBuffer bm12;
+    CHECK(rp_render(pm12, dir, bm12, err), "repitch.pm12_render");
+    bool midpoints_exact = true;
+    for (long long n = 0; n < 1998; ++n) {
+        const size_t m = static_cast<size_t>(n / 2);
+        const float want = (n % 2 == 0) ? ramp[m]
+                                        : static_cast<float>((static_cast<double>(ramp[m]) + static_cast<double>(ramp[m + 1])) * 0.5);
+        midpoints_exact = midpoints_exact && bm12.interleaved[2 * n] == want;
+    }
+    CHECK(midpoints_exact, "repitch.pm12_interpolated_midpoints");
+    bool silent_after_m12 = true;
+    for (size_t n = 1998; n < bm12.frames(); ++n) silent_after_m12 = silent_after_m12 && bm12.interleaved[2 * n] == 0.0f;
+    CHECK(silent_after_m12 && bm12.interleaved[2 * 1997] != 0.0f, "repitch.pm12_source_runout_silence");
+
+    // (16)-(17) +7: every sounding frame matches the in-test spec recomputation within 1 LSB (1/32768).
+    op::Project pp7;
+    CHECK(rp_parse(v12, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 67}}}), pp7, err), "repitch.p7_parse");
+    op::wav::StereoBuffer bp7;
+    CHECK(rp_render(pp7, dir, bp7, err), "repitch.p7_render");
+    const double r7 = rp_ratio(7);
+    bool p7_matches = true;
+    long long p7_frames = 0;
+    for (long long n = 0; n < static_cast<long long>(bp7.frames()); ++n) {
+        float want;
+        if (!rp_sample(ramp, 0, N, r7, n, want)) break;
+        p7_matches = p7_matches && std::fabs(bp7.interleaved[2 * n] - want) <= 1.0f / 32768.0f;
+        ++p7_frames;
+    }
+    CHECK(p7_matches && p7_frames > 600, "repitch.p7_matches_spec_formula_1lsb");
+    bool silent_after_p7 = true;
+    for (long long n = p7_frames; n < static_cast<long long>(bp7.frames()); ++n)
+        silent_after_p7 = silent_after_p7 && bp7.interleaved[2 * n] == 0.0f;
+    CHECK(silent_after_p7, "repitch.p7_note_ends_at_source_runout");
+
+    // (18) short note gates the repitched sample (0.001 beat = 24 frames at 120 bpm / 48 kHz).
+    op::Project pg7 = pp7;
+    pg7.patterns[0].notes[0].dur_beats = 0.001;
+    op::wav::StereoBuffer bg7;
+    float g_want = 0.0f;
+    CHECK(rp_render(pg7, dir, bg7, err) && rp_sample(ramp, 0, N, r7, 23, g_want) &&
+              bg7.interleaved[2 * 23] == g_want && bg7.interleaved[2 * 24] == 0.0f, "repitch.p7_short_note_gates");
+
+    // (19)-(20) shift 0 paths render byte-identical to the same project without a root: P == root, and
+    // note pitch absent (uses the root). Left channel compared frame by frame against the unrooted render.
+    op::Project pzero;
+    CHECK(rp_parse(v12, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 60}}}), pzero, err), "repitch.pzero_parse");
+    op::wav::StereoBuffer bzero, bnoroot;
+    CHECK(rp_render(pzero, dir, bzero, err) && rp_render(pd, dir, bnoroot, err) &&
+              std::memcmp(bzero.interleaved.data(), bnoroot.interleaved.data(),
+                          bnoroot.interleaved.size() * sizeof(float)) == 0, "repitch.p_eq_root_bitexact");
+    op::Project pnopitch;
+    CHECK(rp_parse(v12, json::array({{{"t", 0.0}, {"dur", 4.0}}}), pnopitch, err), "repitch.pnopitch_parse");
+    op::wav::StereoBuffer bnoop;
+    CHECK(rp_render(pnopitch, dir, bnoop, err) &&
+              std::memcmp(bnoop.interleaved.data(), bnoroot.interleaved.data(),
+                          bnoroot.interleaved.size() * sizeof(float)) == 0, "repitch.absent_pitch_bitexact");
+
+    // (21)-(22) stereo asset: both channels interpolate independently (+5 shift). Rendered twice —
+    // hard-left for the L comparison, hard-right for the R comparison — so gains are exactly 1.0.
+    op::Project pst;
+    const json vst = {{"kind", "sampler"}, {"path", "op_rp_stereo.wav"}, {"root_note", 60}};
+    CHECK(rp_parse(vst, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 65}}}), pst, err), "repitch.stereo_parse");
+    op::Project pst_r;
+    CHECK(rp_parse(vst, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 65}}}), pst_r, err, 1.0),
+          "repitch.stereo_parse_right");
+    std::vector<float> sl(N), sr(N);
+    for (size_t i = 0; i < N; ++i) { sl[i] = ramp[i]; sr[i] = static_cast<float>(999 - i) / 32768.0f; }
+    const double r5 = rp_ratio(5);
+    bool stereo_left_ok = true, stereo_right_ok = true;
+    for (int side = 0; side < 2; ++side) {
+        op::wav::StereoBuffer bst;
+        if (!rp_render(side == 0 ? pst : pst_r, dir, bst, err)) { stereo_left_ok = stereo_right_ok = false; break; }
+        for (long long n = 0; n < static_cast<long long>(bst.frames()); ++n) {
+            float wl, wr;
+            if (!rp_sample(sl, 0, N, r5, n, wl)) break;
+            const bool ok_r = rp_sample(sr, 0, N, r5, n, wr);
+            if (!ok_r) { stereo_left_ok = stereo_right_ok = false; break; }
+            const float got_l = bst.interleaved[2 * n], got_r = bst.interleaved[2 * n + 1];
+            if (side == 0) stereo_left_ok = stereo_left_ok && std::fabs(got_l - wl) <= 1.0f / 32768.0f;
+            else stereo_right_ok = stereo_right_ok && std::fabs(got_r - wr) <= 1.0f / 32768.0f;
+        }
+    }
+    CHECK(stereo_left_ok, "repitch.stereo_channel_left_repitched");
+    CHECK(stereo_right_ok, "repitch.stereo_channel_right_repitched");
+
+    // (22)-(23) slice stage runs BEFORE repitch: slice [96, 480) of the ramp, +12 → out[n] == x[96+2n].
+    op::Project ptrim;
+    const json vtrim = {{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"start_s", 0.002}, {"end_s", 0.01},
+                        {"root_note", 60}};
+    CHECK(rp_parse(vtrim, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 72}}}), ptrim, err),
+          "repitch.trimmed_slice_parse");
+    op::wav::StereoBuffer btrim;
+    bool trim_matches = true;
+    if (rp_render(ptrim, dir, btrim, err)) {
+        for (long long n = 0; n < 192; ++n)  // slice L=384: last read pair x[478],x[479] at n=191
+            trim_matches = trim_matches && btrim.interleaved[2 * n] == ramp[static_cast<size_t>(96 + 2 * n)];
+        for (long long n = 192; n < static_cast<long long>(btrim.frames()); ++n)
+            trim_matches = trim_matches && btrim.interleaved[2 * n] == 0.0f;
+    } else {
+        trim_matches = false;
+    }
+    CHECK(trim_matches, "repitch.trimmed_slice_is_repitched");
+
+    // (24) a slice of L = 1 yields silence, not an error.
+    op::Project pone;
+    const json vone = {{"kind", "sampler"}, {"path", "op_rp_ramp.wav"}, {"start_s", 0.002}, {"end_s", 0.00203},
+                       {"root_note", 60}};
+    const bool one_parsed = rp_parse(vone, json::array({{{"t", 0.0}, {"dur", 4.0}, {"note", 72}}}), pone, err);
+    op::wav::StereoBuffer bone;
+    const bool one_rendered = one_parsed && rp_render(pone, dir, bone, err);
+    bool one_quiet = true;
+    for (float x : bone.interleaved) if (x != 0.0f) one_quiet = false;
+    CHECK(one_parsed && one_rendered && one_quiet, "repitch.slice_len_1_is_silence");
+
+    // (25)-(31) set_sampler_root op: sets, clears with null, rejects with exact strings + unchanged file.
+    op::Project po;
+    op::Track tk; tk.name = "S"; tk.pan = -1.0f;
+    tk.voice.kind = op::VoiceKind::Sampler; tk.voice.path = "op_rp_ramp.wav";
+    po.bpm = 120.0; po.length_bars = 1.0; po.beats_per_bar = 4; po.sample_rate = 48000;
+    po.tracks.push_back(tk);
+    op::Track mk; mk.name = "M"; mk.voice.kind = op::VoiceKind::Metronome;
+    po.tracks.push_back(mk);
+    CHECK(op::apply_op(po, json{{"op", "set_sampler_root"}, {"index", 0}, {"root_note", 60}}, err) &&
+              po.tracks[0].voice.root_note == 60, "ops.set_sampler_root_sets");
+    CHECK(op::project_bytes(po).find("\"root_note\": 60") != std::string::npos, "ops.set_sampler_root_saved");
+    CHECK(op::apply_op(po, json{{"op", "set_sampler_root"}, {"index", 0}, {"root_note", nullptr}}, err) &&
+              po.tracks[0].voice.root_note == -1 && op::project_bytes(po).find("root_note") == std::string::npos,
+          "ops.set_sampler_root_null_clears");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_root"}, {"index", 0}, {"root_note", 128}}, err) &&
+              err == "set_sampler_root: voice.root_note must be an integer 0..127", "ops.set_sampler_root_reject_128");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_root"}, {"index", 0}, {"root_note", -1}}, err) &&
+              err == "set_sampler_root: voice.root_note must be an integer 0..127", "ops.set_sampler_root_reject_neg");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_root"}, {"index", 0}, {"root_note", 60.5}}, err) &&
+              err == "set_sampler_root: 'root_note' must be an integer or null", "ops.set_sampler_root_reject_float");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_root"}, {"index", 1}, {"root_note", 60}}, err) &&
+              err == "set_sampler_root: track is not a sampler voice", "ops.set_sampler_root_reject_non_sampler");
+    CHECK(rejected_unchanged(po, json{{"op", "set_sampler_root"}, {"index", 0}}, err) &&
+              err == "set_sampler_root: missing argument 'root_note'", "ops.set_sampler_root_reject_missing");
+
+    std::filesystem::remove_all(tmp);
+    std::printf("INFO sampler repitch: +12 doubling, -12 midpoints, +7 spec recomputation checked\n");
+}
+
 // --- AIFF / AIFF-C reader (WP-0158): test-side byte builders (big-endian, explicit assembly).
 namespace aiff_t {
 using Bytes = std::vector<uint8_t>;
@@ -4571,6 +4858,7 @@ int main() {
     test_pattern_length();
     test_new_project();
     test_pattern_swing();
+    test_sampler_repitch();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     if (g_failures == 0) {
         std::error_code ec;

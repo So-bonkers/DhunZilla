@@ -557,3 +557,45 @@ booleans give the same message. `-0.0` is accepted and treated as `0`.
 
 **Canonical save** omits `"swing"` when it is exactly `0` (so every existing file and golden round-trips
 byte-identically) and writes the number otherwise. Operation: `set_pattern_swing` (see `operations.md`).
+
+## Sampler repitch — additive (WP-0167)
+A sampler voice may declare the MIDI pitch its asset sounds at: `{"kind": "sampler", "path": "...", "root_note": 60}`.
+`root_note` is optional, an integer `0..127`, valid **only on sampler voices**. A note with an explicit pitch `P`
+(`note.note`, `0..127`) then plays the sample resampled by the ratio below. Everything else about playback
+(velocity, pan, gain, clips, tempo map, mute/solo) is unchanged.
+
+**Defaults / bit-exactness.** `root_note` absent → the sampler render path is the pre-WP-0167 path, byte for
+byte (committed goldens prove it). With `root_note` present, a note whose pitch is absent (`note.note` omitted)
+**uses the root: shift 0**, and a note with `P == root_note` is shift 0 too; **shift 0 takes the existing path**
+(output identical to the same render with `root_note` absent). Only notes with `P != root_note` use the formula.
+
+**Order of stages (normative).** (1) the asset is resampled to the project rate (WP-0138, unchanged), (2) the
+trim slice `[i0, i1)` is cut from that buffer (WP-0156, unchanged, including its `sampler: trim slice is empty`
+error), (3) the slice is repitched. Let `x[j] = buffer[i0 + j]` for `j = 0 .. L-1` with `L = i1 - i0`
+(per channel for stereo assets; a mono asset feeds both outputs).
+
+**Ratio (exact).** `shift = P - root_note` (integer, `-127..127`). Let `q = floor(shift / 12)` (floor division,
+so `-1` for `shift = -1`) and `r = shift - 12*q` (`0..11`). `ratio = T[r] * 2^q` in `double`, where `2^q` is
+applied by exact multiplication/division by `2.0` (no libm) and `T[r]` are these `double` constants
+(`2^(r/12)` correctly rounded):
+`T = {1.0, 1.0594630943592953, 1.122462048309373, 1.189207115002721, 1.2599210498948732, 1.3348398541700344,
+1.4142135623730951, 1.4983070768766815, 1.5874010519681996, 1.681792830507429, 1.7817974362806785,
+1.887748625363387}`. So `shift = +12` gives `ratio = 2.0` and `shift = -12` gives `ratio = 0.5` exactly.
+
+**Read position and interpolation (exact).** For the note's output frame `n = 0, 1, 2, ...`
+(relative to the note start): `pos = double(n) * ratio` (one multiplication per frame — NOT a running sum, so no
+drift), `k = floor(pos)` (as a 64-bit integer), `frac = pos - double(k)` (in `[0, 1)`). The note is silent from
+the first `n` for which `k + 1 >= L` (the interpolation needs `x[k+1]`; the last source frame is therefore
+never the left neighbour). For every earlier `n` the output sample, per channel, is **linear interpolation in
+double**: `y = double(x[k]) + frac * (double(x[k+1]) - double(x[k]))`, stored as `float(y)` and then mixed with
+the same gain/pan/velocity path as today. The note sounds for `min(M, llround(note.dur * spb))` frames, where
+`M` is the number of frames before the source runs out per the rule above — a note shorter than that gates the
+sample (cut, no fade), a longer one is one-shot (no loop). A slice of `L = 1` yields silence (no error).
+
+**Validation** (project parse, same path as `load_project` and operations; checked after the WP-0156 trim keys,
+first failure wins, only when the key is present):
+- `root_note` on a non-sampler voice → `voice.root_note is only valid for sampler voices`;
+- `root_note` not a JSON integer in `0..127` (a string, a float such as `60.0` or `60.5`, `null`, `-1`, `128`)
+  → `voice.root_note must be an integer 0..127`.
+Canonical save emits `root_note` only when present (after `end_s`); legacy files round-trip byte-identically.
+`opd diff` is unchanged: a root difference is reported as any voice change (`unsupported difference: tracks[i].voice`).
