@@ -45,6 +45,7 @@ struct Note {
 
 struct Pattern {
     int track = 0;               // index into Project::tracks
+    std::string id;              // optional name (WP-0179): "" = unnamed; non-empty ids unique
     double swing = 0.0;          // render-time groove, [0, 0.75] (WP-0166)
     std::vector<Note> notes;
     std::optional<double> length_beats;  // explicit loop period (WP-0162, spec §Explicit pattern
