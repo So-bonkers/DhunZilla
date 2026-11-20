@@ -191,6 +191,16 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
             if (pat.track < 0 || static_cast<size_t>(pat.track) >= p.tracks.size()) {
                 err = "pattern.track out of range: " + std::to_string(pat.track); return false;
             }
+            // Pattern swing (WP-0166, spec project-model.md §Pattern swing): checked right after
+            // pattern.track, before the notes. -0.0 passes (< 0.0 is false for -0.0) and equals 0.
+            if (pj.contains("swing")) {
+                const json& sw = pj.at("swing");
+                if (!sw.is_number() || !std::isfinite(sw.get<double>()) ||
+                    sw.get<double>() < 0.0 || sw.get<double>() > 0.75) {
+                    err = "pattern.swing must be a number in [0, 0.75]"; return false;
+                }
+                pat.swing = sw.get<double>();
+            }
             if (pj.contains("notes") && pj["notes"].is_array()) {
                 for (const auto& nj : pj["notes"]) {
                     Note n;
@@ -459,6 +469,7 @@ json project_to_json(const Project& p) {
         json pj;
         pj["track"] = pat.track;
         if (pat.length_beats) pj["length_beats"] = *pat.length_beats;  // WP-0162: omitted when absent → legacy bytes
+        if (pat.swing != 0.0) pj["swing"] = pat.swing;  // WP-0166: omitted at default → legacy canonical bytes
         json notes = json::array();
         for (const auto& n : pat.notes) {
             json nj;

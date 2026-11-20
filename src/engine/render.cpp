@@ -265,6 +265,13 @@ std::string join_path(const std::string& dir, const std::string& rel) {
     return dir + "/" + rel;
 }
 
+// Pattern swing (WP-0166, spec project-model.md §Pattern swing): a note is swung iff its
+// pattern-local t is exactly an odd 16th step. Multiplying by 4 is exact (power-of-two scale).
+bool is_odd_sixteenth(double t) {
+    const double q = t * 4.0;
+    return std::floor(q) == q && std::fmod(q, 2.0) == 1.0;
+}
+
 // ---------------------------------------------------------------- tempo map (WP-0105)
 // Bar-anchored piecewise-constant tempo. Empty segments = constant bpm: at() then computes
 // exactly llround(beats * spb_const) — the legacy expression, so legacy renders stay bit-exact.
@@ -398,7 +405,11 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 mt = &clip_t;
             }
             for (const Note& note : pat.notes) {
-                const double t_abs = (offset_beats == 0.0) ? note.t_beats : offset_beats + note.t_beats;
+                double t_abs = (offset_beats == 0.0) ? note.t_beats : offset_beats + note.t_beats;
+                // Pattern swing (WP-0166): odd 16ths play late by swing * 0.125 beats, added last to
+                // the absolute beat position before the existing at()/spb_at() calls. swing == 0.0
+                // skips the arithmetic entirely → legacy path bit-exact (goldens prove it).
+                if (pat.swing != 0.0 && is_odd_sixteenth(note.t_beats)) t_abs += pat.swing * 0.125;
                 const long long start = tmap.at(t_abs);
                 const double spb = tmap.spb_at(t_abs);  // local tempo at note start governs duration
                 if (start >= total) continue;  // beyond render window

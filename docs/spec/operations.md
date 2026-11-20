@@ -114,7 +114,8 @@ a zero-byte file (exit 0). Operations are emitted in this fixed order (output is
 6. `add_track` for b's extra tracks, ascending (`track` = b's canonical track JSON);
 7. for pattern i = 0.. (i < min pattern count): let k = length of the longest common prefix of a's and b's
    note lists; `remove_note` for a's note indices `size-1` down to k (descending), then `add_note` for b's
-   notes k.. ascending (`note` = b's canonical note JSON);
+   notes k.. ascending (`note` = b's canonical note JSON), then (WP-0166)
+   `set_pattern_swing` if the pattern's `swing` differs (absent = 0; `swing` = b's value, `0.0` when b's is absent);
 8. `add_pattern` for b's extra patterns, ascending;
 9. for clip i = 0.. (i < min clip count), in this order: `set_clip_pattern` if `pattern` differs and
    it was NOT already emitted in step 1b (i.e. `size(a.patterns) <= size(b.patterns)`; all of b's patterns
@@ -129,6 +130,7 @@ emitted: a duplicated or reordered clip simply shows up as per-position field ch
 added tail clip (correct, not minimal). Detecting inserts/moves is deliberately not attempted.
 Pairs whose clip lists agree in every shared position's `pattern` and `repeats` produce exactly the same
 journal bytes as before WP-0159.
+Projects whose patterns all have equal `swing` produce exactly the same journals as before WP-0166.
 
 Finally `diff_projects` applies its own journal to a copy of `a` and returns false with
 `unsupported difference: (journal does not reproduce target)` if the result is not equal to `b` (safety
@@ -362,3 +364,20 @@ the `pattern` JSON. Projects without the field produce exactly the same journals
 When `--steps` is NOT given and the pattern has `length_beats`, the width is `ceil(length_beats * 4)` clamped
 to `[1, 256]` (so `length_beats` 4 gives 16 steps, 8 gives 32, 0.5 gives 2). An explicit `--steps N` always
 wins. Without `length_beats` the default stays 16. `step_grid` itself is unchanged.
+
+## Pattern swing operation — additive (WP-0166)
+| op | arguments | effect |
+|---|---|---|
+| `set_pattern_swing` | `pattern`, `swing` | set `patterns[pattern].swing` (semantics: `docs/spec/project-model.md` §Pattern swing) |
+
+Follows the Apply semantics unchanged (strict keys, copy → JSON edit → save→parse validation → commit; no second
+ruleset). Argument checks, in this order, error strings `set_pattern_swing: <reason>`:
+1. unknown key → `unknown argument '<key>'`;
+2. `pattern` an integer in `[0, #patterns)` (existing `arg_index` messages: `missing argument 'pattern'`,
+   `'pattern' must be an integer` (also `1.0`), `'pattern' out of range`);
+3. `swing` required JSON number: `missing argument 'swing'` / `'swing' must be a number`;
+4. the edit writes `patterns[pattern].swing = swing`, then the model parse enforces the range, giving
+   `set_pattern_swing: pattern.swing must be a number in [0, 0.75]` (range is NOT re-implemented in the op).
+`swing: 0` restores the default and the canonical save then omits the key (byte-identical to a never-swung
+project). Setting the value it already has is a successful op (pushes an undo snapshot). Undo/redo: whole-project
+snapshots, byte-exact as for every op. `opd diff` emits this op (see §`opd diff` step 7).
