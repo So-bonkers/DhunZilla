@@ -22,6 +22,7 @@
 #include "engine/model.hpp"
 #include "engine/normalize.hpp"
 #include "engine/ops.hpp"
+#include "engine/peaks.hpp"
 #include "engine/render.hpp"
 #include "engine/sample_index.hpp"
 #include "engine/wav.hpp"
@@ -48,6 +49,7 @@ static void usage() {
         "  opd info <file>   (.wav | .opj | .opd | .mid)\n"
         "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
         "  opd lint <proj.opj> [--json]   (read-only project sanity checks as JSON)\n"
+        "  opd peaks <in.wav> [--bins N]   (min/max waveform peaks per bin as JSON)\n"
         "  opd loudness <in.wav> [--json]   (true peak dBTP, momentary/short-term max LUFS, loudness range as JSON)\n"
         "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
@@ -830,6 +832,40 @@ static int cmd_samples(int argc, char** argv) {
     return 0;
 }
 
+// opd peaks <in.wav> [--bins N] — min/max waveform peaks per bin as JSON (docs/spec/peaks.md, WP-0171).
+// Reads WAV or AIFF via op::wav::read_audio; prints to_json(compute_peaks(...)) to stdout and nothing else.
+// Exit codes: 2 usage (no file, second positional, unknown option, valueless --bins, bad N), 3 not-found,
+// 4 unreadable audio (message = the reader's error). Errors print nothing on stdout.
+static int cmd_peaks(int argc, char** argv) {
+    std::vector<std::string> pos;
+    long long bins = 1024;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--bins") && i + 1 < argc) {
+            long long v = 0;
+            if (!parse_decimal(argv[i + 1], op::peaks::kMaxBins, v) || v < 1)
+                { usage(); return fail("usage", std::string("bad --bins value '") + argv[i + 1] + "'"); }
+            bins = v;
+            ++i;
+        } else if (!std::strncmp(argv[i], "--", 2)) {  // includes a valueless `--bins` and unknown options
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        } else if (pos.size() < 1) {
+            pos.push_back(argv[i]);
+        } else {  // second positional
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        }
+    }
+    if (pos.empty()) { usage(); return fail("usage", "peaks needs <in.wav>"); }
+    const std::string& path = pos[0];
+    if (!fs::exists(path)) return fail("not_found", path);
+    op::wav::ReadResult rr = op::wav::read_audio(path);
+    if (!rr.ok) return fail("parse", rr.error);
+    const op::peaks::Peaks p =
+        op::peaks::compute_peaks(rr.samples, rr.channels, rr.sample_rate, static_cast<int>(bins));
+    const std::string json = op::peaks::to_json(p);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -848,6 +884,7 @@ int main(int argc, char** argv) {
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
     if (cmd == "lint") return cmd_lint(argc - 1, argv + 1);
+    if (cmd == "peaks") return cmd_peaks(argc - 1, argv + 1);
     if (cmd == "loudness") return cmd_loudness(argc - 1, argv + 1);
     if (cmd == "normalize") return cmd_normalize(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
