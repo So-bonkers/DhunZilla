@@ -76,3 +76,51 @@ Gain 0 dB therefore leaves every sample bit-identical.
   `op::wav::write_wav_stereo` at the input sample rate.
 - On success stdout is exactly one line:
   `{"input_lufs":%.4f,"input_peak_dbfs":%.4f,"gain_db":%.4f,"limited":true|false}` + `\n`.
+
+## `opd render --normalize-lufs` — normalize while rendering (additive, WP-0189)
+
+Status: normative (WP-0189). `opd render` can apply the `op::normalize` module (`plan_gain` + `apply_gain_db`,
+unchanged) to the mixed output before it is written, so a bounce lands at a target loudness in one step.
+Without `--normalize-lufs` nothing changes: `opd render` output (files and stdout) stays bit-identical.
+
+### Files
+- `src/cli/main.cpp` only (`cmd_render`). No engine file, no `normalize.*`, no `CMakeLists.txt` change.
+- `harness/test_render_normalize.sh` (new): CLI contract script, style of `harness/test_cli_errors.sh`.
+
+### CLI
+`opd render <proj.opj> -o <out.wav> [existing options] [--normalize-lufs <L> [--ceiling-dbfs <C>]]`
+- `--normalize-lufs <L>`: target integrated LUFS. `--ceiling-dbfs <C>`: sample-peak ceiling, default `-1.0`,
+  only valid together with `--normalize-lufs`. Both take a value; either may appear anywhere among the other
+  options; if given twice the last one wins (as for the other render options). An option given as the last
+  argument without a value falls into the existing `unknown arg '<option>'` usage error.
+- Number arguments must parse whole and finite (`parse_bar_value`). Usage errors exit 2, nothing is written
+  (no output, no stems dir), and are detected BEFORE the project file is loaded. After the existing option loop,
+  the existing `missing -o <out.wav>` check and the existing `--loop cannot be combined ...` check, these are
+  checked in exactly this order (the first failure is reported); each message follows `error: usage: `:
+  1. `--normalize-lufs` not parseable: `bad --normalize-lufs value '<L as given>'`
+  2. `--normalize-lufs` outside `[-70, 0]`: `--normalize-lufs must be in [-70, 0]`
+  3. `--ceiling-dbfs` not parseable: `bad --ceiling-dbfs value '<C as given>'`
+  4. `--ceiling-dbfs` outside `[-30, 0]`: `--ceiling-dbfs must be in [-30, 0]`
+  5. `--ceiling-dbfs` given without `--normalize-lufs`: `--ceiling-dbfs requires --normalize-lufs`
+  (`-70`, `0`, `-30` are accepted; `nan`, `inf`, `1e999` are "bad value".) All later existing checks
+  (`--from-bar` parsing and bounds, project load) are unchanged and come after these.
+- Order of operations: render the project (mix, or mix + stems when `--stems-dir` is given), slice to the bar
+  range if `--from-bar/--to-bar/--loop` were used, THEN plan the gain on the sliced stereo mix:
+  `op::normalize::plan_gain(mix.interleaved, 2, mix.sample_rate, L, C, plan, err)`, then
+  `op::normalize::apply_gain_db(mix.interleaved, plan.gain_db)`. With `--stems-dir`, the SAME `plan.gain_db` is
+  applied to every sliced stem (the stems keep summing to the mix; stem loudness is not measured separately).
+  `--format` is applied when writing, after the gain (the gain happens in float, quantisation last).
+- `plan_gain` failure (silent or too short mix): exit 5 with `error: normalize: <err>` (code string
+  `normalize`, message = `err`, e.g. `error: normalize: no measurable loudness (silent or too short)`). In that
+  case the planning has happened before any write, so NO output file, NO stems directory and no stem files are
+  created. Write failures keep their existing exit 5 / `write` behaviour.
+- stdout on success: the existing line(s) exactly as today (`stem ...` lines, then the `rendered ...` line),
+  followed by exactly one more line, the same JSON line as `opd normalize`, printed after the `rendered` line:
+  `{"input_lufs":%.4f,"input_peak_dbfs":%.4f,"gain_db":%.4f,"limited":true|false}` + `\n`, where the values
+  are the `GainPlan` fields (`input_*` describe the un-normalized sliced mix). The `rendered ... frames` count
+  and everything else on those lines is unchanged.
+- Guarantees (same as `opd normalize`): the written file's integrated LUFS is the target within quantisation
+  (pcm16: |error| < 0.05 LU for ordinary program material) unless `limited` is true, and its sample peak is
+  `<= C` (plus at most one pcm LSB for integer formats). `limited` is true iff the ceiling reduced the gain.
+- `opd render` usage text gains a line `[--normalize-lufs L [--ceiling-dbfs C]]` (between the existing
+  render usage line and its `[--format ...]` continuation line).

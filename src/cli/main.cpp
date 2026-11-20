@@ -34,6 +34,7 @@ static void usage() {
     std::fprintf(stderr,
         "usage:\n"
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B] [--loop]\n"
+        "             [--normalize-lufs L [--ceiling-dbfs C]]\n"
         "             [--format pcm16|pcm24|f32]\n"
         "             [--limit-dbfs X]   (master brickwall limiter on the final mix, docs/spec/limiter.md)\n"
         "  opd click <project.opj> -o <out.wav>\n"
@@ -106,6 +107,9 @@ static int cmd_render(int argc, char** argv) {
     bool has_limit = false;   // WP-0176: --limit-dbfs present on the final mix (docs/spec/limiter.md)
     std::string limit_arg;    // raw string for error messages ("<X as given>")
     double limit_db = 0.0;    // parsed value; validated with the other option-syntax checks below
+    bool has_norm = false, has_ceiling = false;  // WP-0189: normalize while rendering (docs/spec/normalize.md)
+    std::string norm_arg, ceiling_arg;           // raw strings for error messages ("<L as given>", "<C as given>")
+    double norm_lufs = 0.0, norm_ceiling = -1.0; // parsed values; ceiling default per spec
     op::wav::SampleFormat fmt = op::wav::SampleFormat::Pcm16;  // default: existing behavior (WP-0149)
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
@@ -122,11 +126,26 @@ static int cmd_render(int argc, char** argv) {
             else { usage(); return fail("usage", "unknown format '" + f + "' (expected pcm16, pcm24 or f32)"); }
         }
         else if (!std::strcmp(argv[i], "--limit-dbfs") && i + 1 < argc) { limit_arg = argv[++i]; has_limit = true; }
+        else if (!std::strcmp(argv[i], "--normalize-lufs") && i + 1 < argc) { norm_arg = argv[++i]; has_norm = true; }
+        else if (!std::strcmp(argv[i], "--ceiling-dbfs") && i + 1 < argc) { ceiling_arg = argv[++i]; has_ceiling = true; }
         else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
     }
     if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
     if (want_loop && (has_from || has_to))
         return fail("usage", "--loop cannot be combined with --from-bar/--to-bar");
+
+    // WP-0189 (docs/spec/normalize.md §opd render --normalize-lufs): value checks with the other option-syntax
+    // checks, i.e. before the project file is opened — nothing is written on any error. Repeating a flag: last wins.
+    if (has_norm && !parse_bar_value(norm_arg, norm_lufs))
+        { usage(); return fail("usage", "bad --normalize-lufs value '" + norm_arg + "'"); }
+    if (has_norm && (norm_lufs < -70.0 || norm_lufs > 0.0))
+        { usage(); return fail("usage", "--normalize-lufs must be in [-70, 0]"); }
+    if (has_ceiling && !parse_bar_value(ceiling_arg, norm_ceiling))
+        { usage(); return fail("usage", "bad --ceiling-dbfs value '" + ceiling_arg + "'"); }
+    if (has_ceiling && (norm_ceiling < -30.0 || norm_ceiling > 0.0))
+        { usage(); return fail("usage", "--ceiling-dbfs must be in [-30, 0]"); }
+    if (has_ceiling && !has_norm)
+        { usage(); return fail("usage", "--ceiling-dbfs requires --normalize-lufs"); }
 
     // WP-0145 validation order (spec): option syntax → project load → bounds. Nothing is written on error.
     if (has_from && !parse_bar_value(from_arg, bar_a)) return fail("usage", "bad --from-bar value '" + from_arg + "'");
@@ -180,12 +199,21 @@ static int cmd_render(int argc, char** argv) {
             op::slice_frames(buf, from_frame, to_frame, sliced);
             buf = std::move(sliced);
         }
+        // WP-0189 (docs/spec/normalize.md): loudness normalisation on the sliced mix, planned BEFORE any
+        // write — a plan failure (silent/too short) exits 5 with no output file at all.
+        op::normalize::GainPlan plan;
+        if (has_norm && !op::normalize::plan_gain(buf.interleaved, 2, buf.sample_rate, norm_lufs, norm_ceiling, plan, err))
+            return fail("normalize", err);
+        if (has_norm) op::normalize::apply_gain_db(buf.interleaved, plan.gain_db);
         // WP-0176: master limiter on the final mix (after any bar-range slicing), immediately before writing.
         if (has_limit && !run_master_limiter(buf, limit_db, err)) return fail("render", err);
         if (!op::wav::write_wav_stereo(out_path, buf, fmt, err)) return fail("write", err);
         std::printf("rendered %lld frames @%d Hz -> %s (seed=%llu)\n",
                     static_cast<long long>(buf.frames()), buf.sample_rate, out_path.c_str(),
                     static_cast<unsigned long long>(p.seed));
+        if (has_norm)  // WP-0189: the same JSON line as opd normalize, after the rendered line
+            std::printf("{\"input_lufs\":%.4f,\"input_peak_dbfs\":%.4f,\"gain_db\":%.4f,\"limited\":%s}\n",
+                        plan.input_lufs, plan.input_peak_dbfs, plan.gain_db, plan.limited ? "true" : "false");
     } else {
         std::vector<op::wav::StereoBuffer> stems;
         op::wav::StereoBuffer mix;
@@ -199,6 +227,16 @@ static int cmd_render(int argc, char** argv) {
                 op::slice_frames(s, from_frame, to_frame, sliced_stem);
                 s = std::move(sliced_stem);
             }
+        }
+        // WP-0189 (docs/spec/normalize.md): plan on the sliced mix BEFORE any write (a plan failure exits 5
+        // with no output file, no stems dir, no stem files); the SAME gain goes on every sliced stem, so the
+        // stems keep summing to the mix.
+        op::normalize::GainPlan plan;
+        if (has_norm && !op::normalize::plan_gain(mix.interleaved, 2, mix.sample_rate, norm_lufs, norm_ceiling, plan, err))
+            return fail("normalize", err);
+        if (has_norm) {
+            op::normalize::apply_gain_db(mix.interleaved, plan.gain_db);
+            for (auto& s : stems) op::normalize::apply_gain_db(s.interleaved, plan.gain_db);
         }
         // WP-0176: the mix only — stems are never limited (docs/spec/limiter.md §CLI).
         if (has_limit && !run_master_limiter(mix, limit_db, err)) return fail("render", err);
@@ -215,6 +253,9 @@ static int cmd_render(int argc, char** argv) {
         std::printf("rendered mix %lld frames @%d Hz -> %s (+%zu stems, seed=%llu)\n",
                     static_cast<long long>(mix.frames()), mix.sample_rate, out_path.c_str(), stems.size(),
                     static_cast<unsigned long long>(p.seed));
+        if (has_norm)  // WP-0189: the same JSON line as opd normalize, after the rendered line
+            std::printf("{\"input_lufs\":%.4f,\"input_peak_dbfs\":%.4f,\"gain_db\":%.4f,\"limited\":%s}\n",
+                        plan.input_lufs, plan.input_peak_dbfs, plan.gain_db, plan.limited ? "true" : "false");
     }
     return 0;
 }
