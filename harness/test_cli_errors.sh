@@ -153,5 +153,20 @@ if [ -s "$TMP/nw.opj" ]; then echo "PASS new_output_written"; else echo "FAIL ne
 err="$("$OPD" new "$TMP/nw.opj" 2>&1 >/dev/null)"; got=$?
 if [ "$got" = 5 ] && [ "$err" = "error: write: $TMP/nw.opj already exists (use --force)" ]; then echo "PASS new_exists_refused (exit 5, spec message)"; else echo "FAIL new_exists_refused: exit $got stderr [$err]"; fails=$((fails+1)); fi
 check new_force            0 "$OPD" new "$TMP/nw.opj" --force
+# --- opd samples (WP-0163): docs/spec/sample-index.md §CLI exit-code contract
+check usage_samples_no_dir   2 "$OPD" samples
+check samples_missing_dir    3 "$OPD" samples "$TMP/never_seen" -o "$TMP/never_s.json"
+if [ ! -e "$TMP/never_s.json" ]; then echo "PASS samples_missing_dir_no_output"; else echo "FAIL samples_missing_dir_no_output"; fails=$((fails+1)); fi
+out="$("$OPD" samples "$TMP/never_seen" 2>/dev/null)"; got=$?
+if [ "$got" = 3 ] && [ -z "$out" ]; then echo "PASS samples_err_stdout_empty (exit 3)"; else echo "FAIL samples_err_stdout_empty: exit $got stdout [$out]"; fails=$((fails+1)); fi
+check samples_bad_option     2 "$OPD" samples "$ROOT/tests/fixtures/goldens/kits" --wat
+check samples_o_no_value     2 "$OPD" samples "$ROOT/tests/fixtures/goldens/kits" -o
+check samples_extra_arg      2 "$OPD" samples "$ROOT/tests/fixtures/goldens/kits" extra.dir
+# success even with errors in the tree; determinism: two runs byte-identical; -o file == stdout bytes
+"$OPD" samples "$ROOT/tests/fixtures/goldens/kits" > "$TMP/s1.json" 2>/dev/null; r1=$?
+"$OPD" samples "$ROOT/tests/fixtures/goldens/kits" > "$TMP/s2.json" 2>/dev/null; r2=$?
+if [ "$r1" = 0 ] && [ "$r2" = 0 ] && cmp -s "$TMP/s1.json" "$TMP/s2.json"; then echo "PASS samples_determinism (byte-identical JSON)"; else echo "FAIL samples_determinism: r1=$r1 r2=$r2"; fails=$((fails+1)); fi
+"$OPD" samples "$ROOT/tests/fixtures/goldens/kits" -o "$TMP/s3.json" > "$TMP/s3_stdout.txt" 2>/dev/null; r3=$?
+if [ "$r3" = 0 ] && [ ! -s "$TMP/s3_stdout.txt" ] && cmp -s "$TMP/s1.json" "$TMP/s3.json"; then echo "PASS samples_o_file_matches_stdout (stdout empty)"; else echo "FAIL samples_o_file_matches_stdout: r3=$r3"; fails=$((fails+1)); fi
 echo "test_cli_errors: $fails failures"
 exit $((fails > 0 ? 1 : 0))
