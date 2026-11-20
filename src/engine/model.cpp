@@ -256,6 +256,24 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
             if (c.repeats < 1 || c.repeats > 4096) { err = "clip.repeats out of range [1..4096]"; return false; }
             c.gain_db = cj.value("gain_db", 0.0);
             if (!(c.gain_db >= -96.0) || c.gain_db > 24.0) { err = "clip.gain_db out of range [-96, 24]"; return false; }
+            // Clip fades (WP-0178, spec project-model.md §Clip fades): checked right after clip.gain_db,
+            // fade-in before fade-out. -0.0 passes (< 0.0 is false for -0.0) and equals 0.
+            if (cj.contains("fade_in_beats")) {
+                const json& fv = cj.at("fade_in_beats");
+                if (!fv.is_number() || !std::isfinite(fv.get<double>()) ||
+                    fv.get<double>() < 0.0 || fv.get<double>() > 4096.0) {
+                    err = "clip.fade_in_beats must be a number in [0, 4096]"; return false;
+                }
+                c.fade_in_beats = fv.get<double>();
+            }
+            if (cj.contains("fade_out_beats")) {
+                const json& fv = cj.at("fade_out_beats");
+                if (!fv.is_number() || !std::isfinite(fv.get<double>()) ||
+                    fv.get<double>() < 0.0 || fv.get<double>() > 4096.0) {
+                    err = "clip.fade_out_beats must be a number in [0, 4096]"; return false;
+                }
+                c.fade_out_beats = fv.get<double>();
+            }
             p.arrangement.push_back(c);
         }
     }
@@ -507,6 +525,8 @@ json project_to_json(const Project& p) {
             cj["pattern"] = c.pattern;
             cj["start_bar"] = c.start_bar;
             cj["repeats"] = c.repeats;
+            if (c.fade_in_beats != 0.0) cj["fade_in_beats"] = c.fade_in_beats;   // WP-0178: omitted at default
+            if (c.fade_out_beats != 0.0) cj["fade_out_beats"] = c.fade_out_beats;  // WP-0178: omitted at default
             if (c.gain_db != 0.0) cj["gain_db"] = c.gain_db;  // omitted at unity → legacy canonical bytes
             arr.push_back(std::move(cj));
         }

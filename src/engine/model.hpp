@@ -64,6 +64,8 @@ struct Clip {
     double start_bar = 0.0;      // placement, bars from project start
     int repeats = 1;             // statements of the pattern, spaced by extent
     double gain_db = 0.0;        // per-clip level (WP-0120), [-96, 24]; 0 omitted on save → legacy bytes
+    double fade_in_beats = 0.0;   // linear fade-in over this many beats from the clip start (WP-0178)
+    double fade_out_beats = 0.0;  // linear fade-out over this many beats ending at the clip end (WP-0178)
 };
 
 // Bar-anchored piecewise-constant tempo change (WP-0105): from bar `bar` onward the project

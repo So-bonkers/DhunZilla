@@ -15,17 +15,37 @@ namespace {
 
 constexpr double kMaxRenderSeconds = 600.0;  // sanity cap for offline v0
 
+// Per-clip fade envelope (WP-0178, spec project-model.md §Clip fades). Absolute frame bounds: a
+// *_len of 0 means that ramp is off. Fade-in region [in_start, in_start+in_len); fade-out region
+// [out_start, out_start+out_len). When they overlap, fade-in wins (checked first). Example:
+//   ClipEnv e{100, 240, 0, 0}; clip_env_gain(e, 220) == float(120.0/240.0);
+struct ClipEnv {
+    long long in_start = 0, in_len = 0, out_start = 0, out_len = 0;
+};
+
+// Linear fade gain at absolute `frame`, in spec order: fade-in first, then fade-out, else unity.
+// Plain arithmetic only (no libm): the ratio is computed in double and cast to float once.
+inline float clip_env_gain(const ClipEnv& e, long long frame) {
+    if (e.in_len > 0 && frame >= e.in_start && frame < e.in_start + e.in_len)
+        return static_cast<float>(static_cast<double>(frame - e.in_start) / static_cast<double>(e.in_len));
+    if (e.out_len > 0 && frame >= e.out_start && frame < e.out_start + e.out_len)
+        return static_cast<float>(1.0 - static_cast<double>(frame - e.out_start) / static_cast<double>(e.out_len));
+    return 1.0f;
+}
+
 // Voice renderers add into interleaved stereo `out` at absolute frame offset, applying track gain+pan.
 struct MixTarget {
     std::vector<float>* out;   // interleaved L,R
     long long total_frames;
     float gain_l, gain_r;
+    const ClipEnv* env = nullptr;  // WP-0178: per-clip fade envelope; null = none
 };
 
 inline void add_stereo(MixTarget& t, long long frame, float l, float r) {
     if (frame < 0 || frame >= t.total_frames) return;
-    (*t.out)[frame * 2 + 0] += l * t.gain_l;
-    (*t.out)[frame * 2 + 1] += r * t.gain_r;
+    const float g = t.env ? clip_env_gain(*t.env, frame) : 1.0f;
+    (*t.out)[frame * 2 + 0] += l * t.gain_l * g;
+    (*t.out)[frame * 2 + 1] += r * t.gain_r * g;
 }
 
 inline float hann_attack(long long n, long long attack_samples) {
@@ -435,15 +455,21 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
         // The default path iterates patterns in declaration order with offset exactly 0.0 and passes
         // note.t_beats through unmodified → bit-identical to pre-WP-0101 renders (goldens prove it).
         const double bpb = static_cast<double>(p.beats_per_bar);
-        auto render_pattern_at = [&](const Pattern& pat, double offset_beats, double clip_gain_db) {
+        auto render_pattern_at = [&](const Pattern& pat, double offset_beats, double clip_gain_db,
+                                     const ClipEnv* env) {
             // Clip gain (WP-0120): one mix-target copy per clip; 0.0 skips entirely → bit-identical.
+            // WP-0178: a fade envelope also needs the copy (it rides on the same target); when both
+            // are absent nothing is copied and the default path stays bit-exact.
             MixTarget* mt = &t;
             MixTarget clip_t;
-            if (clip_gain_db != 0.0) {
+            if (clip_gain_db != 0.0 || env != nullptr) {
                 clip_t = t;
-                const float cg = dsp::db_to_lin(clip_gain_db);
-                clip_t.gain_l *= cg;
-                clip_t.gain_r *= cg;
+                if (clip_gain_db != 0.0) {
+                    const float cg = dsp::db_to_lin(clip_gain_db);
+                    clip_t.gain_l *= cg;
+                    clip_t.gain_r *= cg;
+                }
+                clip_t.env = env;
                 mt = &clip_t;
             }
             for (const Note& note : pat.notes) {
@@ -489,7 +515,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
         if (p.arrangement.empty()) {
             for (const Pattern& pat : p.patterns) {
                 if (static_cast<size_t>(pat.track) != ti) continue;
-                if (!render_pattern_at(pat, 0.0, 0.0)) return false;
+                if (!render_pattern_at(pat, 0.0, 0.0, nullptr)) return false;
             }
         } else {
             for (const Clip& clip : p.arrangement) {
@@ -498,8 +524,22 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 const double extent = pattern_extent(pat);  // loop period, beats (WP-0162 helper)
                 const int reps = (extent > 0.0) ? clip.repeats : 1;
                 const double base = clip.start_bar * bpb;
+                // Clip fades (WP-0178): one envelope per clip spanning all its repeats, built only when
+                // a fade is set. Region bounds via the renderer's own TempoMap::at() (spec §Clip fades).
+                const ClipEnv* env = nullptr;
+                ClipEnv cenv;
+                if (clip.fade_in_beats != 0.0 || clip.fade_out_beats != 0.0) {
+                    const double clip_end_beats = base + static_cast<double>(reps) * extent;
+                    const long long A = tmap.at(base);
+                    cenv.in_start = A;
+                    cenv.in_len = tmap.at(base + clip.fade_in_beats) - A;
+                    const long long E = tmap.at(clip_end_beats);
+                    cenv.out_start = tmap.at(clip_end_beats - clip.fade_out_beats);
+                    cenv.out_len = E - cenv.out_start;
+                    env = &cenv;
+                }
                 for (int r = 0; r < reps; ++r) {
-                    if (!render_pattern_at(pat, base + static_cast<double>(r) * extent, clip.gain_db)) return false;
+                    if (!render_pattern_at(pat, base + static_cast<double>(r) * extent, clip.gain_db, env)) return false;
                 }
             }
         }

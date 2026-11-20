@@ -1,0 +1,49 @@
+{
+  "arrangement": [
+    {
+      "fade_in_beats": 0.5,
+      "fade_out_beats": 1.0,
+      "pattern": 0,
+      "repeats": 2,
+      "start_bar": 0.0
+    },
+    {
+      "gain_db": -6.0,
+      "pattern": 0,
+      "repeats": 1,
+      "start_bar": 3.0
+    }
+  ],
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 4.0,
+  "patterns": [
+    {
+      "notes": [
+        {
+          "dur": 0.5,
+          "t": 0.0
+        },
+        {
+          "dur": 0.5,
+          "t": 1.0
+        }
+      ],
+      "track": 0
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 2027,
+  "tracks": [
+    {
+      "gain_db": -3.0,
+      "name": "Kick",
+      "pan": 0.25,
+      "voice": {
+        "kind": "sampler",
+        "path": "kits/kick.wav"
+      }
+    }
+  ]
+}

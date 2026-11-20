@@ -599,3 +599,55 @@ first failure wins, only when the key is present):
   → `voice.root_note must be an integer 0..127`.
 Canonical save emits `root_note` only when present (after `end_s`); legacy files round-trip byte-identically.
 `opd diff` is unchanged: a root difference is reported as any voice change (`unsupported difference: tracks[i].voice`).
+
+## Clip fades — additive (WP-0178)
+
+An arrangement clip accepts two optional numbers, `fade_in_beats` and `fade_out_beats`: the length in **beats**
+of a linear gain ramp applied to that clip's contribution at render time. Both default `0` (off), both valid in
+`[0, 4096]`. They are a **render-time** effect only: like pattern swing (§Pattern swing), nothing else in the
+project (pattern extent, MIDI export, `opd analyze`, `step_grid`, `opd lint`) sees them.
+
+**Clip span (normative).** With `bpb = beats_per_bar`, the clip's first beat is `clip_start_beats = start_bar * bpb`
+and its last beat is `clip_end_beats = clip_start_beats + reps * extent`, where `extent = op::pattern_extent(pattern)`
+and `reps = (extent > 0.0 ? clip.repeats : 1)` — exactly the existing placement rules (§Arrangement, §Explicit
+pattern length). The ramps span the **whole clip over all its repeats**, not one ramp per repeat.
+
+**Region bounds in frames.** Every boundary is converted with the renderer's own `TempoMap::at()` (the same function
+note placement uses; the tempo segment is chosen by the position being converted):
+- fade-in region = absolute frames `[A, A + N)` with `A = at(clip_start_beats)` and `N = at(clip_start_beats + fade_in_beats) - A`;
+- fade-out region = absolute frames `[B, B + M)` with `B = at(clip_end_beats - fade_out_beats)` and `M = at(clip_end_beats) - B`.
+`at()` is monotonic, so `N >= 0` and `M >= 0`; a region of 0 frames (a ramp shorter than one sample frame) has no effect.
+
+**Gain (exact).** For an absolute frame index `f`, in this order:
+1. inside the fade-in region (`A <= f < A + N`): `g = float(double(f - A) / double(N))`;
+2. else inside the fade-out region (`B <= f < B + M`): `g = float(1.0 - double(f - B) / double(M))`;
+3. otherwise `g = 1.0f`.
+Fade-in is therefore silent at the clip's first frame and reaches unity just past its region; fade-out starts at
+unity and reaches silence just past the clip end (its last frame inside has `g = float(1/double(M))`). The ratio is
+computed in `double` and converted to `float` once (`static_cast<float>`). When the two regions overlap (the ramps
+together are longer than the clip) **fade-in wins** on frames inside both — no error, no product of the two ramps.
+
+**Where it applies.** The envelope scales only that clip's contribution, AFTER the track gain/pan, the clip
+`gain_db` and per-note velocity: each sample this clip adds at frame `f` is multiplied by `g(f)`, i.e. the value
+added to the mix buffer is `(voice_sample * mix_target_gain_l) * g` (and likewise for R). Other clips of the same
+track are untouched; two clips overlapping in time each get their own envelope. Audio of a clip that continues past
+`clip_end_beats` (a note longer than the pattern extent — §Explicit pattern length) is **not gated**: frames at or
+after `B + M` have gain 1 again.
+
+**Bit-exactness.** Both keys absent, or both exactly `0` (`-0.0` included), attach no envelope at all: the render
+path is bit-identical to pre-WP-0178 (committed goldens prove it). Per field too: a clip with only `fade_in_beats`
+set performs no fade-out arithmetic.
+
+**Validation** (model parse — the same code path for `load_project` and every operation; checked after
+`clip.gain_db`, fade-in before fade-out): present but not a JSON number, non-finite, negative or greater than 4096 →
+`clip.fade_in_beats must be a number in [0, 4096]` / `clip.fade_out_beats must be a number in [0, 4096]`. `null`,
+strings and booleans give the same messages. `-0.0` is accepted and treated as `0`.
+
+**Canonical save** omits each key when it is exactly `0` (so every existing file round-trips byte-identically) and
+writes the number otherwise; clip-object keys are dumped alphabetically, so both land before `gain_db`.
+Operations: `set_clip_fades` and its `opd diff` emission — see `docs/spec/operations.md` §Clip fade operation.
+
+**New golden fixture** `tests/fixtures/goldens/clip_fades.opj` + `.wav`: one sampler track (`kits/kick.wav`,
+`gain_db -3.0`, `pan 0.25`), one pattern of two notes (extent 1.5 beats) and two clips — clip 0 at bar 0 with
+`repeats 2`, `fade_in_beats 0.5`, `fade_out_beats 1.0`; clip 1 at bar 3 with `gain_db -6.0` and no fades — covering
+a ramp across repeats, silence at the clip end, and an unfaded sibling clip on the same track.
