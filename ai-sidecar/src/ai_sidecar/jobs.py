@@ -54,6 +54,7 @@ from ai_sidecar.base import (
     UnknownBackend,
     canonical_request_hash,
 )
+from ai_sidecar.stem_bundle import write_stem_bundle
 
 logger = logging.getLogger("opsidecar.jobs")
 
@@ -380,6 +381,14 @@ def finalize_done(record: JobRecord, inst: BackendBase, job_result: JobResult) -
         if not Path(path).is_file():
             raise InvalidRequest(f"backend declared artifact '{name}' at {path} but it is missing")
 
+    # WP-0174: a finished separate job always describes its stems (docs/spec/stem-bundle.md).
+    # An InvalidRequest from here propagates — the caller maps it to a failed job.
+    stems_path = (
+        write_stem_bundle(record.out_dir, job_result.artifacts)
+        if record.task == "separate"
+        else None
+    )
+
     prov_path = record.out_dir / "provenance.json"
     prov_path.write_text(
         json.dumps(prov.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
@@ -390,5 +399,7 @@ def finalize_done(record: JobRecord, inst: BackendBase, job_result: JobResult) -
         "raw_dir": str(job_result.raw_dir) if job_result.raw_dir else None,
         "provenance_file": str(prov_path),
     }
+    if stems_path is not None:
+        record.result["stems_file"] = str(stems_path)
     record.state = "done"
     record.progress = 1.0
