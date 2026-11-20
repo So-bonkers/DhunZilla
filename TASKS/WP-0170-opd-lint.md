@@ -178,7 +178,7 @@ is written to stdout.
      run_goldens: 9 fixtures, 0 failures
      ```
   5. `bash harness/test_cli_errors.sh` → `test_cli_errors: 0 failures` (66 PASS), exit 0.
-  6. `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/test_glue_scripts.sh` →
+  6. `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/test_glue_scripts.sh` →
      `test_glue_scripts: 0 failures`, exit 0.
   7. Sanitizers: `cmake -S . -B build-san -DDZ_SANITIZE=ON && cmake --build build-san -j4 --target op_tests op_lint_tests`
      (exit 0, 0 warnings), then ran both: `./build-san/op_lint_tests` → `0 failure(s)`; `./build-san/op_tests` →

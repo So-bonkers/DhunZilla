@@ -221,7 +221,7 @@ stdout and use the existing `fail(...)` helper: no/extra/unknown argument -> exi
 
   **5. `harness/test_cli_errors.sh` — unchanged suite still green** → `test_cli_errors: 0 failures` (exit 0;
   66 `PASS` lines, 0 `FAIL`).
-  **6. `harness/test_glue_scripts.sh`** (with `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`)
+  **6. `harness/test_glue_scripts.sh`** (with `UV_CACHE_DIR=<workspace>/.cache/uv`)
   → `test_glue_scripts: 0 failures` (exit 0; 21 `PASS` lines, 0 `FAIL`, incl. the `.opj` determinism checks).
 
   **7. Sanitizers (`-DDZ_SANITIZE=ON`, ASAN+UBSAN), both binaries built and run clean**

@@ -134,7 +134,7 @@ output differs, your `new_project` content is wrong, not the serializer.)
   - `harness/test_cli_errors.sh`: `new` section — no args → 2; `--bars 0` → 2 with no file created; bad track kind → 2
     with no file; success writes non-empty file; second run without `--force` → 5 with the exact spec message; `--force` → 0.
   - `docs/spec/project-model.md`: runner-installed section, included unchanged (not reworded).
-- **How verified:** (all commands run on this aarch64 rig, `-j4`, `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv` for the uv suites)
+- **How verified:** (all commands run on this aarch64 rig, `-j4`, `UV_CACHE_DIR=<workspace>/.cache/uv` for the uv suites)
   - `-Werror` build, zero warnings: touched all changed TUs, `cmake --build build -j4 | grep -icE "warning|error"` → `0`.
   - Unit tests: `./build/op_tests` → `ALL PASS (0 failures)` incl. new checks:
     ```

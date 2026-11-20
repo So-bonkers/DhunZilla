@@ -130,12 +130,12 @@ so do not add `|| true` anywhere.
     BLOCK MATCHES SPEC BYTE-FOR-BYTE
     ```
   - Local job commands (Actions can't run here; ran the acceptance variant with
-    `-DFETCHCONTENT_SOURCE_DIR_JUCE=/home/shubhankar_dgx/qwen-scratch/exp-juce/build/_deps/juce-src` and a real `DISPLAY=:1` instead of `xvfb-run -a`; no Xvfb/xvfb-run is installed on this rig):
+    `-DFETCHCONTENT_SOURCE_DIR_JUCE=<workspace>/exp-juce/build/_deps/juce-src` and a real `DISPLAY=:1` instead of `xvfb-run -a`; no Xvfb/xvfb-run is installed on this rig):
     ```
-    $ cmake -S . -B build-app -DCMAKE_BUILD_TYPE=Release -DDZ_BUILD_APP=ON -DFETCHCONTENT_SOURCE_DIR_JUCE=/home/shubhankar_dgx/qwen-scratch/exp-juce/build/_deps/juce-src
+    $ cmake -S . -B build-app -DCMAKE_BUILD_TYPE=Release -DDZ_BUILD_APP=ON -DFETCHCONTENT_SOURCE_DIR_JUCE=<workspace>/exp-juce/build/_deps/juce-src
     -- Configuring done (0.5s)
     -- Generating done (0.0s)
-    -- Build files have been written to: /home/shubhankar_dgx/qwen-scratch/openpattern/build-app
+    -- Build files have been written to: <workspace>/openpattern/build-app
 
     $ cmake --build build-app -j4 --target dhunzilla
     [ 14%] Building CXX object CMakeFiles/opengine.dir/src/engine/midi.cpp.o
@@ -178,7 +178,7 @@ so do not add `|| true` anywhere.
     test_cli_errors: 0 failures
     test_cli_errors exit=0
 
-    $ export UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv
+    $ export UV_CACHE_DIR=<workspace>/.cache/uv
     $ bash harness/test_glue_scripts.sh ; echo "test_glue_scripts exit=$?"
     PASS rel_no_repo_strays
     test_glue_scripts: 0 failures

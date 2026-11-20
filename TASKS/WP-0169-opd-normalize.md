@@ -153,7 +153,7 @@ Gain 0 dB therefore leaves every sample bit-identical.
   3. **Goldens bit-identical** (`bash harness/run_goldens.sh`): `run_goldens: 9 fixtures, 0 failures` + `PASS negative-control`.
   4. **`op_tests`**: `ALL PASS (0 failures)`; ctest registration works: `ctest -R normalize` → `100% tests passed, 0 tests failed out of 1`.
   5. **`harness/test_cli_errors.sh`**: `test_cli_errors: 0 failures`. **`harness/test_glue_scripts.sh`** (with
-     `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`): `test_glue_scripts: 0 failures`.
+     `UV_CACHE_DIR=<workspace>/.cache/uv`): `test_glue_scripts: 0 failures`.
   6. **Sanitizers** (`build-san`, `DZ_SANITIZE:BOOL=ON`): `op_tests` and `op_normalize_tests` rebuilt under
      ASAN+UBSAN and run: both `ALL PASS (0 failures)`, no sanitizer reports.
   7. **CLI contract evidence** (fixtures: copy of `tests/fixtures/goldens/demo.wav`, mono/silent/4 kHz WAVs made with

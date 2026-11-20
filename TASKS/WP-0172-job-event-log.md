@@ -102,7 +102,7 @@ last `done` equal to the final snapshot plus `seq`, `seq` contiguous, progress n
     and running-cancel logs exactly one `cancelling` + one `cancelled` despite three cancel calls.
   - `docs/spec/sidecar-protocol.md` — included **unchanged** (the normative section was pre-installed by the
     runner; not edited).
-- **How verified:** all commands run on this aarch64 rig with `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`.
+- **How verified:** all commands run on this aarch64 rig with `UV_CACHE_DIR=<workspace>/.cache/uv`.
 
   1. Full sidecar suite (existing tests unchanged, plus the new file) — `cd ai-sidecar && uv run pytest -q`:
      ```

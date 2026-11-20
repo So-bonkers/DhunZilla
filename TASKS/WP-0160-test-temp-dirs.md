@@ -104,7 +104,7 @@ static std::string tmp_file(const std::string& name);
   - No test, CHECK name, CHECK count, assertion, comment requirement or `OP_TEST_DATA` fixture path changed.
 
 - **How verified:** (PASS count before/after, concurrent-run results) — all commands run on the DGX Spark
-  (aarch64) from the repo root; builds `-j4`; `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv` for the glue test.
+  (aarch64) from the repo root; builds `-j4`; `UV_CACHE_DIR=<workspace>/.cache/uv` for the glue test.
 
 ### §A — no fixed `/tmp` literals left, one helper only
 ```
@@ -125,10 +125,10 @@ fixture WAVs …`), neither matching `'"/tmp'`.
 Baseline captured from the pre-change binary (branch `main` build), then the same command after the change:
 ```
 $ ./build/op_tests | grep '^PASS' | sort | wc -l      # before: 687   after: 687
-$ diff /home/shubhankar_dgx/qwen-scratch/.wp0160_baseline_pass.txt \
-       /home/shubhankar_dgx/qwen-scratch/.wp0160_after_pass.txt && echo "PASS LINES IDENTICAL"
+$ diff <workspace>/.wp0160_baseline_pass.txt \
+       <workspace>/.wp0160_after_pass.txt && echo "PASS LINES IDENTICAL"
 PASS LINES IDENTICAL
-$ tail -3 /home/shubhankar_dgx/qwen-scratch/.wp0160_after_out.txt
+$ tail -3 <workspace>/.wp0160_after_out.txt
 PASS ops.set_sampler_trim_reject_end_type
 INFO sampler trim: slice frames [96,480) checked against untrimmed reference
 ALL PASS (0 failures)
@@ -193,7 +193,7 @@ fresh op_tests exit=0
 ```
 $ harness/run_goldens.sh            rc=0    run_goldens: 9 fixtures, 0 failures        (10 PASS lines)
 $ harness/test_cli_errors.sh        rc=0    test_cli_errors: 0 failures               (66 PASS lines)
-$ UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv harness/test_glue_scripts.sh
+$ UV_CACHE_DIR=<workspace>/.cache/uv harness/test_glue_scripts.sh
                                     rc=0    test_glue_scripts: 0 failures             (21 PASS lines)
 ```
 

@@ -187,7 +187,7 @@ run is written even if the script made no change.
     to stderr; `content_->onDocumentChanged = [this]{ menuItemsChanged(); }` (cleared in dtor). Without `--script`,
     snapshot mode is byte-for-byte the WP-0143 path. No changes outside `src/app/*`.
 - **How verified:** (commands + actual output, incl. each exit code) — `$BIN = build-app/dhunzilla_artefacts/Release/dhunzilla`,
-  all scratch work in `/home/shubhankar_dgx/qwen-scratch/dz-test/wp0152` (fixture copied there; `tests/fixtures` never written).
+  all scratch work in `<workspace>/dz-test/wp0152` (fixture copied there; `tests/fixtures` never written).
   1. **Build** (`flock …/.calib.lock cmake --build build-app -j4 --target dhunzilla`, `-DFETCHCONTENT_SOURCE_DIR_JUCE=$JUCE_SRC`):
      exit 0. Forced clean recompile of both files: `Building CXX object …main_component.cpp.o / main.cpp.o`, then
      `grep -iE "warning|error" | grep src/app` → nothing (both compiled with `-Werror`).
@@ -246,6 +246,6 @@ run is written even if the script made no change.
     path is compile-verified only.
   - The inaudible-row wash (`paintOverChildren`) still dims lit controls on muted rows (WP-0143 note; unchanged here).
   - `scriptDrag` clamps out-of-range values silently (spec); a future UX pass might surface the clamp in a status line.
-- **PROPOSE / BLOCKED:** none blocked. Env note: the instructed `UV_CACHE_DIR=/home/shubhankar_dgx/.cache/uv` is on a
+- **PROPOSE / BLOCKED:** none blocked. Env note: the instructed `UV_CACHE_DIR=<home>/.cache/uv` is on a
   read-only filesystem for this sandbox (`Could not create temporary file … Read-only file system`), so glue tests were
-  run with the writable equivalent `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv` (0 failures).
+  run with the writable equivalent `UV_CACHE_DIR=<workspace>/.cache/uv` (0 failures).

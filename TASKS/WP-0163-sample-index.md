@@ -136,7 +136,7 @@ Number printing uses the "C" locale (`snprintf`), never streams with imbued loca
     PASS samples_o_file_matches_stdout (stdout empty)
     test_cli_errors: 0 failures
     ```
-  - Glue e2e: `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv ./harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`.
+  - Glue e2e: `UV_CACHE_DIR=<workspace>/.cache/uv ./harness/test_glue_scripts.sh` → `test_glue_scripts: 0 failures`.
   - Sanitizers (`-DDZ_SANITIZE=ON`, ASAN+UBSAN, `-j4`): `cmake --build build-san -j4 && ./build-san/op_tests` → `ALL PASS (0 failures)` (same 9 sample CHECKs pass under sanitizers).
   - Spec verbatim: `diff <(sed -n '20,74p' TASKS/WP-0163-sample-index.md) <(tail -n +8 docs/spec/sample-index.md)` → empty (`VERBATIM OK`).
   - No libm outside `dsp.hpp`: grep of `src/engine/sample_index.cpp` for math symbols finds only `op::dsp::log10d_`.

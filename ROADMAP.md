@@ -15,7 +15,21 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0172 | Sidecar job event log — every state/progress change a numbered, resumable event (`GET /jobs/{id}/events?after=`) | **done** | qwen-goldfish |
+| WP-0171 | `opd peaks` — min/max waveform peaks per bin as JSON (new engine module `peaks`) | **done** | qwen-goldfish |
+| WP-0170 | `opd lint` — read-only project sanity checks ("why is my beat silent?") as JSON (new engine module `lint`) | **done** | qwen-goldfish |
+| WP-0169 | `opd normalize` — gain a WAV to a target integrated LUFS under a sample-peak ceiling (new engine module `normalize`) | **done** | qwen-goldfish |
+| WP-0168 | `opd loudness` — true peak (dBTP), momentary/short-term max LUFS, loudness range (new engine module `loudness`) | **done** | qwen-goldfish |
+| WP-0167 | Sampler repitch — per-voice `root_note`, notes play at 2^((P-root)/12), `set_sampler_root`; golden `sampler_repitch` | **done** | qwen-goldfish |
+| WP-0166 | Pattern swing — per-pattern groove (render-time delay of odd 16ths), `set_pattern_swing`, `opd diff` support | **done** | qwen-goldfish |
+| WP-0165 | `opd new` + Document-free `op::new_project` factory — canonical new project, `--track` kinds, `--force` | **done** | qwen-goldfish |
 | WP-0164 | CI `app` job — builds the JUCE app (`dhunzilla`, `DZ_BUILD_APP=ON`) on both arches, runs headless `--snapshot` under Xvfb, asserts exit 0 + 1100×700 PNG; JUCE download/build cache keyed to 9.0.5 | **done** | qwen-goldfish |
+| WP-0163 | `opd samples` — deterministic JSON index of a sample directory (backend for the sample browser) | **done** | qwen-goldfish |
+| WP-0162 | Pattern `length_beats` — explicit loop period (renderer, MIDI export, `set_pattern_length`/`clear_pattern_length`, `opd steps` default width, diff) | **done** | qwen-goldfish |
+| WP-0161 | Synth voice v1 — waveform sine/saw/square, ADSR with release tail, low-pass filter, `set_synth_params`; golden `synth_v1` | **done** | qwen-goldfish |
+| WP-0160 | `op_tests` per-process temp directory (`tmp_dir()`/`tmp_file()`) instead of fixed /tmp paths — concurrent runs no longer collide | **done** | qwen-goldfish |
+| WP-0153 | App playback — Play/Stop, background offline render, lock-free buffer swap, bar.beat position, `--render-playback`/`--position-at`; JUCE-free `dzplayer` core | **done** | qwen-goldfish |
+| WP-0152 | App track editing — gain/pan/mute/solo through `op::Document`, Undo/Redo/Save, headless scripted-input mode (`--script`) | **done** | qwen-goldfish |
 | WP-0159 | `opd diff` supports clip `pattern`/`repeats` via `set_clip_pattern`/`set_clip_repeats` (step 1b before pattern removal; positional clip compare) | **done** | haiku+orchestrator |
 | WP-0158 | AIFF / AIFF-C (`NONE`, `sowt`) reader — signature dispatch, exact 80-bit rate decode, sampler + `opd info`; renders byte-identical to the same samples as WAV | **done** | haiku+orchestrator |
 | WP-0157 | Document autosave + crash recovery — atomic temp+rename, revision-gated, content-compared recovery state, `open_recovered` | **done** | haiku+orchestrator |

@@ -182,7 +182,7 @@ different PolyBLEP variant, no float shortcuts in the v1 path). Summary only:
     run_goldens: 10 fixtures, 0 failures
     ```
   - `bash harness/test_cli_errors.sh` → `test_cli_errors: 0 failures`.
-  - `UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv bash harness/test_glue_scripts.sh` →
+  - `UV_CACHE_DIR=<workspace>/.cache/uv bash harness/test_glue_scripts.sh` →
     `test_glue_scripts: 0 failures`.
   - Sanitizers (`cmake -S . -B build-san -DDZ_SANITIZE=ON && cmake --build build-san -j4 && ./build-san/op_tests`):
     ```

@@ -116,11 +116,11 @@ Summary (the spec sections win on any difference):
   3. Goldens unchanged: `bash harness/run_goldens.sh` →
      `run_goldens: 9 fixtures, 0 failures` (all 9 `deterministic + golden match` + negative-control PASS).
   4. CLI contracts: `bash harness/test_cli_errors.sh` → `test_cli_errors: 0 failures`.
-  5. Glue e2e (`export UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv`): `bash harness/test_glue_scripts.sh` →
+  5. Glue e2e (`export UV_CACHE_DIR=<workspace>/.cache/uv`): `bash harness/test_glue_scripts.sh` →
      `test_glue_scripts: 0 failures`, exit 0.
   6. Sanitizers: existing `build-san` cache has `DZ_SANITIZE:BOOL=ON`; `cmake --build build-san -j4 --target op_tests`
      exit 0 (no warnings), `./build-san/op_tests` → `ALL PASS (0 failures)` (705 PASS under ASAN+UBSAN).
-  7. CLI acceptance (scratch script `/home/shubhankar_dgx/qwen-scratch/wp0166-verify/verify.sh`, stereo-aware onset
+  7. CLI acceptance (scratch script `<workspace>/wp0166-verify/verify.sh`, stereo-aware onset
      scan of PCM16 renders of a hard-left sampler 16th pattern, asset = constant 0.5 so every onset is a rising edge):
      ```
      PASS render_swing_0.1            # odd steps at llround((t+0.0125)*24000), even unmoved
@@ -138,7 +138,7 @@ Summary (the spec sections win on any difference):
      one addition of `swing*0.125`) — same direct-rounding precedent as `on_grid` in ops.cpp and wav.cpp rounding
      (dsp.hpp wraps transcendental libm only). No new golden; no fixture touched.
   - Demo artifacts (audio-affecting feature, default path bit-identical): before/after WAVs at
-    `/home/shubhankar_dgx/qwen-scratch/wp0166-verify/demo_before_no_swing.wav` and
+    `<workspace>/wp0166-verify/demo_before_no_swing.wav` and
     `demo_after_swing_0.5.wav` (same 16th hi-hat pattern, swing 0 vs 0.5).
 - **Metrics:** +~40 lines engine across the 4 named interface files; 18 new CHECKs; 9/9 goldens bit-exact;
   705/705 unit checks pass native and under ASAN+UBSAN; all harness suites 0 failures.

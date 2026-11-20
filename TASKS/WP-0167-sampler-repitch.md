@@ -130,7 +130,7 @@ not edit those two spec files. Summary (the spec sections win on any difference)
     `sampler_repitch.opj` (`f90815e8ea7ed9e438be889edfd4c49c58264dab538c8780011a1f870ed61e36`),
     `sampler_repitch.wav` (`bded5e9bbedb22afe52c1d775c8b28ca6eb4f2414f02d148ed8ff0949a315611`).
   - `docs/spec/project-model.md`, `docs/spec/operations.md`: the runner-installed sections, committed unchanged.
-- **How verified:** (all commands run in `/home/shubhankar_dgx/qwen-scratch/openpattern`)
+- **How verified:** (all commands run in `<workspace>/openpattern`)
   - Clean build, `-Werror` default, `-j4`:
     ```
     $ rm -rf build && cmake -S . -B build >/dev/null && cmake --build build -j4   # BUILD_EXIT=0
@@ -191,7 +191,7 @@ not edit those two spec files. Summary (the spec sections win on any difference)
     `$ opd apply sampler_repitch.opj <{"op":"set_bpm","bpm":120.0}> -o /tmp/canon.opj && cmp …` → `CANONICAL_MATCH`.
   - Generator reproducibility (byte-for-byte): re-running `python3 harness/make_repitch_golden.py` leaves the
     committed `kits/saw48k.wav` at sha256 `683e7de8…65b1e` and git reports no change.
-  - CLI + glue e2e (`UV_CACHE_DIR=/home/shubhankar_dgx/qwen-scratch/.cache/uv` for the uv-based glue tests):
+  - CLI + glue e2e (`UV_CACHE_DIR=<workspace>/.cache/uv` for the uv-based glue tests):
     ```
     $ bash harness/test_cli_errors.sh   → test_cli_errors: 0 failures            (exit 0)
     $ bash harness/test_glue_scripts.sh → test_glue_scripts: 0 failures          (exit 0)
