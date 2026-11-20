@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #include "doc/document.hpp"
 #include "engine/analyze.hpp"
@@ -31,6 +32,24 @@ static int g_failures = 0;
         if (cond) std::printf("PASS %s\n", name);                                      \
         else { std::printf("FAIL %s  (%s:%d)\n", name, __FILE__, __LINE__); ++g_failures; } \
     } while (0)
+
+// Per-process scratch directory: <temp_directory_path()>/op_tests_<pid>. Created (after removing any
+// stale one with that name) on first call; the same string is returned on every later call.
+static std::string tmp_dir() {
+    static const std::string dir = [] {
+        const std::filesystem::path p = std::filesystem::temp_directory_path() /
+                                        ("op_tests_" + std::to_string(static_cast<long>(::getpid())));
+        std::error_code ec;  // errors ignored: the tests below report what they cannot write
+        std::filesystem::remove_all(p, ec);
+        std::filesystem::create_directories(p, ec);
+        return p.string();
+    }();
+    return dir;
+}
+
+// Path of `name` inside tmp_dir(): tmp_dir() + "/" + name. `name` may contain '/' (e.g. "op_bd/kits");
+// the helper does NOT create sub-directories — tests keep creating their own, as they do today.
+static std::string tmp_file(const std::string& name) { return tmp_dir() + "/" + name; }
 
 static void write_text(const std::string& path, const std::string& text) {
     std::ofstream f(path, std::ios::binary);
@@ -86,46 +105,46 @@ static void test_model() {
       "tracks": [{"name":"T","gain_db":-3.0,"pan":0.25,"voice":{"kind":"sine","freq_hz":220.0}}],
       "patterns": [{"track":0,"notes":[{"t":0.0,"dur":0.5},{"t":1.0,"dur":0.5}]}]
     })";
-    write_text("/tmp/op_test_good.opj", good);
+    write_text(tmp_file("op_test_good.opj"), good);
     op::Project p;
     std::string err;
-    CHECK(op::load_project("/tmp/op_test_good.opj", p, err), "model.parse_valid");
+    CHECK(op::load_project(tmp_file("op_test_good.opj"), p, err), "model.parse_valid");
     CHECK(p.bpm == 90.0 && p.seed == 7 && p.tracks.size() == 1 && p.patterns.size() == 1 &&
               p.patterns[0].notes.size() == 2,
           "model.fields_correct");
 
-    write_text("/tmp/op_test_badver.opj", R"({"format_version": 9})");
-    CHECK(!op::load_project("/tmp/op_test_badver.opj", p, err), "model.rejects_unknown_format_version");
+    write_text(tmp_file("op_test_badver.opj"), R"({"format_version": 9})");
+    CHECK(!op::load_project(tmp_file("op_test_badver.opj"), p, err), "model.rejects_unknown_format_version");
 
-    write_text("/tmp/op_test_oob.opj", R"({
+    write_text(tmp_file("op_test_oob.opj"), R"({
       "format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[{"track":5,"notes":[]}]})");
-    CHECK(!op::load_project("/tmp/op_test_oob.opj", p, err), "model.rejects_pattern_track_out_of_range");
+    CHECK(!op::load_project(tmp_file("op_test_oob.opj"), p, err), "model.rejects_pattern_track_out_of_range");
 
-    write_text("/tmp/op_test_voice.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"koto"}}]})");
-    CHECK(!op::load_project("/tmp/op_test_voice.opj", p, err), "model.rejects_unknown_voice_kind");
+    write_text(tmp_file("op_test_voice.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"koto"}}]})");
+    CHECK(!op::load_project(tmp_file("op_test_voice.opj"), p, err), "model.rejects_unknown_voice_kind");
 
     // arrangement (WP-0101): valid parse, defaults, validation rejections
-    write_text("/tmp/op_test_arr.opj", R"({
+    write_text(tmp_file("op_test_arr.opj"), R"({
         "format_version":0,"bpm":120,"tracks":[{"voice":{"kind":"metronome"}}],
         "patterns":[{"track":0,"notes":[{"t":0,"dur":1}]}],
         "arrangement":[{"pattern":0,"start_bar":1.5,"repeats":3},{"pattern":0}]})");
     op::Project pa;
-    CHECK(op::load_project("/tmp/op_test_arr.opj", pa, err), "model.parse_arrangement");
+    CHECK(op::load_project(tmp_file("op_test_arr.opj"), pa, err), "model.parse_arrangement");
     CHECK(pa.arrangement.size() == 2 && pa.arrangement[0].start_bar == 1.5 &&
           pa.arrangement[0].repeats == 3 && pa.arrangement[1].start_bar == 0.0 &&
           pa.arrangement[1].repeats == 1, "model.arrangement_defaults");
-    write_text("/tmp/op_test_arr_oob.opj", R"({
+    write_text(tmp_file("op_test_arr_oob.opj"), R"({
         "format_version":0,"tracks":[{"voice":{"kind":"metronome"}}],
         "patterns":[{"track":0,"notes":[]}],"arrangement":[{"pattern":1}]})");
-    CHECK(!op::load_project("/tmp/op_test_arr_oob.opj", pa, err), "model.rejects_clip_pattern_out_of_range");
-    write_text("/tmp/op_test_arr_rep.opj", R"({
+    CHECK(!op::load_project(tmp_file("op_test_arr_oob.opj"), pa, err), "model.rejects_clip_pattern_out_of_range");
+    write_text(tmp_file("op_test_arr_rep.opj"), R"({
         "format_version":0,"tracks":[{"voice":{"kind":"metronome"}}],
         "patterns":[{"track":0,"notes":[]}],"arrangement":[{"pattern":0,"repeats":0}]})");
-    CHECK(!op::load_project("/tmp/op_test_arr_rep.opj", pa, err), "model.rejects_zero_repeats");
+    CHECK(!op::load_project(tmp_file("op_test_arr_rep.opj"), pa, err), "model.rejects_zero_repeats");
     // regression: load_project must fully reset `out` (dirty reuse must not accumulate patterns)
     op::Project pd;
-    CHECK(op::load_project("/tmp/op_test_arr.opj", pd, err) && pd.patterns.size() == 1, "model.dirty_pre");
-    CHECK(op::load_project("/tmp/op_test_arr.opj", pd, err) && pd.patterns.size() == 1 &&
+    CHECK(op::load_project(tmp_file("op_test_arr.opj"), pd, err) && pd.patterns.size() == 1, "model.dirty_pre");
+    CHECK(op::load_project(tmp_file("op_test_arr.opj"), pd, err) && pd.patterns.size() == 1 &&
           pd.arrangement.size() == 2, "model.load_resets_out_object");
 
     // save/load round-trip
@@ -135,9 +154,9 @@ static void test_model() {
     q.tracks.push_back(t);
     op::Pattern pat; pat.track = 0; pat.notes.push_back({0.0, 0.5});
     q.patterns.push_back(pat);
-    CHECK(op::save_project("/tmp/op_test_rt.opj", q, err), "model.save_ok");
+    CHECK(op::save_project(tmp_file("op_test_rt.opj"), q, err), "model.save_ok");
     op::Project back;
-    CHECK(op::load_project("/tmp/op_test_rt.opj", back, err) && back.bpm == 123.5 && back.seed == 99 &&
+    CHECK(op::load_project(tmp_file("op_test_rt.opj"), back, err) && back.bpm == 123.5 && back.seed == 99 &&
               back.tracks[0].voice.freq_hz == 330.0f,
           "model.roundtrip_stable");
 }
@@ -148,17 +167,17 @@ static void test_wav_roundtrip() {
     const float vals[] = {0.0f, -1.0f, 0.5f, -0.25f, 0.999f, -0.999f};
     for (float v : vals) buf.interleaved.push_back(v), buf.interleaved.push_back(-v);
     std::string err;
-    CHECK(op::wav::write_pcm16_stereo("/tmp/op_test_rt.wav", buf, err), "wav.write_ok");
+    CHECK(op::wav::write_pcm16_stereo(tmp_file("op_test_rt.wav"), buf, err), "wav.write_ok");
 
     // header is canonical 44 bytes little-endian PCM16 stereo
-    std::ifstream f("/tmp/op_test_rt.wav", std::ios::binary);
+    std::ifstream f(tmp_file("op_test_rt.wav"), std::ios::binary);
     unsigned char h[44];
     f.read(reinterpret_cast<char*>(h), 44);
     CHECK(std::memcmp(h, "RIFF", 4) == 0 && std::memcmp(h + 8, "WAVE", 4) == 0, "wav.header_riff_wave");
     CHECK(h[20] == 1 && h[22] == 2 && h[34] == 16, "wav.header_pcm16_stereo");
     CHECK((h[24] | (h[25] << 8) | (h[26] << 16) | (h[27] << 24)) == 48000, "wav.header_rate_48k");
 
-    auto rr = op::wav::read_wav("/tmp/op_test_rt.wav");
+    auto rr = op::wav::read_wav(tmp_file("op_test_rt.wav"));
     bool close = rr.ok && rr.samples.size() == sizeof(vals) / sizeof(float) * 2;
     for (size_t i = 0; close && i < rr.samples.size(); ++i) {
         const float expected = (i % 2 == 0) ? vals[i / 2] : -vals[i / 2];
@@ -201,9 +220,9 @@ static void test_wav_formats() {
     };
 
     // pcm24: 44-byte header, tag 1 / bits 24 / align 6 / byte rate SR*6, data F*6, RIFF 36+F*6.
-    CHECK(op::wav::write_wav_stereo("/tmp/op_fmt_p24.wav", buf, SampleFormat::Pcm24, err), "fmt.pcm24_write_ok");
+    CHECK(op::wav::write_wav_stereo(tmp_file("op_fmt_p24.wav"), buf, SampleFormat::Pcm24, err), "fmt.pcm24_write_ok");
     {
-        const auto h = file_bytes("/tmp/op_fmt_p24.wav");
+        const auto h = file_bytes(tmp_file("op_fmt_p24.wav"));
         bool ok = h.size() == 44 + frames * 6 && std::memcmp(h.data(), "RIFF", 4) == 0 &&
                   std::memcmp(h.data() + 8, "WAVE", 4) == 0 && rd32(h, 16) == 16 &&
                   (h[20] | (h[21] << 8)) == 1 && h[34] == 24 && (h[32] | (h[33] << 8)) == 6 &&
@@ -211,7 +230,7 @@ static void test_wav_formats() {
                   std::memcmp(h.data() + 36, "data", 4) == 0 && rd32(h, 40) == frames * 6;
         CHECK(ok, "fmt.pcm24_header_bytes_exact");
     }
-    auto r24 = op::wav::read_wav("/tmp/op_fmt_p24.wav");
+    auto r24 = op::wav::read_wav(tmp_file("op_fmt_p24.wav"));
     bool ok24 = r24.ok && r24.samples.size() == frames * 2;
     for (size_t i = 0; ok24 && i < r24.samples.size(); ++i) {
         const float expect = static_cast<float>(float_to_pcm24(buf.interleaved[i])) * (1.0f / 8388608.0f);
@@ -220,9 +239,9 @@ static void test_wav_formats() {
     CHECK(ok24, "fmt.pcm24_roundtrip_exact");
 
     // f32: 58-byte header per the spec offset table; samples bit-for-bit, no clipping.
-    CHECK(op::wav::write_wav_stereo("/tmp/op_fmt_f32.wav", buf, SampleFormat::F32, err), "fmt.f32_write_ok");
+    CHECK(op::wav::write_wav_stereo(tmp_file("op_fmt_f32.wav"), buf, SampleFormat::F32, err), "fmt.f32_write_ok");
     {
-        const auto h = file_bytes("/tmp/op_fmt_f32.wav");
+        const auto h = file_bytes(tmp_file("op_fmt_f32.wav"));
         bool ok = h.size() == 58 + frames * 8 && std::memcmp(h.data(), "RIFF", 4) == 0 &&
                   std::memcmp(h.data() + 8, "WAVE", 4) == 0 && rd32(h, 4) == 50u + static_cast<uint32_t>(frames * 8) &&
                   rd32(h, 16) == 18 && (h[20] | (h[21] << 8)) == 3 && h[22] == 2 && rd32(h, 24) == 48000u &&
@@ -231,7 +250,7 @@ static void test_wav_formats() {
                   rd32(h, 46) == frames && std::memcmp(h.data() + 50, "data", 4) == 0 && rd32(h, 54) == frames * 8;
         CHECK(ok, "fmt.f32_header_bytes_exact");
     }
-    auto rf = op::wav::read_wav("/tmp/op_fmt_f32.wav");
+    auto rf = op::wav::read_wav(tmp_file("op_fmt_f32.wav"));
     bool okf = rf.ok && rf.samples.size() == frames * 2;
     for (size_t i = 0; okf && i < rf.samples.size(); ++i) {
         uint32_t a, b;
@@ -242,9 +261,9 @@ static void test_wav_formats() {
     CHECK(okf, "fmt.f32_roundtrip_bitexact_no_clipping");
 
     // write_pcm16_stereo ≡ write_wav_stereo(Pcm16): byte-for-byte identical files.
-    bool w1 = op::wav::write_wav_stereo("/tmp/op_fmt_p16_new.wav", buf, SampleFormat::Pcm16, err);
-    bool w2 = op::wav::write_pcm16_stereo("/tmp/op_fmt_p16_old.wav", buf, err);
-    CHECK(w1 && w2 && file_bytes("/tmp/op_fmt_p16_new.wav") == file_bytes("/tmp/op_fmt_p16_old.wav"),
+    bool w1 = op::wav::write_wav_stereo(tmp_file("op_fmt_p16_new.wav"), buf, SampleFormat::Pcm16, err);
+    bool w2 = op::wav::write_pcm16_stereo(tmp_file("op_fmt_p16_old.wav"), buf, err);
+    CHECK(w1 && w2 && file_bytes(tmp_file("op_fmt_p16_new.wav")) == file_bytes(tmp_file("op_fmt_p16_old.wav")),
           "fmt.pcm16_wrapper_byte_identical");
 }
 
@@ -429,14 +448,14 @@ static void test_synth() {
     double dfb = freq_estimate(b3) - 440.0;
     CHECK(dfb < 2.0 && dfb > -2.0, "synth.absent_note_uses_freq_hz");
 
-    write_text("/tmp/op_test_syn_note.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"synth"}}],"patterns":[{"track":0,"notes":[{"t":0,"dur":1,"note":128}]}]})");
+    write_text(tmp_file("op_test_syn_note.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"synth"}}],"patterns":[{"track":0,"notes":[{"t":0,"dur":1,"note":128}]}]})");
     op::Project pb;
-    CHECK(!op::load_project("/tmp/op_test_syn_note.opj", pb, err), "model.rejects_midi_note_128");
+    CHECK(!op::load_project(tmp_file("op_test_syn_note.opj"), pb, err), "model.rejects_midi_note_128");
 
     op::Project ps = p;
-    CHECK(op::save_project("/tmp/op_test_synth_rt.opj", ps, err), "synth.save_ok");
+    CHECK(op::save_project(tmp_file("op_test_synth_rt.opj"), ps, err), "synth.save_ok");
     op::Project pl;
-    CHECK(op::load_project("/tmp/op_test_synth_rt.opj", pl, err) &&
+    CHECK(op::load_project(tmp_file("op_test_synth_rt.opj"), pl, err) &&
           pl.tracks[0].voice.kind == op::VoiceKind::Synth &&
           pl.patterns[0].notes[0].midi_note == 69, "synth.roundtrip_preserves_pitch");
 }
@@ -470,7 +489,7 @@ static void test_midi() {
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     bool fuzz_ok = true;
     for (size_t cut = 0; cut < bytes.size() && fuzz_ok; ++cut) {
-        std::string tmp = "/tmp/op_fuzz.mid";
+        std::string tmp = tmp_file("op_fuzz.mid");
         { std::ofstream w(tmp, std::ios::binary); w.write(reinterpret_cast<const char*>(bytes.data()), cut); }
         op::Project fp;
         if (op::load_midi(tmp, fp, err)) fuzz_ok = false;  // a truncated file must never "succeed"
@@ -489,9 +508,9 @@ static void test_midi() {
             const size_t p = prng.next() % m.size();
             m[p] ^= static_cast<uint8_t>(1u << (prng.next() % 8u));
         }
-        { std::ofstream w("/tmp/op_mut.mid", std::ios::binary); w.write(reinterpret_cast<const char*>(m.data()), static_cast<std::streamsize>(m.size())); }
+        { std::ofstream w(tmp_file("op_mut.mid"), std::ios::binary); w.write(reinterpret_cast<const char*>(m.data()), static_cast<std::streamsize>(m.size())); }
         op::Project mp;
-        if (op::load_midi("/tmp/op_mut.mid", mp, err)) {
+        if (op::load_midi(tmp_file("op_mut.mid"), mp, err)) {
             ++mutants_parsed;
             for (const auto& pat : mp.patterns)
                 for (const auto& nn : pat.notes)
@@ -502,22 +521,22 @@ static void test_midi() {
     std::printf("INFO midi mutation fuzz: %zu/500 mutants parsed\n", mutants_parsed);
 
     // wrong magic + SMPTE division rejected with actionable errors
-    write_text("/tmp/op_badmagic.mid", "RIFFjunkjunk");
+    write_text(tmp_file("op_badmagic.mid"), "RIFFjunkjunk");
     op::Project bp;
-    CHECK(!op::load_midi("/tmp/op_badmagic.mid", bp, err), "midi.rejects_bad_magic");
+    CHECK(!op::load_midi(tmp_file("op_badmagic.mid"), bp, err), "midi.rejects_bad_magic");
 
     // --- export (WP-0104): byte-deterministic + exact content round-trip
     op::Project src;
     CHECK(op::load_midi(fix, src, err), "midi.rt_source_load");
-    CHECK(op::save_midi("/tmp/op_rt_a.mid", src, err), "midi.export_ok");
-    auto slurp = [](const char* p) {
+    CHECK(op::save_midi(tmp_file("op_rt_a.mid"), src, err), "midi.export_ok");
+    auto slurp = [](const std::string& p) {
         std::ifstream f(p, std::ios::binary);
         return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     };
-    CHECK(op::save_midi("/tmp/op_rt_b.mid", src, err), "midi.export2_ok");
-    CHECK(slurp("/tmp/op_rt_a.mid") == slurp("/tmp/op_rt_b.mid"), "midi.export_byte_deterministic");
+    CHECK(op::save_midi(tmp_file("op_rt_b.mid"), src, err), "midi.export2_ok");
+    CHECK(slurp(tmp_file("op_rt_a.mid")) == slurp(tmp_file("op_rt_b.mid")), "midi.export_byte_deterministic");
     op::Project back;
-    CHECK(op::load_midi("/tmp/op_rt_a.mid", back, err), "midi.reimport_ok");
+    CHECK(op::load_midi(tmp_file("op_rt_a.mid"), back, err), "midi.reimport_ok");
     auto notes_of = [](const op::Project& q) {
         std::vector<std::pair<double, int>> v;
         for (const auto& pat : q.patterns)
@@ -530,11 +549,11 @@ static void test_midi() {
     // legacy multi-pattern project exports all patterns per track (gather by track field)
     op::Project lp;
     CHECK(op::load_project(std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj", lp, err), "midi.export_legacy_load");
-    CHECK(op::save_midi("/tmp/op_legacy.mid", lp, err), "midi.export_legacy_ok");
+    CHECK(op::save_midi(tmp_file("op_legacy.mid"), lp, err), "midi.export_legacy_ok");
     {
         size_t n_notes = 0;
         op::Project lb;
-        if (op::load_midi("/tmp/op_legacy.mid", lb, err))
+        if (op::load_midi(tmp_file("op_legacy.mid"), lb, err))
             for (const auto& pat : lb.patterns) n_notes += pat.notes.size();
         size_t want_notes = 0;
         for (const auto& pat : lp.patterns) want_notes += pat.notes.size();
@@ -589,13 +608,13 @@ static void test_tempo_map() {
     // Duration governed by local tempo at note start: 0.5 beats @60bpm = 24000 samples → silent after +30000
     CHECK(energy_in(bc, expect_note + 30000, expect_note + 100000) == 0.0, "tempo.duration_uses_local_tempo");
 
-    write_text("/tmp/op_tm_badbpm.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"tempo_map":[{"bar":0,"bpm":120},{"bar":2,"bpm":-5}]})");
+    write_text(tmp_file("op_tm_badbpm.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"tempo_map":[{"bar":0,"bpm":120},{"bar":2,"bpm":-5}]})");
     op::Project pb;
-    CHECK(!op::load_project("/tmp/op_tm_badbpm.opj", pb, err), "model.rejects_bad_tempo_bpm");
-    write_text("/tmp/op_tm_nozero.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"tempo_map":[{"bar":1,"bpm":120}]})");
-    CHECK(!op::load_project("/tmp/op_tm_nozero.opj", pb, err), "model.rejects_tempo_map_not_starting_at_zero");
+    CHECK(!op::load_project(tmp_file("op_tm_badbpm.opj"), pb, err), "model.rejects_bad_tempo_bpm");
+    write_text(tmp_file("op_tm_nozero.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"tempo_map":[{"bar":1,"bpm":120}]})");
+    CHECK(!op::load_project(tmp_file("op_tm_nozero.opj"), pb, err), "model.rejects_tempo_map_not_starting_at_zero");
 
-    CHECK(op::save_project("/tmp/op_tm_rt.opj", c, err) && op::load_project("/tmp/op_tm_rt.opj", pb, err) &&
+    CHECK(op::save_project(tmp_file("op_tm_rt.opj"), c, err) && op::load_project(tmp_file("op_tm_rt.opj"), pb, err) &&
           pb.tempo_map.size() == 2 && pb.tempo_map[1].bpm == 60.0, "tempo.save_roundtrip");
 }
 
@@ -680,9 +699,9 @@ static void test_bundle() {
     std::string err;
     // Source project with a sampler asset so the bundle actually has to carry files.
     std::error_code sec;
-    std::filesystem::remove_all("/tmp/op_bd", sec);
-    std::filesystem::create_directories("/tmp/op_bd/kits", sec);
-    const std::string dir = "/tmp/op_bd";
+    std::filesystem::remove_all(tmp_file("op_bd"), sec);
+    std::filesystem::create_directories(tmp_file("op_bd/kits"), sec);
+    const std::string dir = tmp_file("op_bd");
     {   // 0.1s 220Hz tone as fake kick (float32 stereo → engine wav writer handles conversion)
         op::wav::StereoBuffer sb;
         sb.sample_rate = 48000;
@@ -777,19 +796,19 @@ static void test_bundle() {
 static void test_velocity() {
     std::string err;
     // Parse: default + explicit + rejections.
-    write_text("/tmp/op_vel.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+    write_text(tmp_file("op_vel.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
         "patterns":[{"track":0,"notes":[{"t":0,"dur":1,"vel":0.5},{"t":2,"dur":1}]}]})");
     op::Project p;
-    CHECK(op::load_project("/tmp/op_vel.opj", p, err) && p.patterns[0].notes.size() == 2 &&
+    CHECK(op::load_project(tmp_file("op_vel.opj"), p, err) && p.patterns[0].notes.size() == 2 &&
           p.patterns[0].notes[0].velocity == 0.5 && p.patterns[0].notes[1].velocity == 1.0,
           "vel.parse_default_and_explicit");
-    write_text("/tmp/op_vel0.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+    write_text(tmp_file("op_vel0.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
         "patterns":[{"track":0,"notes":[{"t":0,"dur":1,"vel":0.0}]}]})");
     op::Project pb;
-    CHECK(!op::load_project("/tmp/op_vel0.opj", pb, err), "model.rejects_vel_zero");
-    write_text("/tmp/op_vel2.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+    CHECK(!op::load_project(tmp_file("op_vel0.opj"), pb, err), "model.rejects_vel_zero");
+    write_text(tmp_file("op_vel2.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
         "patterns":[{"track":0,"notes":[{"t":0,"dur":1,"vel":1.5}]}]})");
-    CHECK(!op::load_project("/tmp/op_vel2.opj", pb, err), "model.rejects_vel_above_one");
+    CHECK(!op::load_project(tmp_file("op_vel2.opj"), pb, err), "model.rejects_vel_above_one");
 
     // Save: velocity omitted when default → legacy canonical bytes unchanged.
     op::Project q;
@@ -798,9 +817,9 @@ static void test_velocity() {
     q.tracks = {t};
     op::Pattern pat; pat.track = 0; pat.notes.push_back({0.0, 1.0, -1});
     q.patterns = {pat};
-    CHECK(op::save_project("/tmp/op_vel_save.opj", q, err), "vel.save_ok");
+    CHECK(op::save_project(tmp_file("op_vel_save.opj"), q, err), "vel.save_ok");
     {
-        std::ifstream f("/tmp/op_vel_save.opj");
+        std::ifstream f(tmp_file("op_vel_save.opj"));
         const std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         CHECK(txt.find("\"vel\"") == std::string::npos, "vel.omitted_from_save_when_default");
     }
@@ -808,7 +827,7 @@ static void test_velocity() {
     // Render: vel 1.0 (no field) vs parsed project identical bit-for-bit; vel 0.5 halves peak exactly.
     op::wav::StereoBuffer b1, bh;
     CHECK(op::render_project(q, "", b1, err), "vel.render_default_ok");
-    CHECK(op::load_project("/tmp/op_vel.opj", p, err) && p.sample_rate == 48000, "vel.reload_ok");
+    CHECK(op::load_project(tmp_file("op_vel.opj"), p, err) && p.sample_rate == 48000, "vel.reload_ok");
     auto peak = [](const op::wav::StereoBuffer& b) {
         float m = 0.0f;
         for (float x : b.interleaved) { const float a = x < 0 ? -x : x; if (a > m) m = a; }
@@ -831,9 +850,9 @@ static void test_velocity() {
             if (std::fabs(n.velocity - 90.0 / 127.0) > 1e-12) all90 = false;
     CHECK(all90, "vel.midi_import_captures_velocity");
     // Export → reimport: velocity survives within one MIDI step (±0.5/127).
-    CHECK(op::save_midi("/tmp/op_vel.mid", mp, err), "vel.midi_export_ok");
+    CHECK(op::save_midi(tmp_file("op_vel.mid"), mp, err), "vel.midi_export_ok");
     op::Project mb;
-    CHECK(op::load_midi("/tmp/op_vel.mid", mb, err), "vel.midi_reimport_ok");
+    CHECK(op::load_midi(tmp_file("op_vel.mid"), mb, err), "vel.midi_reimport_ok");
     bool vel_rt = mb.patterns.size() == mp.patterns.size();
     for (size_t i = 0; vel_rt && i < mb.patterns.size(); ++i) {
         const auto& a = mp.patterns[i].notes; const auto& b2v = mb.patterns[i].notes;
@@ -879,7 +898,7 @@ static void test_midi_merge() {
 
     // Failure leaves host untouched: missing file → error + unchanged structure.
     op::Project before = host;
-    CHECK(!op::import_midi_into(host, "/tmp/definitely_missing_file.mid", err), "merge.missing_fails");
+    CHECK(!op::import_midi_into(host, tmp_file("definitely_missing_file.mid"), err), "merge.missing_fails");
     CHECK(host.tracks.size() == before.tracks.size() && host.patterns.size() == before.patterns.size(),
           "merge.failure_leaves_project_untouched");
 
@@ -903,8 +922,8 @@ static void test_tempo_midi() {
     p.tempo_map = {{0.0, 120.0}, {4.0, 72.0}};
 
     // Export: two FF51 events, second at tick 4·4·480 with us-per-quarter ≈ 6e7/72.
-    CHECK(op::save_midi("/tmp/op_tm.mid", p, err), "tmid.export_ok");
-    std::ifstream f("/tmp/op_tm.mid", std::ios::binary);
+    CHECK(op::save_midi(tmp_file("op_tm.mid"), p, err), "tmid.export_ok");
+    std::ifstream f(tmp_file("op_tm.mid"), std::ios::binary);
     std::vector<uint8_t> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     std::vector<long long> tempo_ticks;
     std::vector<int> tempo_bpm;
@@ -931,15 +950,15 @@ static void test_tempo_midi() {
 
     // Round-trip: import restores a two-point map (bar exact; bpm within µs-quantization tolerance).
     op::Project q;
-    CHECK(op::load_midi("/tmp/op_tm.mid", q, err), "tmid.reimport_ok");
+    CHECK(op::load_midi(tmp_file("op_tm.mid"), q, err), "tmid.reimport_ok");
     CHECK(q.tempo_map.size() == 2 && q.tempo_map[1].bar == 4.0 &&
           std::fabs(q.tempo_map[1].bpm - 72.0) < 1e-3, "tmid.map_restored");
 
     // Single-tempo byte stability: empty map and {0,bpm} export identically.
     op::Project e = p; e.tempo_map.clear();
     op::Project s = p; s.tempo_map = {{0.0, 120.0}};
-    CHECK(op::save_midi("/tmp/op_tm_empty.mid", e, err) && op::save_midi("/tmp/op_tm_single.mid", s, err), "tmid.singles_save");
-    std::ifstream f1("/tmp/op_tm_empty.mid", std::ios::binary), f2("/tmp/op_tm_single.mid", std::ios::binary);
+    CHECK(op::save_midi(tmp_file("op_tm_empty.mid"), e, err) && op::save_midi(tmp_file("op_tm_single.mid"), s, err), "tmid.singles_save");
+    std::ifstream f1(tmp_file("op_tm_empty.mid"), std::ios::binary), f2(tmp_file("op_tm_single.mid"), std::ios::binary);
     const std::vector<uint8_t> b1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
     const std::vector<uint8_t> b2((std::istreambuf_iterator<char>(f2)), std::istreambuf_iterator<char>());
     CHECK(b1 == b2, "tmid.empty_and_single_point_identical");
@@ -954,11 +973,11 @@ static void test_tempo_midi() {
 static void test_attachments() {
     std::string err;
     // Parse + reject.
-    write_text("/tmp/op_att.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+    write_text(tmp_file("op_att.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
         "patterns":[],"attachments":[{"path":"stems/drums.wav","kind":"stem","producer":"demucs"},
                                       {"path":"hum.mid","kind":"transcription"}]})");
     op::Project p;
-    CHECK(op::load_project("/tmp/op_att.opj", p, err) && p.attachments.size() == 2 &&
+    CHECK(op::load_project(tmp_file("op_att.opj"), p, err) && p.attachments.size() == 2 &&
           p.attachments[0].producer == "demucs" && p.attachments[1].producer.empty(),
           "att.parse_two");
     const char* bad[] = {
@@ -967,11 +986,11 @@ static void test_attachments() {
         R"([{"path":"ok.wav","kind":"magic"}])",
         R"([{"path":"","kind":"stem"}])"};
     for (const char* body : bad) {
-        write_text("/tmp/op_att_bad.opj",
+        write_text(tmp_file("op_att_bad.opj"),
                    std::string(R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],"patterns":[],"attachments":)") +
                    body + "}");
         op::Project pb;
-        CHECK(!op::load_project("/tmp/op_att_bad.opj", pb, err), "att.rejects_bad_input");
+        CHECK(!op::load_project(tmp_file("op_att_bad.opj"), pb, err), "att.rejects_bad_input");
     }
 
     // add_attachment op: ok / dup / invalid-kind.
@@ -982,34 +1001,34 @@ static void test_attachments() {
 
     // Save omits attachments when empty; preserves them otherwise (round-trip stable).
     op::Project q = p;
-    CHECK(op::save_project("/tmp/op_att_rt.opj", q, err), "att.save_ok");
+    CHECK(op::save_project(tmp_file("op_att_rt.opj"), q, err), "att.save_ok");
     op::Project r;
-    bool same = op::load_project("/tmp/op_att_rt.opj", r, err) && r.attachments.size() == 3 &&
+    bool same = op::load_project(tmp_file("op_att_rt.opj"), r, err) && r.attachments.size() == 3 &&
                 r.attachments[2].path == "stems/bass.wav" && r.attachments[2].producer == "demucs ht";
     CHECK(same, "att.roundtrip");
 
     // Bundle carries existing attachments (deduped with samplers); missing ones are skipped.
     std::error_code sec;
-    std::filesystem::remove_all("/tmp/op_att_bd", sec);
-    std::filesystem::create_directories("/tmp/op_att_bd/stems", sec);
-    std::filesystem::create_directories("/tmp/op_att_bd/kits", sec);
-    auto copyfile = [](const char* a, const char* b) {
+    std::filesystem::remove_all(tmp_file("op_att_bd"), sec);
+    std::filesystem::create_directories(tmp_file("op_att_bd/stems"), sec);
+    std::filesystem::create_directories(tmp_file("op_att_bd/kits"), sec);
+    auto copyfile = [](const std::string& a, const std::string& b) {
         std::ifstream src(a, std::ios::binary);
         std::ofstream dst(b, std::ios::binary);
         dst << src.rdbuf();
     };
-    copyfile("/tmp/op_bd/kits/kick.wav", "/tmp/op_att_bd/stems/drums.wav");  // fake stem
-    copyfile("/tmp/op_bd/kits/kick.wav", "/tmp/op_att_bd/kits/kick.wav");
+    copyfile(tmp_file("op_bd/kits/kick.wav"), tmp_file("op_att_bd/stems/drums.wav"));  // fake stem
+    copyfile(tmp_file("op_bd/kits/kick.wav"), tmp_file("op_att_bd/kits/kick.wav"));
     op::Project bp;
     bp.bpm = 120.0; bp.length_bars = 1.0; bp.sample_rate = 48000;
     op::Track tk; tk.name = "K"; tk.voice.kind = op::VoiceKind::Sampler; tk.voice.path = "kits/kick.wav";
     bp.tracks = {tk};
     CHECK(op::add_attachment(bp, {"stems/drums.wav", "stem", "demucs"}, err), "att.bundle_add");
     CHECK(op::add_attachment(bp, {"gone/missing.wav", "other", ""}, err), "att.bundle_add_missing_ref");
-    CHECK(op::save_project("/tmp/op_att_bd/song.opj", bp, err), "att.bundle_save");
-    CHECK(op::pack_project("/tmp/op_att_bd/song.opj", "/tmp/op_att_bd/s.opd", err), "att.pack_ok");
+    CHECK(op::save_project(tmp_file("op_att_bd/song.opj"), bp, err), "att.bundle_save");
+    CHECK(op::pack_project(tmp_file("op_att_bd/song.opj"), tmp_file("op_att_bd/s.opd"), err), "att.pack_ok");
     std::vector<std::string> entries;
-    CHECK(op::list_bundle("/tmp/op_att_bd/s.opd", entries, err), "att.list_ok");
+    CHECK(op::list_bundle(tmp_file("op_att_bd/s.opd"), entries, err), "att.list_ok");
     bool has_stem = false, no_missing = true;
     for (const auto& e : entries) {
         if (e == "stems/drums.wav") has_stem = true;
@@ -1023,22 +1042,22 @@ static void test_attachments() {
 static void test_clip_gain() {
     std::string err;
     // Parse default/explicit + range rejection.
-    write_text("/tmp/op_cg.opj", R"({"format_version":0,"bpm":120,"length_bars":4,
+    write_text(tmp_file("op_cg.opj"), R"({"format_version":0,"bpm":120,"length_bars":4,
         "tracks":[{"voice":{"kind":"sine","freq_hz":220}}],
         "patterns":[{"track":0,"notes":[{"t":0,"dur":3.5}]}],
         "arrangement":[{"pattern":0,"start_bar":0},{"pattern":0,"start_bar":2,"gain_db":-6.0}]})");
     op::Project p;
-    CHECK(op::load_project("/tmp/op_cg.opj", p, err) && p.arrangement.size() == 2 &&
+    CHECK(op::load_project(tmp_file("op_cg.opj"), p, err) && p.arrangement.size() == 2 &&
           p.arrangement[0].gain_db == 0.0 && p.arrangement[1].gain_db == -6.0, "cg.parse");
-    write_text("/tmp/op_cg_bad.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+    write_text(tmp_file("op_cg_bad.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
         "patterns":[{"track":0,"notes":[{"t":0,"dur":1}]}],
         "arrangement":[{"pattern":0,"gain_db":30.0}]})");
     op::Project pb;
-    CHECK(!op::load_project("/tmp/op_cg_bad.opj", pb, err), "cg.rejects_out_of_range");
+    CHECK(!op::load_project(tmp_file("op_cg_bad.opj"), pb, err), "cg.rejects_out_of_range");
 
     // Save: omitted at unity, preserved otherwise (round-trip).
     op::Project q = p;
-    CHECK(op::save_project("/tmp/op_cg_rt.opj", q, err), "cg.save_ok");
+    CHECK(op::save_project(tmp_file("op_cg_rt.opj"), q, err), "cg.save_ok");
     // NOTE: search is scoped after `"arrangement"` — Track also has a gain_db field.
     auto arrangement_slice = [](const std::string& fpath) {
         std::ifstream f(fpath);
@@ -1049,13 +1068,13 @@ static void test_clip_gain() {
         const size_t close_b = txt.find(']', open_b);  // clips are flat: first ']' closes the array
         return txt.substr(open_b, close_b - open_b);
     };
-    CHECK(arrangement_slice("/tmp/op_cg_rt.opj").find("gain_db") != std::string::npos, "cg.saved_when_set");
+    CHECK(arrangement_slice(tmp_file("op_cg_rt.opj")).find("gain_db") != std::string::npos, "cg.saved_when_set");
     op::Project r;
-    CHECK(op::load_project("/tmp/op_cg_rt.opj", r, err) && r.arrangement[1].gain_db == -6.0, "cg.roundtrip");
+    CHECK(op::load_project(tmp_file("op_cg_rt.opj"), r, err) && r.arrangement[1].gain_db == -6.0, "cg.roundtrip");
     op::Project unity = p;
     unity.arrangement[1].gain_db = 0.0;
-    CHECK(op::save_project("/tmp/op_cg_u.opj", unity, err), "cg.save_unity_ok");
-    CHECK(arrangement_slice("/tmp/op_cg_u.opj").find("gain_db") == std::string::npos, "cg.omitted_at_unity");
+    CHECK(op::save_project(tmp_file("op_cg_u.opj"), unity, err), "cg.save_unity_ok");
+    CHECK(arrangement_slice(tmp_file("op_cg_u.opj")).find("gain_db") == std::string::npos, "cg.omitted_at_unity");
 
     // Render: half-loudness clip (≈ -6.0206 dB) halves the second window's energy vs unity twin.
     auto energy = [](const op::wav::StereoBuffer& b, long long lo, long long hi) {
@@ -1198,20 +1217,20 @@ static void test_mixer() {
 
     // Parser validation: gain/pan ranges (gap closure) and mute/solo must be JSON booleans.
     op::Project q; std::string e;
-    write_text("/tmp/op_mx_gain.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"gain_db":99}]})");
-    CHECK(!op::load_project("/tmp/op_mx_gain.opj", q, e) && e == "track.gain_db out of range [-96, 24]",
+    write_text(tmp_file("op_mx_gain.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"gain_db":99}]})");
+    CHECK(!op::load_project(tmp_file("op_mx_gain.opj"), q, e) && e == "track.gain_db out of range [-96, 24]",
           "mixer.reject_track_gain_99");
-    write_text("/tmp/op_mx_pan.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"pan":5}]})");
-    CHECK(!op::load_project("/tmp/op_mx_pan.opj", q, e) && e == "track.pan out of range [-1, 1]",
+    write_text(tmp_file("op_mx_pan.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"pan":5}]})");
+    CHECK(!op::load_project(tmp_file("op_mx_pan.opj"), q, e) && e == "track.pan out of range [-1, 1]",
           "mixer.reject_track_pan_5");
-    write_text("/tmp/op_mx_master.opj", R"({"format_version":0,"master_gain_db":30,"tracks":[{"voice":{"kind":"sine"}}]})");
-    CHECK(!op::load_project("/tmp/op_mx_master.opj", q, e) && e == "master_gain_db out of range [-96, 24]",
+    write_text(tmp_file("op_mx_master.opj"), R"({"format_version":0,"master_gain_db":30,"tracks":[{"voice":{"kind":"sine"}}]})");
+    CHECK(!op::load_project(tmp_file("op_mx_master.opj"), q, e) && e == "master_gain_db out of range [-96, 24]",
           "mixer.reject_master_30");
-    write_text("/tmp/op_mx_mute.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"mute":1}]})");
-    CHECK(!op::load_project("/tmp/op_mx_mute.opj", q, e) && e == "track.mute must be a boolean",
+    write_text(tmp_file("op_mx_mute.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"mute":1}]})");
+    CHECK(!op::load_project(tmp_file("op_mx_mute.opj"), q, e) && e == "track.mute must be a boolean",
           "mixer.reject_mute_not_bool");
-    write_text("/tmp/op_mx_solo.opj", R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"solo":"yes"}]})");
-    CHECK(!op::load_project("/tmp/op_mx_solo.opj", q, e) && e == "track.solo must be a boolean",
+    write_text(tmp_file("op_mx_solo.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"},"solo":"yes"}]})");
+    CHECK(!op::load_project(tmp_file("op_mx_solo.opj"), q, e) && e == "track.solo must be a boolean",
           "mixer.reject_solo_not_bool");
 
     // Canonical save: defaults omitted → legacy bytes unchanged; mixer fields round-trip stably.
@@ -1220,18 +1239,18 @@ static void test_mixer() {
         return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     };
     { op::Project d = mixer_base_project();
-      CHECK(op::save_project("/tmp/op_mx_def.opj", d, err), "mixer.save_default_ok");
-      const std::string s = read_all("/tmp/op_mx_def.opj");
+      CHECK(op::save_project(tmp_file("op_mx_def.opj"), d, err), "mixer.save_default_ok");
+      const std::string s = read_all(tmp_file("op_mx_def.opj"));
       CHECK(s.find("mute") == std::string::npos && s.find("solo") == std::string::npos &&
                 s.find("master_gain_db") == std::string::npos, "mixer.defaults_omitted"); }
     { op::Project d = mixer_base_project(); d.tracks[0].mute = true; d.master_gain_db = -6.0f;
-      CHECK(op::save_project("/tmp/op_mx_mix.opj", d, err), "mixer.save_mixer_ok");
+      CHECK(op::save_project(tmp_file("op_mx_mix.opj"), d, err), "mixer.save_mixer_ok");
       op::Project r;
-      CHECK(op::load_project("/tmp/op_mx_mix.opj", r, err) && r.tracks[0].mute &&
+      CHECK(op::load_project(tmp_file("op_mx_mix.opj"), r, err) && r.tracks[0].mute &&
                 !r.tracks[1].solo && !r.tracks[1].mute && r.master_gain_db == -6.0f,
             "mixer.mixer_fields_roundtrip");
-      CHECK(op::save_project("/tmp/op_mx_mix2.opj", r, err), "mixer.resave_ok");
-      CHECK(read_all("/tmp/op_mx_mix.opj") == read_all("/tmp/op_mx_mix2.opj"),
+      CHECK(op::save_project(tmp_file("op_mx_mix2.opj"), r, err), "mixer.resave_ok");
+      CHECK(read_all(tmp_file("op_mx_mix.opj")) == read_all(tmp_file("op_mx_mix2.opj")),
             "mixer.canonical_resave_stable"); }
 }
 
@@ -1255,8 +1274,8 @@ static void test_json_fuzz() {
     rich.arrangement = {{0, 0.0, 3, 0.0}, {1, 2.0, 1, -6.0}, {2, 4.0, 2, 0.0}};
     rich.tempo_map = {{0.0, 133.7}, {4.0, 88.0}};
     rich.attachments = {{"stems/drums.wav", "stem", "demucs"}};
-    CHECK(op::save_project("/tmp/op_fz_seed.opj", rich, err), "fz.seed_saved");
-    std::ifstream f("/tmp/op_fz_seed.opj", std::ios::binary);
+    CHECK(op::save_project(tmp_file("op_fz_seed.opj"), rich, err), "fz.seed_saved");
+    std::ifstream f(tmp_file("op_fz_seed.opj"), std::ios::binary);
     const std::string seed((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
     // Invariants any successfully-parsed project must satisfy (spec promises).
@@ -1303,10 +1322,10 @@ static void test_json_fuzz() {
     // Truncation sweep: every prefix must load or fail cleanly.
     int trunc_crash = 0, trunc_ok = 0;
     for (size_t i = 1; i < seed.size(); ++i) {
-        std::ofstream w("/tmp/op_fz_t.opj", std::ios::binary);
+        std::ofstream w(tmp_file("op_fz_t.opj"), std::ios::binary);
         w.write(seed.data(), static_cast<std::streamsize>(i));
         w.close();
-        const int r = try_load("/tmp/op_fz_t.opj");
+        const int r = try_load(tmp_file("op_fz_t.opj"));
         if (r < 0) ++trunc_crash; else if (r == 1) ++trunc_ok;
     }
     CHECK(trunc_crash == 0, "fz.truncation_never_escapes");
@@ -1328,10 +1347,10 @@ static void test_json_fuzz() {
                 default: m.erase(m.begin() + static_cast<long>(pos)); break;             // delete
             }
         }
-        std::ofstream w("/tmp/op_fz_m.opj", std::ios::binary);
+        std::ofstream w(tmp_file("op_fz_m.opj"), std::ios::binary);
         w.write(m.data(), static_cast<std::streamsize>(m.size()));
         w.close();
-        const int r = try_load("/tmp/op_fz_m.opj");
+        const int r = try_load(tmp_file("op_fz_m.opj"));
         if (r < 0) ++mut_crash; else if (r == 1) ++mut_parsed; else ++mut_failed_clean;
     }
     CHECK(mut_crash == 0, "fz.mutation_never_escapes");
@@ -1352,11 +1371,11 @@ static void test_json_fuzz() {
                 const size_t colon = seed.find(':', kp);
                 const size_t end = seed.find_first_of(",\n", colon);
                 std::string m = seed.substr(0, colon + 1) + " " + v + seed.substr(end);
-                std::ofstream w("/tmp/op_fz_tc.opj", std::ios::binary);
+                std::ofstream w(tmp_file("op_fz_tc.opj"), std::ios::binary);
                 w << m;
                 w.close();
                 ++cases;
-                if (try_load("/tmp/op_fz_tc.opj") < 0) ++escaped;  // -1 escaped, -2 invariant broken
+                if (try_load(tmp_file("op_fz_tc.opj")) < 0) ++escaped;  // -1 escaped, -2 invariant broken
             }
         }
         CHECK(cases >= 40, "fz.type_confusion_coverage");
@@ -1373,7 +1392,7 @@ static void test_wav_fuzz() {
     op::wav::StereoBuffer buf;
     buf.interleaved.assign(200, 0.25f);
     std::string err;
-    CHECK(op::wav::write_pcm16_stereo("/tmp/op_wf_seed.wav", buf, err), "wf.seed_saved");
+    CHECK(op::wav::write_pcm16_stereo(tmp_file("op_wf_seed.wav"), buf, err), "wf.seed_saved");
 
     auto patch_u16 = [](std::vector<uint8_t>& v, size_t off, uint16_t x) {
         v[off] = static_cast<uint8_t>(x & 0xFF);
@@ -1382,16 +1401,16 @@ static void test_wav_fuzz() {
     auto patch_u32 = [](std::vector<uint8_t>& v, size_t off, uint32_t x) {
         for (int i = 0; i < 4; ++i) v[off + i] = static_cast<uint8_t>((x >> (8 * i)) & 0xFFu);
     };
-    std::ifstream f("/tmp/op_wf_seed.wav", std::ios::binary);
+    std::ifstream f(tmp_file("op_wf_seed.wav"), std::ios::binary);
     const std::vector<uint8_t> seed((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
     auto load_must_survive = [&](const std::vector<uint8_t>& bytes, const char* label, bool must_reject) {
-        std::ofstream w("/tmp/op_wf_case.wav", std::ios::binary);
+        std::ofstream w(tmp_file("op_wf_case.wav"), std::ios::binary);
         w.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         w.close();
         op::wav::ReadResult r;
         try {
-            r = op::wav::read_wav("/tmp/op_wf_case.wav");  // must return, never abort/OOB
+            r = op::wav::read_wav(tmp_file("op_wf_case.wav"));  // must return, never abort/OOB
         } catch (...) { r.ok = false; }
         if (must_reject) { CHECK(!r.ok, label); return; }  // crafted-invalid: clean rejection required
         if (r.ok) {
@@ -1446,7 +1465,7 @@ static void test_wav_fuzz() {
 static void test_bundle_fuzz() {
     std::string err;
     // Seed: real project + sample + attachment packed into a genuine .opd.
-    const std::string dir = "/tmp/op_bf_seed";
+    const std::string dir = tmp_file("op_bf_seed");
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir + "/kits");
     write_text(dir + "/song.opj", R"({"format_version":0,"bpm":120,"length_bars":2,
@@ -1539,9 +1558,9 @@ static void test_arrangement_export() {
     p.patterns.push_back(pat);
 
     // No arrangement: legacy placement (every pattern once at bar 0).
-    CHECK(op::save_midi("/tmp/op_ae_legacy.mid", p, err), "ae.legacy_saved");
+    CHECK(op::save_midi(tmp_file("op_ae_legacy.mid"), p, err), "ae.legacy_saved");
     op::Project back_l;
-    CHECK(op::load_midi("/tmp/op_ae_legacy.mid", back_l, err), "ae.legacy_reloaded");
+    CHECK(op::load_midi(tmp_file("op_ae_legacy.mid"), back_l, err), "ae.legacy_reloaded");
     {
         size_t notes = 0;
         for (const auto& q : back_l.patterns) notes += q.notes.size();
@@ -1551,9 +1570,9 @@ static void test_arrangement_export() {
     // Arrangement: clip@bar0 + clip@bar2×3 with -6.02 dB on the second → 8 note events total;
     // reps spaced by extent (2 beats) exactly like the renderer; gain baked into velocity (~64).
     p.arrangement = {{0, 0.0, 1, 0.0}, {0, 2.0, 3, -6.0206}};
-    CHECK(op::save_midi("/tmp/op_ae_flat.mid", p, err), "ae.flat_saved");
+    CHECK(op::save_midi(tmp_file("op_ae_flat.mid"), p, err), "ae.flat_saved");
     op::Project back;
-    CHECK(op::load_midi("/tmp/op_ae_flat.mid", back, err), "ae.flat_reloaded");
+    CHECK(op::load_midi(tmp_file("op_ae_flat.mid"), back, err), "ae.flat_reloaded");
     std::vector<double> onsets;
     int quiet = 0, loud = 0;
     for (const auto& q : back.patterns) {
@@ -1571,13 +1590,13 @@ static void test_arrangement_export() {
     CHECK(loud == 2 && quiet == 6, "ae.gain_baked_into_velocity");
 
     // Determinism: same project → byte-identical MIDI.
-    CHECK(op::save_midi("/tmp/op_ae_flat2.mid", p, err), "ae.save2_ok");
+    CHECK(op::save_midi(tmp_file("op_ae_flat2.mid"), p, err), "ae.save2_ok");
     {
-        auto rb = [](const char* path) {
+        auto rb = [](const std::string& path) {
             std::ifstream f(path, std::ios::binary);
             return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         };
-        CHECK(rb("/tmp/op_ae_flat.mid") == rb("/tmp/op_ae_flat2.mid"), "ae.export_deterministic");
+        CHECK(rb(tmp_file("op_ae_flat.mid")) == rb(tmp_file("op_ae_flat2.mid")), "ae.export_deterministic");
     }
 }
 
@@ -1590,17 +1609,17 @@ static std::vector<uint8_t> slurp_bytes(const std::string& path) {
 // apply_op must reject o AND leave the project's saved bytes identical across the attempt.
 static bool rejected_unchanged(op::Project& p, const nlohmann::json& o, std::string& err) {
     std::string serr;
-    if (!op::save_project("/tmp/op_rej_before.opj", p, serr)) return false;
+    if (!op::save_project(tmp_file("op_rej_before.opj"), p, serr)) return false;
     if (op::apply_op(p, o, err)) return false;  // must be rejected
-    if (!op::save_project("/tmp/op_rej_after.opj", p, serr)) return false;
-    return slurp_bytes("/tmp/op_rej_before.opj") == slurp_bytes("/tmp/op_rej_after.opj");
+    if (!op::save_project(tmp_file("op_rej_after.opj"), p, serr)) return false;
+    return slurp_bytes(tmp_file("op_rej_before.opj")) == slurp_bytes(tmp_file("op_rej_after.opj"));
 }
 
 // The exact bytes save_project writes for p (WP-0147 byte-exact undo/redo and rejection checks).
 static std::string saved_text(const op::Project& p) {
     std::string serr;
-    if (!op::save_project("/tmp/op_saved_text.opj", p, serr)) return "";
-    const std::vector<uint8_t> b = slurp_bytes("/tmp/op_saved_text.opj");
+    if (!op::save_project(tmp_file("op_saved_text.opj"), p, serr)) return "";
+    const std::vector<uint8_t> b = slurp_bytes(tmp_file("op_saved_text.opj"));
     return std::string(b.begin(), b.end());
 }
 
@@ -2015,8 +2034,8 @@ static void test_ops_property() {
     std::string err;
     op::Project orig;
     CHECK(op::load_project(fix, orig, err), "prop.load_fixture");
-    CHECK(op::save_project("/tmp/op_prop_orig.opj", orig, err), "prop.orig_saved");
-    const auto orig_bytes = slurp_bytes("/tmp/op_prop_orig.opj");
+    CHECK(op::save_project(tmp_file("op_prop_orig.opj"), orig, err), "prop.orig_saved");
+    const auto orig_bytes = slurp_bytes(tmp_file("op_prop_orig.opj"));
 
     op::rng::Pcg32 rng(20261118ull);  // fixed seed: the whole suite is reproducible run-to-run
     long applied_total = 0, rejected_total = 0;
@@ -2030,14 +2049,14 @@ static void test_ops_property() {
         for (int k = 0; k < len; ++k) {
             if (h.apply(p, random_op(rng, p), err)) ++applied_total; else ++rejected_total;
         }
-        save_ok = save_ok && op::save_project("/tmp/op_prop_fwd.opj", p, err);
-        const auto fwd_bytes = slurp_bytes("/tmp/op_prop_fwd.opj");
+        save_ok = save_ok && op::save_project(tmp_file("op_prop_fwd.opj"), p, err);
+        const auto fwd_bytes = slurp_bytes(tmp_file("op_prop_fwd.opj"));
         while (h.undo(p)) {}
-        save_ok = save_ok && op::save_project("/tmp/op_prop_back.opj", p, err);
-        if (slurp_bytes("/tmp/op_prop_back.opj") != orig_bytes) undo_ok = false;
+        save_ok = save_ok && op::save_project(tmp_file("op_prop_back.opj"), p, err);
+        if (slurp_bytes(tmp_file("op_prop_back.opj")) != orig_bytes) undo_ok = false;
         while (h.redo(p)) {}
-        save_ok = save_ok && op::save_project("/tmp/op_prop_fwd2.opj", p, err);
-        if (slurp_bytes("/tmp/op_prop_fwd2.opj") != fwd_bytes) redo_ok = false;
+        save_ok = save_ok && op::save_project(tmp_file("op_prop_fwd2.opj"), p, err);
+        if (slurp_bytes(tmp_file("op_prop_fwd2.opj")) != fwd_bytes) redo_ok = false;
     }
     CHECK(save_ok, "prop.saves_ok");
     CHECK(undo_ok, "prop.undo_all_bytes_equal_original");
@@ -2056,7 +2075,7 @@ static void test_document() {
 
     // Canonical save bytes of a Project — same writer as save_project, so equality with the
     // open-time baseline is exactly what dirty() compares. Never called on fixture paths.
-    auto bytes_of = [](const op::Project& p, const char* path) {
+    auto bytes_of = [](const op::Project& p, const std::string& path) {
         std::string serr;
         if (!op::save_project(path, p, serr)) return std::vector<uint8_t>{};
         return slurp_bytes(path);
@@ -2065,7 +2084,7 @@ static void test_document() {
     // open of a missing file: false, err non-empty, document untouched.
     {
         op::Document d;
-        CHECK(!op::Document::open("/tmp/op_doc_missing_wp0141.opj", d, err), "doc.open_missing_fails");
+        CHECK(!op::Document::open(tmp_file("op_doc_missing_wp0141.opj"), d, err), "doc.open_missing_fails");
         CHECK(!err.empty(), "doc.open_missing_err_set");
         CHECK(d.revision() == 0 && d.path().empty() && !d.dirty() && !d.can_undo(),
               "doc.open_missing_unchanged");
@@ -2078,7 +2097,7 @@ static void test_document() {
         CHECK(d.apply(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -7.0}}, err) &&
                   d.project().tracks[0].gain_db == -7.0f,
               "doc.preopen_edit");
-        CHECK(!op::Document::open("/tmp/op_doc_missing_wp0141.opj", d, err), "doc.open_fail_returns_false");
+        CHECK(!op::Document::open(tmp_file("op_doc_missing_wp0141.opj"), d, err), "doc.open_fail_returns_false");
         CHECK(d.revision() == 1 && d.dirty() && d.can_undo() && d.path() == demo &&
                   d.project().tracks[0].gain_db == -7.0f,
               "doc.open_fail_leaves_doc_unchanged");
@@ -2091,7 +2110,7 @@ static void test_document() {
     CHECK(!doc.dirty(), "doc.open_not_dirty");
     CHECK(doc.revision() == 0, "doc.open_revision_zero");
     CHECK(!doc.can_undo() && !doc.can_redo(), "doc.open_no_history");
-    const auto orig_bytes = bytes_of(doc.project(), "/tmp/op_doc_orig.opj");
+    const auto orig_bytes = bytes_of(doc.project(), tmp_file("op_doc_orig.opj"));
 
     // apply → dirty + can_undo + revision +1; undo → original bytes and clean again; redo → edited.
     CHECK(doc.apply(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -3.5}}, err),
@@ -2099,34 +2118,34 @@ static void test_document() {
     CHECK(doc.dirty(), "doc.apply_dirty");
     CHECK(doc.can_undo() && !doc.can_redo(), "doc.apply_can_undo");
     CHECK(doc.revision() == 1, "doc.apply_revision_plus_1");
-    const auto edited_bytes = bytes_of(doc.project(), "/tmp/op_doc_edited.opj");
+    const auto edited_bytes = bytes_of(doc.project(), tmp_file("op_doc_edited.opj"));
     CHECK(edited_bytes != orig_bytes, "doc.apply_changed_bytes");
     CHECK(doc.undo(), "doc.undo_ok");
-    CHECK(bytes_of(doc.project(), "/tmp/op_doc_undo.opj") == orig_bytes, "doc.undo_bytes_equal_original");
+    CHECK(bytes_of(doc.project(), tmp_file("op_doc_undo.opj")) == orig_bytes, "doc.undo_bytes_equal_original");
     CHECK(!doc.dirty(), "doc.undo_clean_again");  // undo back to saved state → clean by bytes
     CHECK(doc.can_redo() && !doc.can_undo(), "doc.undo_can_redo");
     CHECK(doc.redo(), "doc.redo_ok");
-    CHECK(bytes_of(doc.project(), "/tmp/op_doc_redo.opj") == edited_bytes, "doc.redo_bytes_equal_edited");
+    CHECK(bytes_of(doc.project(), tmp_file("op_doc_redo.opj")) == edited_bytes, "doc.redo_bytes_equal_edited");
 
     // Rejected op: false + err, revision/bytes/history all unchanged.
     {
         const auto rev = doc.revision();
         const bool cu = doc.can_undo(), cr = doc.can_redo();
-        const auto before = bytes_of(doc.project(), "/tmp/op_doc_rej_before.opj");
+        const auto before = bytes_of(doc.project(), tmp_file("op_doc_rej_before.opj"));
         err.clear();
         CHECK(!doc.apply(json{{"op", "set_track_gain"}, {"index", 99}, {"gain_db", 3.0}}, err),
               "doc.reject_oob_op");
         CHECK(!err.empty(), "doc.reject_err_set");
         CHECK(doc.revision() == rev && doc.can_undo() == cu && doc.can_redo() == cr,
               "doc.reject_revision_history_unchanged");
-        CHECK(bytes_of(doc.project(), "/tmp/op_doc_rej_after.opj") == before, "doc.reject_bytes_unchanged");
+        CHECK(bytes_of(doc.project(), tmp_file("op_doc_rej_after.opj")) == before, "doc.reject_bytes_unchanged");
     }
 
     // Gesture: 50 updates (−1 … −50) → exactly ONE undo entry; final gain −50; one undo restores.
     {
         op::Document g;
         CHECK(op::Document::open(demo, g, err), "doc.gesture_open_ok");
-        const auto base_bytes = bytes_of(g.project(), "/tmp/op_doc_g_base.opj");
+        const auto base_bytes = bytes_of(g.project(), tmp_file("op_doc_g_base.opj"));
 
         // No gesture active: update/end refused ("no gesture"), cancel is a no-op.
         err.clear();
@@ -2167,7 +2186,7 @@ static void test_document() {
         CHECK(g.can_undo() && !g.can_redo(), "doc.end_gesture_one_entry");
         CHECK(g.dirty(), "doc.end_gesture_dirty");
         CHECK(g.undo(), "doc.gesture_single_undo");
-        CHECK(bytes_of(g.project(), "/tmp/op_doc_g_undo.opj") == base_bytes,
+        CHECK(bytes_of(g.project(), tmp_file("op_doc_g_undo.opj")) == base_bytes,
               "doc.gesture_undo_restores_original_bytes");
         CHECK(!g.can_undo() && !g.undo(), "doc.gesture_exactly_one_entry");
         CHECK(!g.dirty(), "doc.gesture_undo_clean");
@@ -2192,14 +2211,14 @@ static void test_document() {
     {
         op::Document g;
         CHECK(op::Document::open(demo, g, err), "doc.cancel_open_ok");
-        const auto base_bytes = bytes_of(g.project(), "/tmp/op_doc_c_base.opj");
+        const auto base_bytes = bytes_of(g.project(), tmp_file("op_doc_c_base.opj"));
         CHECK(g.begin_gesture(), "doc.cancel_begin");
         CHECK(g.update_gesture(json{{"op", "set_track_gain"}, {"index", 0}, {"gain_db", -20.0}}, err),
               "doc.cancel_update_ok");
         const auto rev_preview = g.revision();  // preview −20 already bumped the revision
         g.cancel_gesture();
         CHECK(!g.gesture_active(), "doc.cancel_ends_gesture");
-        CHECK(bytes_of(g.project(), "/tmp/op_doc_c_after.opj") == base_bytes, "doc.cancel_restores");
+        CHECK(bytes_of(g.project(), tmp_file("op_doc_c_after.opj")) == base_bytes, "doc.cancel_restores");
         CHECK(!g.can_undo() && !g.dirty(), "doc.cancel_no_entry_clean");
         CHECK(g.revision() == rev_preview + 1, "doc.cancel_revision_bump");  // restore changed project()
     }
@@ -2211,19 +2230,19 @@ static void test_document() {
         CHECK(op::Document::open(demo, s, err), "doc.saveas_open_ok");
         CHECK(s.apply(json{{"op", "set_track_gain"}, {"index", 1}, {"gain_db", -9.0}}, err) && s.dirty(),
               "doc.saveas_dirty_pre");
-        CHECK(s.save_as("/tmp/op_doc_saveas.opj", err), "doc.saveas_ok");
-        CHECK(s.path() == "/tmp/op_doc_saveas.opj", "doc.saveas_path_set");
+        CHECK(s.save_as(tmp_file("op_doc_saveas.opj"), err), "doc.saveas_ok");
+        CHECK(s.path() == tmp_file("op_doc_saveas.opj"), "doc.saveas_path_set");
         CHECK(!s.dirty(), "doc.saveas_clean");
-        CHECK(op::save_project("/tmp/op_doc_saveref.opj", s.project(), err), "doc.saveref_ok");
-        CHECK(slurp_bytes("/tmp/op_doc_saveas.opj") == slurp_bytes("/tmp/op_doc_saveref.opj"),
+        CHECK(op::save_project(tmp_file("op_doc_saveref.opj"), s.project(), err), "doc.saveref_ok");
+        CHECK(slurp_bytes(tmp_file("op_doc_saveas.opj")) == slurp_bytes(tmp_file("op_doc_saveref.opj")),
               "doc.saveas_bytes_match_save_project");
         const auto rev = s.revision();
         CHECK(s.apply(json{{"op", "set_track_gain"}, {"index", 1}, {"gain_db", -8.0}}, err) && s.dirty(),
               "doc.save_dirty_pre");
         CHECK(s.save(err), "doc.save_ok");
         CHECK(!s.dirty() && s.revision() == rev + 1, "doc.save_clean_revision_untouched_by_save");
-        CHECK(op::save_project("/tmp/op_doc_saveref.opj", s.project(), err) &&
-                  slurp_bytes("/tmp/op_doc_saveas.opj") == slurp_bytes("/tmp/op_doc_saveref.opj"),
+        CHECK(op::save_project(tmp_file("op_doc_saveref.opj"), s.project(), err) &&
+                  slurp_bytes(tmp_file("op_doc_saveas.opj")) == slurp_bytes(tmp_file("op_doc_saveref.opj")),
               "doc.save_wrote_new_path");  // save() overwrote the save_as path with current bytes
     }
 
@@ -2266,7 +2285,7 @@ static void test_document_autosave() {
     using nlohmann::json;
     std::string err;
     const std::string demo = std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj";
-    const fs::path dir = fs::temp_directory_path() / "op_doc_autosave_wp0157";
+    const fs::path dir = fs::path(tmp_file("op_doc_autosave_wp0157"));
     fs::create_directories(dir);
     const std::string main_path = (dir / "song.opj").string();
     const std::string auto_path = op::Document::autosave_path(main_path);
@@ -2451,12 +2470,12 @@ static void test_resample() {
     for (size_t i = 0; i < s.size(); ++i)
         s[i] = 0.5f * op::dsp::sinf_(0.13f * static_cast<float>(i)) +
                0.25f * op::dsp::cosf_(0.71f * static_cast<float>(i));
-    write_mono_pcm16("/tmp/op_rs_native.wav", 48000, s);
+    write_mono_pcm16(tmp_file("op_rs_native.wav"), 48000, s);
     {
         const op::Project p = sampler_project_1bar("op_rs_native.wav");
         op::wav::StereoBuffer buf;
-        CHECK(op::render_project(p, "/tmp", buf, err), "resample.native_mono_renders");
-        const op::wav::ReadResult rr = op::wav::read_wav("/tmp/op_rs_native.wav");
+        CHECK(op::render_project(p, tmp_dir(), buf, err), "resample.native_mono_renders");
+        const op::wav::ReadResult rr = op::wav::read_wav(tmp_file("op_rs_native.wav"));
         bool bitid = rr.ok && buf.frames() == 96000;
         for (size_t n = 0; bitid && n < s.size(); ++n) {
             if (buf.interleaved[n * 2] != rr.samples[n]) bitid = false;   // exact float equality
@@ -2472,11 +2491,11 @@ static void test_resample() {
             sb.interleaved[i * 2] = s[i];
             sb.interleaved[i * 2 + 1] = -0.3f * op::dsp::sinf_(0.91f * static_cast<float>(i));
         }
-        CHECK(op::wav::write_pcm16_stereo("/tmp/op_rs_native_st.wav", sb, err), "resample.native_stereo_written");
+        CHECK(op::wav::write_pcm16_stereo(tmp_file("op_rs_native_st.wav"), sb, err), "resample.native_stereo_written");
         const op::Project p = sampler_project_1bar("op_rs_native_st.wav");
         op::wav::StereoBuffer buf;
-        CHECK(op::render_project(p, "/tmp", buf, err), "resample.native_stereo_renders");
-        const op::wav::ReadResult rr = op::wav::read_wav("/tmp/op_rs_native_st.wav");
+        CHECK(op::render_project(p, tmp_dir(), buf, err), "resample.native_stereo_renders");
+        const op::wav::ReadResult rr = op::wav::read_wav(tmp_file("op_rs_native_st.wav"));
         bool bitid = rr.ok && rr.channels == 2;
         for (size_t n = 0; bitid && n < s.size(); ++n) {
             if (buf.interleaved[n * 2] != rr.samples[n * 2]) bitid = false;
@@ -2587,10 +2606,10 @@ static void test_resample() {
 
     // (e) Unsupported rate 4000 Hz → render fails with the spec'd message (CLI exit 5).
     std::vector<float> slow = {0.0f, 0.25f, -0.25f, 0.1f};
-    write_mono_pcm16("/tmp/op_rs_lowrate.wav", 4000, slow);
+    write_mono_pcm16(tmp_file("op_rs_lowrate.wav"), 4000, slow);
     const op::Project pe = sampler_project_1bar("op_rs_lowrate.wav");
     op::wav::StereoBuffer be;
-    CHECK(!op::render_project(pe, "/tmp", be, err), "resample.e_unsupported_rate_fails_render");
+    CHECK(!op::render_project(pe, tmp_dir(), be, err), "resample.e_unsupported_rate_fails_render");
     CHECK(err == "sampler: unsupported sample rate 4000", "resample.e_error_message_exact");
 }
 
@@ -2608,7 +2627,7 @@ static void test_project_bytes() {
         const std::string fix = std::string(OP_TEST_DATA) + "/fixtures/goldens/" + name + ".opj";
         op::Project p;
         bool ok = op::load_project(fix, p, err);
-        const std::string tmp = std::string("/tmp/op_projbytes_") + name + ".opj";
+        const std::string tmp = tmp_file(std::string("op_projbytes_") + name + ".opj");
         if (ok) ok = op::save_project(tmp, p, err);
         if (ok) {
             const std::string want = op::project_bytes(p);
@@ -2632,10 +2651,10 @@ static void test_project_bytes() {
         const std::string demo = std::string(OP_TEST_DATA) + "/fixtures/goldens/demo.opj";
         op::Document doc;
         bool ok = op::Document::open(demo, doc, err);
-        if (ok) ok = doc.save_as("/tmp/op_projbytes_doc.opj", err);
+        if (ok) ok = doc.save_as(tmp_file("op_projbytes_doc.opj"), err);
         if (ok) {
             const std::string want = op::project_bytes(doc.project());
-            ok = slurp_bytes("/tmp/op_projbytes_doc.opj") ==
+            ok = slurp_bytes(tmp_file("op_projbytes_doc.opj")) ==
                  std::vector<uint8_t>(want.begin(), want.end());
         }
         CHECK(ok, "projbytes.document_save_as_agrees");
@@ -3216,8 +3235,8 @@ static std::string loop_project_text(const std::string& extra, double length_bar
 
 // Parse text → Project; returns the load error (empty on success) through `err_out`.
 static bool parse_text(const std::string& text, op::Project& p, std::string& err_out) {
-    write_text("/tmp/op_loop_in.opj", text);
-    return op::load_project("/tmp/op_loop_in.opj", p, err_out);
+    write_text(tmp_file("op_loop_in.opj"), text);
+    return op::load_project(tmp_file("op_loop_in.opj"), p, err_out);
 }
 
 static void test_loop_region() {
@@ -3350,7 +3369,7 @@ static bool trim_parse(const nlohmann::json& voice, op::Project& p, std::string&
 // Left-channel samples of a render of p (base_dir /tmp for the fixture WAVs written below).
 static bool trim_render_left(const op::Project& p, std::vector<float>& left, std::string& err) {
     op::wav::StereoBuffer b;
-    if (!op::render_project(p, "/tmp", b, err)) return false;
+    if (!op::render_project(p, tmp_dir(), b, err)) return false;
     left.resize(b.frames());
     for (size_t i = 0; i < left.size(); ++i) left[i] = b.interleaved[2 * i];
     return true;
@@ -3363,7 +3382,7 @@ static void test_sampler_trim() {
     // Fixture asset: 1000 mono frames, frame i = i/32768 (PCM16-exact).
     std::vector<float> ramp(1000);
     for (size_t i = 0; i < ramp.size(); ++i) ramp[i] = static_cast<float>(i) / 32768.0f;
-    write_mono_pcm16("/tmp/op_trim_ramp.wav", 48000, ramp);
+    write_mono_pcm16(tmp_file("op_trim_ramp.wav"), 48000, ramp);
 
     // (1)-(2) parse: fields stored; untouched voice keeps defaults.
     op::Project pa;
@@ -3440,7 +3459,7 @@ static void test_sampler_trim() {
     const json ve = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.05}};
     CHECK(trim_parse(ve, pe, err), "trim.parse_start_beyond_ok");
     op::wav::StereoBuffer be;
-    CHECK(!op::render_project(pe, "/tmp", be, err) && err == "sampler: trim slice is empty",
+    CHECK(!op::render_project(pe, tmp_dir(), be, err) && err == "sampler: trim slice is empty",
           "trim.e_render_slice_empty");
     op::Project pz;
     const json vz = {{"kind", "sampler"}, {"path", "op_trim_ramp.wav"}, {"start_s", 0.02}};
@@ -3450,7 +3469,7 @@ static void test_sampler_trim() {
 
     // (18) 44.1 kHz asset: slice is i1 - i0 frames at 48 kHz (960 .. 2880 -> 1920 frames).
     std::vector<float> dc(4410, 0.5f);
-    write_mono_pcm16("/tmp/op_trim_dc44k.wav", 44100, dc);
+    write_mono_pcm16(tmp_file("op_trim_dc44k.wav"), 44100, dc);
     op::Project pr;
     const json vr = {{"kind", "sampler"}, {"path", "op_trim_dc44k.wav"}, {"start_s", 0.02}, {"end_s", 0.06}};
     std::vector<float> rs;
@@ -3587,8 +3606,8 @@ void put(const std::string& path, const Bytes& b) {
 }
 
 op::wav::ReadResult load(const Bytes& b) {
-    put("/tmp/op_aiff_case.aiff", b);
-    return op::wav::read_aiff("/tmp/op_aiff_case.aiff");
+    put(tmp_file("op_aiff_case.aiff"), b);
+    return op::wav::read_aiff(tmp_file("op_aiff_case.aiff"));
 }
 
 // Expected float for a 16-bit / 24-bit sample value (same expressions as the reader).
@@ -3673,7 +3692,7 @@ static void test_aiff() {
     }
     // (e) one CHECK per error row (2-12), exact text.
     {
-        const std::string nope = "/tmp/op_aiff_does_not_exist.aiff";
+        const std::string nope = tmp_file("op_aiff_does_not_exist.aiff");
         auto r1 = op::wav::read_aiff(nope);
         CHECK(!r1.ok && r1.error == "cannot open '" + nope + "'" && r1.format == "aiff", "aiff.err_cannot_open");
 
@@ -3749,22 +3768,22 @@ static void test_aiff() {
     }
     // (f) read_audio dispatches by signature, not extension.
     {
-        put("/tmp/op_aiff_sig_a.wav", aiff_file(2, 4, 16, 48000, pcm16));
-        auto a = op::wav::read_audio("/tmp/op_aiff_sig_a.wav");
+        put(tmp_file("op_aiff_sig_a.wav"), aiff_file(2, 4, 16, 48000, pcm16));
+        auto a = op::wav::read_audio(tmp_file("op_aiff_sig_a.wav"));
         CHECK(a.ok && a.format == "aiff" && same_floats(a.samples, want16), "aiff.dispatch_aiff_in_wav_name");
 
         op::wav::StereoBuffer buf;
         buf.sample_rate = 44100;
         for (int i = 0; i < 64; ++i) buf.interleaved.push_back(static_cast<float>(i - 32) / 40.0f);
         std::string err;
-        CHECK(op::wav::write_pcm16_stereo("/tmp/op_aiff_sig_b.aiff", buf, err), "aiff.dispatch_wav_write_ok");
-        auto w = op::wav::read_audio("/tmp/op_aiff_sig_b.aiff");
-        auto wd = op::wav::read_wav("/tmp/op_aiff_sig_b.aiff");
+        CHECK(op::wav::write_pcm16_stereo(tmp_file("op_aiff_sig_b.aiff"), buf, err), "aiff.dispatch_wav_write_ok");
+        auto w = op::wav::read_audio(tmp_file("op_aiff_sig_b.aiff"));
+        auto wd = op::wav::read_wav(tmp_file("op_aiff_sig_b.aiff"));
         CHECK(w.ok && w.format == "wav" && wd.ok && w.error == wd.error && w.sample_rate == wd.sample_rate &&
                   w.channels == wd.channels && same_floats(w.samples, wd.samples),
               "aiff.dispatch_wav_in_aiff_name_identical_to_read_wav");
-        auto none = op::wav::read_audio("/tmp/op_aiff_does_not_exist.wav");
-        auto none_wav = op::wav::read_wav("/tmp/op_aiff_does_not_exist.wav");
+        auto none = op::wav::read_audio(tmp_file("op_aiff_does_not_exist.wav"));
+        auto none_wav = op::wav::read_wav(tmp_file("op_aiff_does_not_exist.wav"));
         CHECK(!none.ok && none.error == none_wav.error && none.format == "wav", "aiff.dispatch_unopenable_is_wav_error");
     }
     // (g) odd-sized unknown chunk (pad byte) before SSND, non-zero SSND offset.
@@ -3861,5 +3880,11 @@ int main() {
     test_loop_region();
     test_sampler_trim();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
+    if (g_failures == 0) {
+        std::error_code ec;
+        std::filesystem::remove_all(tmp_dir(), ec);
+    } else {
+        std::printf("kept scratch dir %s\n", tmp_dir().c_str());
+    }
     return g_failures;
 }
