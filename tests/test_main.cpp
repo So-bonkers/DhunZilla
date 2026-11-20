@@ -5057,6 +5057,291 @@ static void test_player() {
           "format_position.clamps_past_end");
 }
 
+// --- Clip fades (WP-0178): docs/spec/project-model.md §Clip fades + operations.md §Clip fade operation.
+// Parse/validate/save, render-time linear-ramp bit-exactness vs the spec formula, per-clip & per-repeat
+// scoping, tempo-map bounds via TempoMap::at, set_clip_fades op (set/null/zeros/reject), History undo/redo,
+// and opd diff emission. All numbers pinned by the two spec sections.
+
+// Write a stereo float32 asset of `frames` samples, both channels exactly 0.25f (native 48 kHz).
+static void write_const_asset(const std::string& path, long long frames) {
+    op::wav::StereoBuffer b;
+    b.sample_rate = 48000;
+    b.interleaved.assign(static_cast<size_t>(frames) * 2u, 0.25f);
+    std::string e;
+    op::wav::write_wav_stereo(path, b, op::wav::SampleFormat::F32, e);
+}
+
+// A hard-left (pan -1 → gain_l == 1.0f exactly) single-sampler-track project, one pattern with a single
+// long note and explicit length_beats = `extent`, one clip [start_bar, repeats] with the given fades.
+static op::Project fade_probe_project(const std::string& asset, double extent, int reps,
+                                      double fade_in, double fade_out, double start_bar = 0.0,
+                                      double note_dur = 16.0) {
+    op::Project p;
+    p.bpm = 120.0; p.length_bars = 8.0; p.beats_per_bar = 4; p.sample_rate = 48000; p.seed = 3;
+    op::Track tr; tr.name = "K"; tr.gain_db = 0.0f; tr.pan = -1.0f;
+    tr.voice.kind = op::VoiceKind::Sampler; tr.voice.path = asset;
+    p.tracks = {tr};
+    op::Pattern pat; pat.track = 0; pat.length_beats = extent;
+    pat.notes.push_back({0.0, note_dur, -1, 1.0});  // long note covers every probed frame (unless shortened)
+    p.patterns = {pat};
+    op::Clip c; c.pattern = 0; c.start_bar = start_bar; c.repeats = reps;
+    c.fade_in_beats = fade_in; c.fade_out_beats = fade_out;
+    p.arrangement = {c};
+    return p;
+}
+
+static void test_clip_fades() {
+    std::string err;
+    const std::string asset = tmp_file("op_cf_asset.wav");
+    write_const_asset(asset, 384000);  // long enough for every probe below
+
+    // --- Parse: defaults and explicit values.
+    write_text(tmp_file("op_cf_p.opj"), R"({"format_version":0,"bpm":120,"length_bars":4,
+        "tracks":[{"voice":{"kind":"sine","freq_hz":220}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":1}]}],
+        "arrangement":[{"pattern":0},{"pattern":0,"fade_in_beats":1.5,"fade_out_beats":0.25}]})");
+    op::Project p;
+    CHECK(op::load_project(tmp_file("op_cf_p.opj"), p, err) && p.arrangement.size() == 2 &&
+          p.arrangement[0].fade_in_beats == 0.0 && p.arrangement[0].fade_out_beats == 0.0 &&
+          p.arrangement[1].fade_in_beats == 1.5 && p.arrangement[1].fade_out_beats == 0.25,
+          "cf.parse_defaults_and_explicit");
+
+    // --- Parse rejections: exact message per field and bad kind (fade-in first).
+    auto reject_fade = [&](const char* arr_json, const std::string& want_msg, const char* name) {
+        write_text(tmp_file("op_cf_r.opj"),
+                   std::string(R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],)"
+                               R"("patterns":[{"track":0,"notes":[{"t":0,"dur":1}]}],"arrangement":)") + arr_json + "}");
+        op::Project pb;
+        std::string e;
+        CHECK(!op::load_project(tmp_file("op_cf_r.opj"), pb, e) && e == want_msg, name);
+    };
+    reject_fade(R"([{"pattern":0,"fade_in_beats":-0.5}])", "clip.fade_in_beats must be a number in [0, 4096]", "cf.rejects_fade_in_negative");
+    reject_fade(R"([{"pattern":0,"fade_in_beats":4096.5}])", "clip.fade_in_beats must be a number in [0, 4096]", "cf.rejects_fade_in_above_max");
+    reject_fade(R"([{"pattern":0,"fade_in_beats":"0.5"}])", "clip.fade_in_beats must be a number in [0, 4096]", "cf.rejects_fade_in_string");
+    reject_fade(R"([{"pattern":0,"fade_in_beats":null}])", "clip.fade_in_beats must be a number in [0, 4096]", "cf.rejects_fade_in_null");
+    // fade-out-only failure with a valid fade-in (proves fade-in checked first, then fade-out):
+    reject_fade(R"([{"pattern":0,"fade_in_beats":1.0,"fade_out_beats":-3.0}])", "clip.fade_out_beats must be a number in [0, 4096]", "cf.rejects_fade_out_negative");
+    reject_fade(R"([{"pattern":0,"fade_in_beats":1.0,"fade_out_beats":true}])", "clip.fade_out_beats must be a number in [0, 4096]", "cf.rejects_fade_out_bool");
+
+    // -0.0 accepted and equals 0; canonical save then omits both keys (never-faded bytes).
+    write_text(tmp_file("op_cf_neg.opj"), R"({"format_version":0,"tracks":[{"voice":{"kind":"sine"}}],
+        "patterns":[{"track":0,"notes":[{"t":0,"dur":1}]}],
+        "arrangement":[{"pattern":0,"fade_in_beats":-0.0,"fade_out_beats":-0.0}]})");
+    op::Project pneg;
+    CHECK(op::load_project(tmp_file("op_cf_neg.opj"), pneg, err) && pneg.arrangement[0].fade_in_beats == 0.0 &&
+          pneg.arrangement[0].fade_out_beats == 0.0, "cf.neg_zero_accepted_as_zero");
+
+    // --- Canonical save: emit when set (alphabetically before gain_db), omit at 0; round-trip.
+    auto saved = [](const op::Project& q) { return saved_text(q); };
+    std::string faded_txt = saved(p);  // p.arrangement[1] carries fades
+    CHECK(faded_txt.find("\"fade_in_beats\": 1.5") != std::string::npos &&
+          faded_txt.find("\"fade_out_beats\": 0.25") != std::string::npos, "cf.save_emits_fades");
+    // Ordering within a clip that has both fades and a non-zero gain_db: fade keys land before gain_db.
+    {
+        op::Project ord = p;
+        ord.arrangement[1].gain_db = -6.0;  // same clip: fade_in, fade_out, gain_db all present
+        std::string t = saved(ord);
+        const size_t fi = t.find("\"fade_in_beats\"");
+        const size_t fo = t.find("\"fade_out_beats\"");
+        const size_t gd = t.rfind("\"gain_db\"");  // last gain_db is this clip's (track has none at default)
+        CHECK(fi != std::string::npos && fi < fo && fo < gd, "cf.save_fades_before_gain_db");
+    }
+    {
+        std::string se;
+        bool sv = op::save_project(tmp_file("op_cf_rt.opj"), p, se);
+        op::Project rt;
+        CHECK(sv && op::load_project(tmp_file("op_cf_rt.opj"), rt, err) &&
+              rt.arrangement[1].fade_in_beats == 1.5 && rt.arrangement[1].fade_out_beats == 0.25,
+              "cf.roundtrip_preserves_fades");
+    }
+    // A never-faded clip's saved bytes contain no fade key at all.
+    CHECK(saved(pneg).find("fade_in_beats") == std::string::npos &&
+          saved(pneg).find("fade_out_beats") == std::string::npos, "cf.save_omits_at_zero");
+
+    // --- Render: fade-in region matches the spec formula bit-exactly; first frame 0; plateau 0.25f.
+    auto render_L = [&](const op::Project& q) {
+        op::wav::StereoBuffer out;
+        std::string e;
+        if (!op::render_project(q, "", out, e)) return std::vector<float>{};
+        std::vector<float> L(out.interleaved.size() / 2);
+        for (size_t i = 0; i < L.size(); ++i) L[i] = out.interleaved[i * 2];
+        return L;
+    };
+    const long long SPB = 24000;  // 120 bpm @ 48 kHz, constant tempo: at(b) == llround(b*SPB)
+    // Probe A: fade-in only over 1 beat on a clip [bar0, reps1, extent2]. Region [0, SPB).
+    {
+        op::Project q = fade_probe_project(asset, 2.0, 1, 1.0, 0.0);
+        std::vector<float> L = render_L(q);
+        CHECK(L.size() >= static_cast<size_t>(3 * SPB), "cf.A_rendered");
+        bool ok_first = (L[0] == 0.0f);
+        bool ok_ramp = true;
+        for (long long f = 1; f < SPB; ++f) {
+            const float g = static_cast<float>(static_cast<double>(f) / static_cast<double>(SPB));
+            if (!(L[static_cast<size_t>(f)] == 0.25f * g)) { ok_ramp = false; break; }
+        }
+        bool ok_plateau = (L[static_cast<size_t>(SPB + 100)] == 0.25f) &&
+                          (L[static_cast<size_t>(2 * SPB)] == 0.25f);  // plateau AND past clip end (not gated)
+        CHECK(ok_first, "cf.A.first_frame_zero");
+        CHECK(ok_ramp, "cf.A.fade_in_bit_exact");
+        CHECK(ok_plateau, "cf.A.plateau_and_past_end_unity");
+    }
+    // Probe B: fade-out only over 1 beat ending at clip end (extent2). Region [SPB, 2*SPB); past → unity.
+    {
+        op::Project q = fade_probe_project(asset, 2.0, 1, 0.0, 1.0);
+        std::vector<float> L = render_L(q);
+        bool ok_plateau_before = (L[static_cast<size_t>(SPB - 1)] == 0.25f);
+        bool ok_ramp = true;
+        for (long long f = SPB; f < 2 * SPB; ++f) {
+            const float g = static_cast<float>(1.0 - static_cast<double>(f - SPB) / static_cast<double>(SPB));
+            if (!(L[static_cast<size_t>(f)] == 0.25f * g)) { ok_ramp = false; break; }
+        }
+        bool ok_past_end = (L[static_cast<size_t>(2 * SPB)] == 0.25f);  // B+M: gain back to 1 (overhang not gated)
+        CHECK(ok_plateau_before, "cf.B.plateau_before_fade_out");
+        CHECK(ok_ramp, "cf.B.fade_out_bit_exact");
+        CHECK(ok_past_end, "cf.B.past_clip_end_not_gated");
+    }
+    // Probe C: explicit 0.0/0.0 renders bit-identically to keys absent (default path untouched).
+    {
+        op::Project with_zero = fade_probe_project(asset, 2.0, 1, 0.0, 0.0);
+        op::Project none = fade_probe_project(asset, 2.0, 1, 0.0, 0.0);
+        none.arrangement[0].fade_in_beats = 0.0; none.arrangement[0].fade_out_beats = 0.0;
+        std::vector<float> La = render_L(with_zero), Lb = render_L(none);
+        CHECK(La.size() == Lb.size() && La == Lb, "cf.explicit_zero_identical_to_absent");
+    }
+    // Probe D: repeats 2 → ONE ramp at the clip start (no second ramp at the repeat boundary),
+    // and a single fade-out on the last repeat. extent2, fades 1/1 beat; clip_end=4 beats. Each repeat's
+    // note is exactly one extent long so the two statements are adjacent (no overlap): r0 [0,2*SPB),
+    // r1 [2*SPB,4*SPB). Fade-in region [0,SPB); fade-out region [3*SPB,4*SPB).
+    {
+        op::Project q = fade_probe_project(asset, 2.0, 2, 1.0, 1.0, 0.0, 2.0);
+        std::vector<float> L = render_L(q);
+        // Second repeat starts at frame at(2)=2*SPB: gain must be 1 (single ramp), not a fresh fade-in.
+        bool ok_single_ramp = (L[static_cast<size_t>(2 * SPB)] == 0.25f);
+        // Fade-out region is the last beat of the clip: [at(3), at(4)) = [3*SPB, 4*SPB).
+        bool ok_fade_out = true;
+        for (long long f = 3 * SPB; f < 4 * SPB; ++f) {
+            const float g = static_cast<float>(1.0 - static_cast<double>(f - 3 * SPB) / static_cast<double>(SPB));
+            if (!(L[static_cast<size_t>(f)] == 0.25f * g)) { ok_fade_out = false; break; }
+        }
+        CHECK(ok_single_ramp, "cf.D.one_ramp_across_repeats");
+        CHECK(ok_fade_out, "cf.D.fade_out_on_last_repeat");
+    }
+    // Probe E: per-clip scoping — a faded clip and an unfaded sibling on the SAME track. The unfaded
+    // clip's frames are bit-identical to a twin project where the first clip carries no fades.
+    {
+        op::Project faded = fade_probe_project(asset, 2.0, 1, 1.0, 0.0);
+        op::Clip sib; sib.pattern = 0; sib.start_bar = 4.0; sib.repeats = 1;  // no fades, bar 4 → beat 16
+        faded.arrangement.push_back(sib);
+        op::Project plain = faded;
+        plain.arrangement[0].fade_in_beats = 0.0;  // only difference: first clip unfaded
+        std::vector<float> Lf = render_L(faded), Lp = render_L(plain);
+        // Sibling audio lives at frames [at(16), ...) = [16*SPB, ...). It must be untouched by the fade.
+        const long long sib_lo = 16 * SPB + 50;
+        bool ok_sibling = true;
+        for (long long f = sib_lo; f < sib_lo + 200; ++f)
+            if (!(Lf[static_cast<size_t>(f)] == Lp[static_cast<size_t>(f)])) { ok_sibling = false; break; }
+        bool faded_differs = !(Lf[100] == Lp[100]);  // first clip's fade-in region does differ
+        CHECK(ok_sibling, "cf.E.sibling_clip_unaffected");
+        CHECK(faded_differs, "cf.E.faded_clip_differs");
+    }
+    // Probe F: tempo map moves the region bounds via TempoMap::at. tempo [{0,120},{2,60}]: beats<8 at
+    // spb 24000 (start_sample 0), beats>=8 at spb 48000 (start_sample 192000). fade_in 10 beats → N=288000.
+    {
+        op::Project q = fade_probe_project(asset, 4.0, 1, 10.0, 0.0);
+        op::TempoPoint t0; t0.bar = 0.0; t0.bpm = 120.0;
+        op::TempoPoint t1; t1.bar = 2.0; t1.bpm = 60.0;   // bar 2 → beat 8 onward at 60 bpm (spb 48000)
+        q.tempo_map = {t0, t1};
+        std::vector<float> L = render_L(q);
+        auto at_map = [](double beats) -> long long {
+            if (beats < 8.0) return static_cast<long long>(std::llround(beats * 24000.0));
+            return 192000LL + static_cast<long long>(std::llround((beats - 8.0) * 48000.0));
+        };
+        const long long A = at_map(0.0), N = at_map(10.0) - A;   // == 288000 (a constant-120 map gives 240000)
+        bool ok = true;
+        for (long long f = 50000; f < 200000; f += 37000) {       // frames inside the fade-in region
+            const float g = static_cast<float>(static_cast<double>(f - A) / static_cast<double>(N));
+            if (!(L[static_cast<size_t>(f)] == 0.25f * g)) { ok = false; break; }
+        }
+        CHECK(N == 288000LL, "cf.F.tempo_map_bounds_widen_N");
+        CHECK(ok, "cf.F.fade_in_bounds_follow_tempo_map");
+    }
+
+    // --- Op set_clip_fades: sets both / null clears one side / zeros restore never-faded bytes.
+    using nlohmann::json;
+    {
+        op::Project q = fade_probe_project(asset, 2.0, 1, 0.0, 0.0);
+        const std::string never_faded = saved_text(q);
+        CHECK(op::apply_op(q, json{{"op", "set_clip_fades"}, {"index", 0},
+                                   {"fade_in_beats", 1.5}, {"fade_out_beats", 0.25}}, err) &&
+                  q.arrangement[0].fade_in_beats == 1.5 && q.arrangement[0].fade_out_beats == 0.25,
+              "cf.op.sets_both");
+        // null clears one side (fade-out → default 0), fade-in kept:
+        CHECK(op::apply_op(q, json{{"op", "set_clip_fades"}, {"index", 0},
+                                   {"fade_in_beats", 1.5}, {"fade_out_beats", nullptr}}, err) &&
+                  q.arrangement[0].fade_in_beats == 1.5 && q.arrangement[0].fade_out_beats == 0.0,
+              "cf.op.null_clears_one_side");
+        // zeros restore the never-faded canonical bytes exactly:
+        CHECK(op::apply_op(q, json{{"op", "set_clip_fades"}, {"index", 0},
+                                   {"fade_in_beats", 0.0}, {"fade_out_beats", 0.0}}, err) &&
+                  saved_text(q) == never_faded, "cf.op.zeros_restore_never_faded_bytes");
+    }
+
+    // --- Op rejections: exact message + project left unchanged (rejected_unchanged).
+    {
+        op::Project q = fade_probe_project(asset, 2.0, 1, 0.0, 0.0);
+        CHECK(rejected_unchanged(q, json{{"op", "set_clip_fades"}, {"index", 0}, {"fade_in_beats", 1.0}}, err) &&
+                  err == "set_clip_fades: missing argument 'fade_out_beats'", "cf.op.reject_missing_fade_out");
+        CHECK(rejected_unchanged(q, json{{"op", "set_clip_fades"}, {"index", 0}, {"fade_in_beats", "x"},
+                                         {"fade_out_beats", 1.0}}, err) &&
+                  err == "set_clip_fades: 'fade_in_beats' must be a number or null", "cf.op.reject_non_number");
+        CHECK(rejected_unchanged(q, json{{"op", "set_clip_fades"}, {"index", 0}, {"fade_in_beats", 5000.0},
+                                         {"fade_out_beats", 1.0}}, err) &&
+                  err == "set_clip_fades: clip.fade_in_beats must be a number in [0, 4096]", "cf.op.reject_range_via_parse");
+        CHECK(rejected_unchanged(q, json{{"op", "set_clip_fades"}, {"index", 7}, {"fade_in_beats", 1.0},
+                                         {"fade_out_beats", 1.0}}, err) &&
+                  err == "set_clip_fades: 'index' out of range", "cf.op.reject_index_oob");
+    }
+
+    // --- History undo/redo byte-exact around a set_clip_fades op.
+    {
+        op::Project q = fade_probe_project(asset, 2.0, 1, 0.0, 0.0);
+        const std::string before = saved_text(q);
+        op::History h;
+        CHECK(h.apply(q, json{{"op", "set_clip_fades"}, {"index", 0}, {"fade_in_beats", 2.5},
+                              {"fade_out_beats", 1.0}}, err) && saved_text(q) != before,
+              "cf.hist.applied");
+        CHECK(h.undo(q) && saved_text(q) == before, "cf.hist.undo_byte_exact");
+        CHECK(h.redo(q) && q.arrangement[0].fade_in_beats == 2.5 && q.arrangement[0].fade_out_beats == 1.0,
+              "cf.hist.redo_restores");
+    }
+
+    // --- opd diff: one set_clip_fades (both values), after set_clip_gain, empty when equal; replay = b.
+    {
+        op::Project a = fade_probe_project(asset, 2.0, 1, 0.0, 0.0);
+        std::vector<json> ops;
+        // fades-only difference:
+        op::Project b = a; b.arrangement[0].fade_in_beats = 1.5; b.arrangement[0].fade_out_beats = 0.25;
+        CHECK(op::diff_projects(a, b, ops, err) &&
+                  journal_text(ops) == "{\"fade_in_beats\":1.5,\"fade_out_beats\":0.25,\"index\":0,\"op\":\"set_clip_fades\"}\n",
+              "cf.diff.fades_only_one_op");
+        std::string apply_err;
+        CHECK(op::apply_journal(a, journal_text(ops), apply_err) && saved_text(a) == saved_text(b),
+              "cf.diff.replay_reproduces_b");
+        // equal fades → no set_clip_fades emitted:
+        op::Project c = a;  // both never-faded
+        std::vector<json> ops2;
+        CHECK(op::diff_projects(a, c, ops2, err) &&
+                  journal_text(ops2).find("set_clip_fades") == std::string::npos, "cf.diff.equal_no_op");
+        // gain + fades both differ → set_clip_gain before set_clip_fades:
+        op::Project d = a; d.arrangement[0].gain_db = -6.0; d.arrangement[0].fade_in_beats = 1.0;
+        std::vector<json> ops3;
+        CHECK(op::diff_projects(a, d, ops3, err), "cf.diff.gain_and_fades_ok");
+        const std::string j3 = journal_text(ops3);
+        const size_t gp = j3.find("set_clip_gain"), fp = j3.find("set_clip_fades");
+        CHECK(gp != std::string::npos && fp != std::string::npos && gp < fp, "cf.diff.gain_before_fades");
+    }
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -5077,6 +5362,7 @@ int main() {
     test_tempo_midi();
     test_attachments();
     test_clip_gain();
+    test_clip_fades();
     test_mixer();
     test_json_fuzz();
     test_wav_fuzz();

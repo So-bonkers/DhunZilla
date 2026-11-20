@@ -120,7 +120,8 @@ a zero-byte file (exit 0). Operations are emitted in this fixed order (output is
 9. for clip i = 0.. (i < min clip count), in this order: `set_clip_pattern` if `pattern` differs and
    it was NOT already emitted in step 1b (i.e. `size(a.patterns) <= size(b.patterns)`; all of b's patterns
    exist after step 8), `set_clip_repeats` if `repeats` differs (`repeats` = b's value), `move_clip` if
-   `start_bar` differs, then `set_clip_gain` if `gain_db` differs (absent = 0.0);
+   `start_bar` differs, then `set_clip_gain` if `gain_db` differs (absent = 0.0), then (WP-0178) ONE
+   `set_clip_fades` if either fade differs (`fade_in_beats`/`fade_out_beats` = b's values, `0.0` when absent);
 10. `add_clip` for b's extra clips, ascending;
 11. `add_attachment` for b's attachments beyond a's count, ascending (`producer` always present, `""` if empty).
 
@@ -131,6 +132,8 @@ added tail clip (correct, not minimal). Detecting inserts/moves is deliberately 
 Pairs whose clip lists agree in every shared position's `pattern` and `repeats` produce exactly the same
 journal bytes as before WP-0159.
 Projects whose patterns all have equal `swing` produce exactly the same journals as before WP-0166.
+Projects whose clips all have equal fades produce exactly the same journals as before WP-0178
+(a clip pair where neither side has a fade key, or both sides carry identical values).
 
 Finally `diff_projects` applies its own journal to a copy of `a` and returns false with
 `unsupported difference: (journal does not reproduce target)` if the result is not equal to `b` (safety
@@ -399,3 +402,33 @@ ruleset). Argument checks, in this order, error strings `set_sampler_root: <reas
 `{"root_note": null}` restores defaults, and the canonical save then omits the key (byte-identical to a project
 that never had one). Undo/redo: whole-project snapshots, byte-exact as for every op. `opd diff` does not emit
 this op.
+
+## Clip fade operation — additive (WP-0178)
+| op | arguments | effect |
+|---|---|---|
+| `set_clip_fades` | `index`, `fade_in_beats`, `fade_out_beats` | set both fades of `arrangement[index]` (semantics: `docs/spec/project-model.md` §Clip fades); a JSON `null` clears that side to its default `0` |
+
+Follows the Apply semantics unchanged (strict keys, copy → JSON edit → save→parse validation → commit; no second
+ruleset). `<n>` = number of clips in `arrangement` (`0` when the key is absent). Argument checks, in this order,
+error strings `set_clip_fades: <reason>`:
+1. unknown key → `unknown argument '<key>'`;
+2. `index` an integer in `[0, n)` (existing `arg_index` messages: `missing argument 'index'`, `'index' must be an
+   integer` (also for `0.0`), `'index' out of range`);
+3. `fade_in_beats` required and either a JSON number or `null` (`missing argument 'fade_in_beats'` /
+   `'fade_in_beats' must be a number or null`);
+4. `fade_out_beats` required, same rule (`missing argument 'fade_out_beats'` /
+   `'fade_out_beats' must be a number or null`);
+5. the edit writes both keys (a `null` **removes** the key = off), then the model parse enforces the range, giving
+   `set_clip_fades: clip.fade_in_beats must be a number in [0, 4096]` and
+   `set_clip_fades: clip.fade_out_beats must be a number in [0, 4096]`.
+There is deliberately **no one-sided form**: both arguments are always required (pass the value you want to keep).
+`{"fade_in_beats": 0, "fade_out_beats": 0}` restores the default and the canonical save then omits both keys
+(byte-identical to a never-faded clip). Setting values the clip already has is a successful op (pushes an undo
+snapshot). Undo/redo: whole-project snapshots, byte-exact as for every op.
+
+### `opd diff` and clip fades (WP-0178 amendment)
+Fades are expressible, never an "unsupported difference". Step 9 gains one emission after `set_clip_gain`: for clip
+i = 0.. (i < min clip count), if either fade differs between a and b (absent = `0.0` on both sides), emit **one**
+`set_clip_fades` carrying **both** values from b (`0.0` when b's key is absent) — never one op per field, and never
+when both fields are equal. Clips added by step 10 carry their fades inside the `clip` JSON. Projects whose clips
+all have equal fades produce exactly the same journals as before WP-0178.
