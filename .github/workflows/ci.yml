@@ -99,3 +99,57 @@ jobs:
           uv sync --all-extras 2>/dev/null || uv sync
           uv run pytest -q
           uv run ruff check .
+
+  # WP-0164: the JUCE app was never built in CI. Builds `dhunzilla` and runs the headless --snapshot
+  # under Xvfb; asserts exit 0 and a 1100x700 PNG. No audio in CI — never run --play-seconds here.
+  app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04        # linux-x64
+            name: linux-x64
+          - os: ubuntu-24.04-arm    # linux-arm64 (native ARM runner)
+            name: linux-arm64
+    name: app ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@latest
+      - name: Install JUCE Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxext-dev libxcomposite-dev libxrender-dev libfreetype-dev libfontconfig1-dev xvfb
+      # Key is pinned to the JUCE version in CMakeLists.txt (FetchContent tag 9.0.5): bumping JUCE there
+      # means bumping the number here, which invalidates the cache on purpose.
+      - name: Cache JUCE download and build tree
+        uses: actions/cache@v4
+        with:
+          path: build-app/_deps
+          key: juce-9.0.5-${{ matrix.name }}
+      - name: Configure (DZ_BUILD_APP=ON)
+        run: cmake -S . -B build-app -DCMAKE_BUILD_TYPE=Release -DDZ_BUILD_APP=ON
+      - name: Build dhunzilla
+        run: cmake --build build-app -j4 --target dhunzilla
+      - name: Snapshot under Xvfb
+        run: xvfb-run -a ./build-app/dhunzilla_artefacts/Release/dhunzilla --snapshot snap.png tests/fixtures/goldens/demo.opj
+      - name: Assert snapshot is a 1100x700 PNG
+        run: |
+          python3 - <<'PY'
+          d = open("snap.png", "rb").read()
+          assert d[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+          assert d[12:16] == b"IHDR", "first chunk is not IHDR"
+          w = int.from_bytes(d[16:20], "big")
+          h = int.from_bytes(d[20:24], "big")
+          assert (w, h) == (1100, 700), f"snapshot is {w}x{h}, expected 1100x700"
+          print(f"snapshot OK: {w}x{h}")
+          PY
+      - name: Upload snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-${{ matrix.name }}
+          path: snap.png
+          if-no-files-found: ignore
