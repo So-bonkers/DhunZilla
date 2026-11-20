@@ -17,6 +17,7 @@
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
 #include "engine/lint.hpp"
+#include "engine/limiter.hpp"
 #include "engine/loudness.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
@@ -34,6 +35,7 @@ static void usage() {
         "usage:\n"
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B] [--loop]\n"
         "             [--format pcm16|pcm24|f32]\n"
+        "             [--limit-dbfs X]   (master brickwall limiter on the final mix, docs/spec/limiter.md)\n"
         "  opd click <project.opj> -o <out.wav>\n"
         "  opd new <out.opj> [--bpm X] [--bars N] [--beats-per-bar N] [--sample-rate SR]\n"
         "          [--track NAME:KIND[:PATH]]... [--force]   (KIND = sine|synth|sampler|metronome)\n"
@@ -84,6 +86,14 @@ static bool parse_bar_value(const std::string& arg, double& out) {
 // Defined below (near opd steps); used by cmd_new too.
 static bool parse_decimal(const std::string& s, long long max, long long& out);
 
+// WP-0176 (docs/spec/limiter.md): master brickwall peak limiter on the final mix, run immediately before the
+// WAV is written. Stereo-linked, look-ahead state starts fresh at frame 0 of what is written. Usage:
+//   if (has_limit && !run_master_limiter(buf, limit_db, err)) return fail("render", err);
+static bool run_master_limiter(op::wav::StereoBuffer& mix, double ceiling_dbfs, std::string& err) {
+    op::limiter::Stats stats;  // the limiter prints nothing of its own (spec §CLI)
+    return op::limiter::apply(mix.interleaved, 2, mix.sample_rate, ceiling_dbfs, stats, err);
+}
+
 static int cmd_render(int argc, char** argv) {
     if (argc < 4) { usage(); return fail("usage", "render needs project + -o out"); }
     const std::string proj = argv[1];
@@ -93,6 +103,9 @@ static int cmd_render(int argc, char** argv) {
     bool want_loop = false;  // WP-0155: --loop renders the project's loop region (= --from-bar/--to-bar)
     std::string from_arg, to_arg;  // raw strings for error messages ("<B as given>")
     double bar_a = 0.0, bar_b = 0.0;
+    bool has_limit = false;   // WP-0176: --limit-dbfs present on the final mix (docs/spec/limiter.md)
+    std::string limit_arg;    // raw string for error messages ("<X as given>")
+    double limit_db = 0.0;    // parsed value; validated with the other option-syntax checks below
     op::wav::SampleFormat fmt = op::wav::SampleFormat::Pcm16;  // default: existing behavior (WP-0149)
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
@@ -108,6 +121,7 @@ static int cmd_render(int argc, char** argv) {
             else if (f == "f32") fmt = op::wav::SampleFormat::F32;
             else { usage(); return fail("usage", "unknown format '" + f + "' (expected pcm16, pcm24 or f32)"); }
         }
+        else if (!std::strcmp(argv[i], "--limit-dbfs") && i + 1 < argc) { limit_arg = argv[++i]; has_limit = true; }
         else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
     }
     if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
@@ -119,6 +133,12 @@ static int cmd_render(int argc, char** argv) {
     if (has_to && !parse_bar_value(to_arg, bar_b)) return fail("usage", "bad --to-bar value '" + to_arg + "'");
     if (bar_a < 0.0) return fail("usage", "--from-bar must be >= 0");
     if (has_from && has_to && bar_a >= bar_b) return fail("usage", "--from-bar must be less than --to-bar");
+    // WP-0176 (docs/spec/limiter.md): --limit-dbfs value checks with the other option-syntax checks, i.e. before
+    // the project file is opened — nothing is written on any error. Repeating the flag: the last value wins.
+    if (has_limit && !parse_bar_value(limit_arg, limit_db))
+        return fail("usage", "bad --limit-dbfs value '" + limit_arg + "'");
+    if (has_limit && (limit_db < -30.0 || limit_db > 0.0))
+        return fail("usage", "--limit-dbfs must be in [-30, 0]");
 
     op::Project p;
     std::string err;
@@ -160,6 +180,8 @@ static int cmd_render(int argc, char** argv) {
             op::slice_frames(buf, from_frame, to_frame, sliced);
             buf = std::move(sliced);
         }
+        // WP-0176: master limiter on the final mix (after any bar-range slicing), immediately before writing.
+        if (has_limit && !run_master_limiter(buf, limit_db, err)) return fail("render", err);
         if (!op::wav::write_wav_stereo(out_path, buf, fmt, err)) return fail("write", err);
         std::printf("rendered %lld frames @%d Hz -> %s (seed=%llu)\n",
                     static_cast<long long>(buf.frames()), buf.sample_rate, out_path.c_str(),
@@ -178,6 +200,8 @@ static int cmd_render(int argc, char** argv) {
                 s = std::move(sliced_stem);
             }
         }
+        // WP-0176: the mix only — stems are never limited (docs/spec/limiter.md §CLI).
+        if (has_limit && !run_master_limiter(mix, limit_db, err)) return fail("render", err);
         if (!op::wav::write_wav_stereo(out_path, mix, fmt, err)) return fail("write", err);
         std::error_code ec;
         fs::create_directories(stems_dir, ec);
