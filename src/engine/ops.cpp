@@ -403,6 +403,14 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             if (!check_keys(op_json, {"pattern"}, err)) return false;
             if (!arg_index(op_json, "pattern", j["patterns"].size(), idx, err)) return false;
             j["patterns"][idx].erase("length_beats");  // no-op when absent; still a successful (undoable) apply
+        } else if (name == "duplicate_pattern") {  // WP-0179: id rules come from the model parse below
+            if (!check_keys(op_json, {"src", "new_id"}, err)) return false;
+            std::size_t src_idx = 0;
+            if (!arg_index(op_json, "src", j["patterns"].size(), src_idx, err) ||
+                !has_string(op_json, "new_id", err)) return false;
+            json dup = j["patterns"][src_idx];    // deep copy of the whole pattern object (notes included)
+            dup["id"] = op_json.at("new_id");     // empty / taken ids are refused by the parse below
+            j["patterns"].push_back(std::move(dup));  // appended: existing indices never shift
         } else {
             err = "unknown op"; return false;
         }
@@ -520,9 +528,13 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
 
     const json& patterns_a = ja.at("patterns");
     const json& patterns_b = jb.at("patterns");
-    for (std::size_t i = 0; i < std::min(patterns_a.size(), patterns_b.size()); ++i)
+    static const json kNoId = std::string();  // canonical default of pattern id (WP-0179): key omitted
+    for (std::size_t i = 0; i < std::min(patterns_a.size(), patterns_b.size()); ++i) {
         if (patterns_a[i].at("track") != patterns_b[i].at("track"))
             return unsupported("patterns[" + std::to_string(i) + "].track");
+        if (field_or(patterns_a[i], "id", kNoId) != field_or(patterns_b[i], "id", kNoId))
+            return unsupported("patterns[" + std::to_string(i) + "].id");
+    }
 
     const json& clips_a = field_or(ja, "arrangement", kEmptyArray);
     const json& clips_b = field_or(jb, "arrangement", kEmptyArray);

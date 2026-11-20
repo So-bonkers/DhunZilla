@@ -4946,6 +4946,265 @@ static void test_sample_index() {
     fs::remove(not_a_dir, ec);
 }
 
+// ---------------------------------------------------------------- pattern ids + duplicate_pattern (WP-0179)
+
+static void test_duplicate_pattern() {
+    namespace fs = std::filesystem;
+    using nlohmann::json;
+    const fs::path dir = fs::path(tmp_file("op_wp0179"));
+    std::error_code fec;
+    fs::create_directories(dir, fec);
+    std::string err;
+
+    // Base project: pattern 0 rich (id "A", swing, length_beats, notes with note + vel),
+    // pattern 1 bare. The single clip references pattern 0 only, so duplicating any pattern
+    // must not change one sample of the render. Two tracks so a track difference is legal.
+    const std::string pat_rich = R"({"track":0,"id":"A","swing":0.25,"length_beats":2.0,"notes":[)"
+                                 R"({"t":0.0,"dur":0.25,"note":60,"vel":0.5},)"
+                                 R"({"t":1.0,"dur":0.5,"note":64,"vel":1.0}]})";
+    const std::string pat_bare = R"({"track":0,"notes":[{"t":0.0,"dur":0.25}]})";
+    auto base_text = [&](const std::string& pats) {
+        return std::string(R"({"format_version":0,"bpm":120,"length_bars":2,"sample_rate":48000,)"
+                           R"("tracks":[{"name":"T","voice":{"kind":"sine","freq_hz":440.0}},)"
+                           R"({"name":"U","voice":{"kind":"sine","freq_hz":660.0}}],)"
+                           R"("patterns":[)") +
+               pats + R"(],"arrangement":[{"pattern":0,"start_bar":0.0,"repeats":2}]})";
+    };
+    const std::string base = base_text(pat_rich + "," + pat_bare);
+
+    // (1) parse stores the id; an unnamed pattern keeps the empty string.
+    op::Project p;
+    CHECK(parse_text(base, p, err) && p.patterns.size() == 2 && p.patterns[0].id == "A" &&
+              p.patterns[1].id.empty(),
+          "dup.parse_stores_id");
+
+    // (2) canonical save writes "id" and it lands first among the pattern keys (alphabetical dump).
+    const std::string bytes = op::project_bytes(p);
+    CHECK(bytes.find("\"id\": \"A\"") != std::string::npos &&
+              bytes.find("\"id\"") < bytes.find("\"length_beats\"") &&
+              bytes.find("\"length_beats\"") < bytes.find("\"notes\""),
+          "dup.save_id_first_key");
+
+    // (3) canonical save omits the key when unnamed → legacy bytes unchanged.
+    op::Project pu;
+    CHECK(parse_text(base_text(pat_bare + "," + pat_bare), pu, err) &&
+              op::project_bytes(pu).find("\"id\"") == std::string::npos,
+          "dup.save_omits_unnamed");
+
+    // (4) parse validation, exact strings, first failure wins.
+    auto expect_parse_err = [&](const std::string& pats, const std::string& want) {
+        op::Project q;
+        std::string e;
+        const bool ok = parse_text(base_text(pats), q, e);
+        return !ok && e == want;
+    };
+    CHECK(expect_parse_err(R"({"track":0,"id":5,"notes":[]})", "pattern.id must be a string"),
+          "dup.err_id_number");
+    CHECK(expect_parse_err(R"({"track":0,"id":null,"notes":[]})", "pattern.id must be a string"),
+          "dup.err_id_null");
+    CHECK(expect_parse_err(R"({"track":0,"id":true,"notes":[]})", "pattern.id must be a string"),
+          "dup.err_id_bool");
+    CHECK(expect_parse_err(R"({"track":0,"id":{},"notes":[]})", "pattern.id must be a string"),
+          "dup.err_id_object");
+    CHECK(expect_parse_err(R"({"track":0,"id":[],"notes":[]})", "pattern.id must be a string"),
+          "dup.err_id_array");
+    CHECK(expect_parse_err(R"({"track":0,"id":"","notes":[]})", "pattern.id must not be empty"),
+          "dup.err_id_empty");
+    const std::string id64(64, 'x'), id65(65, 'x');
+    CHECK(expect_parse_err("{\"track\":0,\"id\":\"" + id65 + "\",\"notes\":[]}",
+                           "pattern.id must be at most 64 bytes"),
+          "dup.err_id_65_bytes");
+    op::Project p64;
+    CHECK(parse_text(base_text("{\"track\":0,\"id\":\"" + id64 + "\",\"notes\":[]}"), p64, err) &&
+              p64.patterns[0].id == id64,
+          "dup.parse_id_64_bytes_ok");
+    CHECK(expect_parse_err(pat_rich + "," + pat_rich, "pattern.id 'A' is already in use"),
+          "dup.err_duplicate_ids_in_file");  // the later pattern fails (array order)
+    // id rules come right after track and before swing: doubly-invalid patterns prove the order.
+    CHECK(expect_parse_err(R"({"track":0,"id":5,"swing":9.0,"notes":[]})", "pattern.id must be a string"),
+          "dup.err_id_before_swing");
+    CHECK(expect_parse_err(R"({"track":7,"id":5,"notes":[]})", "pattern.track out of range: 7"),
+          "dup.err_track_before_id");
+
+    // (5) duplicate_pattern appends a deep copy; source, clips and indices untouched.
+    op::Project q;
+    CHECK(parse_text(base, q, err), "dup.ops_base_parse");
+    const json src0 = op::project_to_json(q)["patterns"][0];
+    CHECK(op::apply_op(q, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", "Copy"}}, err) &&
+              q.patterns.size() == 3 && q.arrangement.size() == 1,
+          "dup.op_appends_no_clip_added");
+    CHECK(op::project_to_json(q)["patterns"][0] == src0, "dup.op_source_untouched");
+    CHECK(q.patterns[2].id == "Copy" && q.patterns[2].track == 0 && q.patterns[2].swing == 0.25 &&
+              q.patterns[2].length_beats && *q.patterns[2].length_beats == 2.0,
+          "dup.op_copy_scalars_match");
+    bool notes_copied = q.patterns[2].notes.size() == q.patterns[0].notes.size();
+    if (notes_copied)
+        for (size_t i = 0; i < q.patterns[0].notes.size(); ++i) {
+            const op::Note& n0 = q.patterns[0].notes[i];
+            const op::Note& n2 = q.patterns[2].notes[i];
+            notes_copied = notes_copied && n2.t_beats == n0.t_beats && n2.dur_beats == n0.dur_beats &&
+                           n2.midi_note == n0.midi_note && n2.velocity == n0.velocity;
+        }
+    CHECK(notes_copied, "dup.op_copy_notes_field_by_field");
+
+    // (6) the resulting bytes equal those of a hand-built expected project.
+    const std::string pat_copy = R"({"track":0,"id":"Copy","swing":0.25,"length_beats":2.0,"notes":[)"
+                                 R"({"t":0.0,"dur":0.25,"note":60,"vel":0.5},)"
+                                 R"({"t":1.0,"dur":0.5,"note":64,"vel":1.0}]})";
+    op::Project want;
+    CHECK(parse_text(base_text(pat_rich + "," + pat_bare + "," + pat_copy), want, err) &&
+              op::project_bytes(q) == op::project_bytes(want),
+          "dup.bytes_match_handbuilt_project");
+
+    // (7) a copy of a bare pattern gains no swing/length_beats — only the id key.
+    op::Project qb;
+    CHECK(parse_text(base, qb, err) &&
+              op::apply_op(qb, json{{"op", "duplicate_pattern"}, {"src", 1}, {"new_id", "Bare"}}, err) &&
+              qb.patterns.size() == 3 && !qb.patterns[2].length_beats && qb.patterns[2].swing == 0.0,
+          "dup.op_bare_copy_no_extras");
+    {
+        const json jb = op::project_to_json(qb)["patterns"][2];
+        CHECK(!jb.contains("swing") && !jb.contains("length_beats") && jb.at("id") == "Bare",
+              "dup.op_bare_copy_json_keys");
+    }
+
+    // (8) History: undo restores the exact original bytes, redo re-applies them byte-exactly;
+    // a rejected apply changes neither the bytes nor the undo depth.
+    op::Project hp;
+    CHECK(parse_text(base, hp, err), "dup.history_base_parse");
+    const std::string bytes0 = op::project_bytes(hp);
+    op::History h;
+    CHECK(h.apply(hp, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", "Copy"}}, err) &&
+              h.undo_depth() == 1,
+          "dup.history_apply");
+    const std::string bytes1 = op::project_bytes(hp);
+    CHECK(bytes1 != bytes0 && h.undo(hp) && op::project_bytes(hp) == bytes0,
+          "dup.history_undo_byte_exact");
+    CHECK(h.redo(hp) && op::project_bytes(hp) == bytes1, "dup.history_redo_byte_exact");
+    CHECK(!h.apply(hp, json{{"op", "duplicate_pattern"}, {"src", 9}, {"new_id", "Copy"}}, err) &&
+              op::project_bytes(hp) == bytes1 && h.undo_depth() == 1,
+          "dup.history_rejected_no_change");
+
+    // (9) every op rejection with its exact message; the project is untouched each time.
+    auto rejected_unchanged = [&](op::Project& p2, const json& o, const std::string& want) {
+        const std::string before = op::project_bytes(p2);
+        std::string e;
+        const bool ok = op::apply_op(p2, o, e);
+        return !ok && e == want && op::project_bytes(p2) == before;
+    };
+    op::Project r;
+    CHECK(parse_text(base, r, err), "dup.rules_base_parse");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"new_id", "X"}},
+                             "duplicate_pattern: missing argument 'src'"),
+          "dup.op_missing_src");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0.0}, {"new_id", "X"}},
+                             "duplicate_pattern: 'src' must be an integer"),
+          "dup.op_src_float");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", "0"}, {"new_id", "X"}},
+                             "duplicate_pattern: 'src' must be an integer"),
+          "dup.op_src_string");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", -1}, {"new_id", "X"}},
+                             "duplicate_pattern: 'src' out of range"),
+          "dup.op_src_negative");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 2}, {"new_id", "X"}},
+                             "duplicate_pattern: 'src' out of range"),
+          "dup.op_src_out_of_range");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0}},
+                             "duplicate_pattern: missing argument 'new_id'"),
+          "dup.op_missing_new_id");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", 1}},
+                             "duplicate_pattern: 'new_id' must be a string"),
+          "dup.op_new_id_number");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", nullptr}},
+                             "duplicate_pattern: 'new_id' must be a string"),
+          "dup.op_new_id_null");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", true}},
+                             "duplicate_pattern: 'new_id' must be a string"),
+          "dup.op_new_id_bool");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"x", 1}, {"src", 0}, {"new_id", "X"}},
+                             "duplicate_pattern: unknown argument 'x'"),
+          "dup.op_unknown_key");
+    // check order is normative: keys before src, src before new_id.
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"x", 1}},
+                             "duplicate_pattern: unknown argument 'x'"),
+          "dup.op_unknown_key_before_src");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 9}},
+                             "duplicate_pattern: 'src' out of range"),
+          "dup.op_src_checked_before_new_id");
+    // the id rules come from the model parse, prefixed by the op name:
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", ""}},
+                             "duplicate_pattern: pattern.id must not be empty"),
+          "dup.op_empty_new_id");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", id65}},
+                             "duplicate_pattern: pattern.id must be at most 64 bytes"),
+          "dup.op_new_id_65_bytes");
+    CHECK(rejected_unchanged(r, json{{"op", "duplicate_pattern"}, {"src", 0}, {"new_id", "A"}},
+                             "duplicate_pattern: pattern.id 'A' is already in use"),
+          "dup.op_taken_id_source_own");
+
+    // (10) add_pattern may carry an id: fresh accepted, duplicate refused by the model parse.
+    CHECK(op::apply_op(r, json{{"op", "add_pattern"},
+                               {"pattern", json{{"track", 0}, {"id", "Fresh"}, {"notes", json::array()}}}},
+                       err) &&
+              r.patterns.size() == 3 && r.patterns[2].id == "Fresh",
+          "dup.add_pattern_fresh_id_ok");
+    CHECK(rejected_unchanged(r, json{{"op", "add_pattern"},
+                                     {"pattern", json{{"track", 0}, {"id", "A"}, {"notes", json::array()}}}},
+                             "add_pattern: pattern.id 'A' is already in use"),
+          "dup.add_pattern_taken_id_rejected");
+
+    // (11) rendering before/after a duplicate is sample-identical (the only clip uses pattern 0):
+    // base_p has the two original patterns, q additionally carries the appended copy.
+    op::Project base_p;
+    CHECK(parse_text(base, base_p, err), "dup.render_base_parse");
+    op::wav::StereoBuffer buf_a, buf_b;
+    CHECK(op::render_project(base_p, "", buf_a, err), "dup.render_before_ok");
+    CHECK(op::render_project(q, "", buf_b, err) && buf_a.interleaved == buf_b.interleaved,
+          "dup.render_sample_identical_after_duplicate");
+
+    // (12) opd diff: base_p and q = base_p + copy → exactly one add_pattern carrying the id.
+    std::vector<json> dops;
+    const json want_add{{"op", "add_pattern"}, {"pattern", op::project_to_json(q)["patterns"][2]}};
+    CHECK(op::diff_projects(base_p, q, dops, err) && dops.size() == 1 && dops[0] == want_add &&
+              journal_text(dops).find("duplicate_pattern") == std::string::npos &&
+              journal_text(dops).find("\"id\":\"Copy\"") != std::string::npos,
+          "dup.diff_one_add_pattern_with_id");
+    op::Project replay = base_p;
+    CHECK(op::apply_journal(replay, journal_text(dops), err) &&
+              op::project_bytes(replay) == op::project_bytes(q),
+          "dup.diff_journal_replays_target_bytes");
+    std::vector<json> same_ops;
+    CHECK(op::diff_projects(base_p, base_p, same_ops, err) && same_ops.empty(), "dup.diff_equal_empty");
+    std::vector<json> back_ops;
+    const json want_rm{{"op", "remove_pattern"}, {"index", 2}};
+    CHECK(op::diff_projects(q, base_p, back_ops, err) && back_ops.size() == 1 && back_ops[0] == want_rm,
+          "dup.diff_reverse_single_remove_pattern");
+
+    // (13) an id difference on a shared pattern is unsupported; track wins when both differ.
+    op::Project renamed = q;
+    renamed.patterns[0].id = "Renamed";
+    std::vector<json> uid_ops;
+    CHECK(!op::diff_projects(q, renamed, uid_ops, err) && uid_ops.empty() &&
+              err == "unsupported difference: patterns[0].id",
+          "dup.diff_unsupported_id");
+    op::Project gained = q;
+    gained.patterns[1].id = "New";  // present-vs-absent on a shared pattern differs too
+    std::vector<json> gap_ops;
+    CHECK(!op::diff_projects(q, gained, gap_ops, err) && gap_ops.empty() &&
+              err == "unsupported difference: patterns[1].id",
+          "dup.diff_unsupported_id_absent_vs_present");
+    op::Project both = q;
+    both.patterns[0].track = 1;
+    both.patterns[0].id = "Renamed";
+    std::vector<json> bt_ops;
+    CHECK(!op::diff_projects(q, both, bt_ops, err) && bt_ops.empty() &&
+              err == "unsupported difference: patterns[0].track",
+          "dup.diff_track_reported_before_id");
+
+    fs::remove_all(dir, fec);
+}
+
+
 // WP-0153: dz::Player driven by a fake device (plain process() calls on this thread) plus
 // dz::format_position on the engine's tempo map. Buffers are ramps so copy/position bugs show up.
 static std::unique_ptr<op::wav::StereoBuffer> make_ramp_buffer(long long frames, float base) {
@@ -5101,6 +5360,7 @@ int main() {
     test_pattern_swing();
     test_sampler_repitch();
     test_sample_index();
+    test_duplicate_pattern();
     test_player();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     if (g_failures == 0) {

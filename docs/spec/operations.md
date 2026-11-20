@@ -93,7 +93,9 @@ failure). "Equal" means equal canonical JSON (`project_to_json`), i.e. equal sav
 **Unsupported differences** (no operation can change them). The first one found, checking in exactly this
 order, is reported as `unsupported difference: <field>`: `format_version`, `sample_rate`, `seed`,
 `beats_per_bar`, `tempo_map` (any difference), then for i ascending `tracks[i].voice` (i < min track
-count), `patterns[i].track` (i < min pattern count), then `attachments` (a's attachment list must be a prefix of
+count), `patterns[i].track` (i < min pattern count) and — since WP-0179, checked immediately after the track for
+the same i — `patterns[i].id` (absent counts as "unnamed", so present-vs-absent on a shared pattern differs too),
+then `attachments` (a's attachment list must be a prefix of
 b's — operations can only append). Anything else that differs is supported. Since WP-0159 that includes every clip field: `arrangement[i].pattern` and
 `arrangement[i].repeats` are no longer unsupported (they are expressed with `set_clip_pattern` and
 `set_clip_repeats`).
@@ -116,7 +118,8 @@ a zero-byte file (exit 0). Operations are emitted in this fixed order (output is
    note lists; `remove_note` for a's note indices `size-1` down to k (descending), then `add_note` for b's
    notes k.. ascending (`note` = b's canonical note JSON), then (WP-0166)
    `set_pattern_swing` if the pattern's `swing` differs (absent = 0; `swing` = b's value, `0.0` when b's is absent);
-8. `add_pattern` for b's extra patterns, ascending;
+8. `add_pattern` for b's extra patterns, ascending (b's canonical pattern JSON, which since WP-0179 carries its
+   own `id` when it has one — this is how a duplicated pattern appears in a diff);
 9. for clip i = 0.. (i < min clip count), in this order: `set_clip_pattern` if `pattern` differs and
    it was NOT already emitted in step 1b (i.e. `size(a.patterns) <= size(b.patterns)`; all of b's patterns
    exist after step 8), `set_clip_repeats` if `repeats` differs (`repeats` = b's value), `move_clip` if
@@ -399,3 +402,42 @@ ruleset). Argument checks, in this order, error strings `set_sampler_root: <reas
 `{"root_note": null}` restores defaults, and the canonical save then omits the key (byte-identical to a project
 that never had one). Undo/redo: whole-project snapshots, byte-exact as for every op. `opd diff` does not emit
 this op.
+
+## Pattern duplicate operation — additive (WP-0179)
+| op | arguments | effect |
+|---|---|---|
+| `duplicate_pattern` | `src`, `new_id` | append to `patterns` a deep copy of `patterns[src]` whose `id` is `new_id` |
+
+Follows the Apply semantics unchanged (strict keys, copy → JSON edit → save→parse validation → commit; no second
+ruleset). `<n>` below = number of patterns. Argument checks, in this order, error strings `duplicate_pattern: <reason>`:
+1. unknown key → `unknown argument '<key>'` (only `op`, `src`, `new_id` are allowed);
+2. `src` an integer in `[0, n)` — the existing `arg_index` messages: `missing argument 'src'`, `'src' must be an
+   integer` (also for `0.0`), `'src' out of range` (negative or `>= n`; this is the "unknown source pattern" case);
+3. `new_id` a required JSON string — `missing argument 'new_id'` / `'new_id' must be a string` (for numbers,
+   `null`, booleans, objects and arrays);
+4. the edit appends a deep copy of `patterns[src]` with `"id"` set to `new_id`, then the model parse enforces the
+   id rules (project-model.md §Pattern ids), giving `duplicate_pattern: pattern.id must not be empty`,
+   `duplicate_pattern: pattern.id must be at most 64 bytes`, `duplicate_pattern: pattern.id 'X' is already in use`.
+
+Effect details (all normative):
+- **Deep copy:** every field of the source pattern object is copied — `track`, `swing`, `length_beats` when
+  present, and all notes with their `t`, `dur`, `note` and `vel` keys in order. Only `"id"` is replaced. A source
+  without `swing`/`length_beats` yields a copy without them; a copy of an unnamed pattern gains exactly one key
+  the source did not have.
+- **The copy is appended:** it becomes `patterns[n]`. No existing pattern index shifts and no clip changes —
+  unlike `duplicate_clip`, which inserts at `index+1`. The source pattern is left untouched, and duplicating
+  never alters a single sample of an arrangement that does not reference the copy.
+- **Taken id:** `new_id` equal to the id of any other pattern — including the source's own id → rejected with the
+  parse message above. A project whose patterns are all unnamed can name its first copy freely; ids may contain
+  spaces and non-ASCII (they are compared byte-for-byte).
+- Undo/redo: no new mechanism. `History` snapshots the whole project, so the op is undone/redone byte-exactly —
+  undoing restores the exact original bytes, including the absence of the extra pattern.
+
+### `opd diff` and pattern ids (WP-0179 amendment)
+`duplicate_pattern` is **never emitted** by `opd diff` (same rule as `duplicate_clip`/`reorder_clip`): when `b`
+is `a` plus a duplicated pattern, the journal is exactly one step-8 `add_pattern` whose `pattern` JSON is b's
+canonical copy (including its `id`), and applying that journal to `a` reproduces `save_project(b)` byte-exactly.
+An id difference on a **shared** pattern index cannot be expressed — no operation renames a pattern — so it is an
+unsupported difference: `patterns[i].id`, checked immediately after `patterns[i].track` for i ascending (first hit
+reports; absent counts as "unnamed", so present-vs-absent differs too). Projects whose patterns all have equal ids
+produce exactly the same journal bytes as before WP-0179.

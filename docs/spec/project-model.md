@@ -599,3 +599,37 @@ first failure wins, only when the key is present):
   → `voice.root_note must be an integer 0..127`.
 Canonical save emits `root_note` only when present (after `end_s`); legacy files round-trip byte-identically.
 `opd diff` is unchanged: a root difference is reported as any voice change (`unsupported difference: tracks[i].voice`).
+
+## Pattern ids — additive (WP-0179)
+
+A pattern may carry an optional **name**: `{"track": 0, "id": "Kick A", "notes": [ ... ]}`. The id is a label
+for humans, the GUI and the copilot. It does **not** replace index addressing: every operation argument, every
+`clip.pattern` reference and `opd steps` still uses the 0-based position in `patterns`.
+
+```jsonc
+"patterns": [ { "track": 0, "id": "Kick A", "notes": [ ... ] } ]   // "id" optional, unique when set
+```
+
+- **Model:** `std::string id;` on `op::Pattern` (`engine/model.hpp`). `""` = unnamed (the default; the key is
+  absent in JSON).
+- **Value rules:** a JSON string, **non-empty**, at most **64 bytes** (UTF-8 counted as bytes by
+  `std::string::size()`), and **unique across the patterns of one project** that declare an id. Comparison is
+  exact byte equality, case-sensitive; no character restrictions (quotes and non-ASCII are allowed and are
+  JSON-escaped on save).
+- **Validation** at parse (`load_project`, the same code path operations use), checked right after
+  `pattern.track` and before `swing`; first failure wins; each line below is the whole error string:
+  1. `id` present but not a JSON string (number, `null`, boolean, object, array) → `pattern.id must be a string`
+  2. empty string → `pattern.id must not be empty`
+  3. longer than 64 bytes → `pattern.id must be at most 64 bytes`
+  4. equal to the id of an **earlier** pattern of the same project → `pattern.id '<id>' is already in use`
+     (the id verbatim inside single quotes; patterns are scanned in array order, so the later one is rejected)
+- **Canonical save** writes `"id"` only when it is non-empty. Object keys dump alphabetically, so inside a
+  pattern object `id` lands first: `id`, `length_beats`, `notes`, `swing`, `track`. Projects without ids save
+  byte-for-byte as before (all goldens unchanged).
+- **Semantics:** identity only. The renderer, MIDI import/export, `opd lint`, `opd steps` and the mixer never
+  read it: a project renders bit-identically with or without pattern ids, and duplicating a pattern changes no
+  sample of an arrangement that does not reference the copy.
+- **Operations:** `duplicate_pattern {src, new_id}` (see `operations.md` §Pattern duplicate operation) and
+  `add_pattern` (a pattern JSON may carry `id`; a duplicate one is refused by rule 4 above). No rename
+  operation exists yet, so `opd diff` reports an id difference on a shared pattern as
+  `unsupported difference: patterns[i].id`.
