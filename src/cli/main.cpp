@@ -16,6 +16,7 @@
 #include "engine/analyze.hpp"
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
+#include "engine/loudness.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
 #include "engine/ops.hpp"
@@ -44,6 +45,7 @@ static void usage() {
         "  opd unpack <song.opd> -d <out-dir>\n"
         "  opd info <file>   (.wav | .opj | .opd | .mid)\n"
         "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
+        "  opd loudness <in.wav> [--json]   (true peak dBTP, momentary/short-term max LUFS, loudness range as JSON)\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
         "  opd samples <dir> [-o <index.json>]   (JSON index of the audio files under a directory)\n");
 }
@@ -607,6 +609,32 @@ static int cmd_analyze(int argc, char** argv) {
     return 0;
 }
 
+// opd loudness <in.wav> [--json] — true peak (dBTP), momentary / short-term max LUFS and loudness range
+// as canonical JSON (docs/spec/loudness.md). --json is accepted and changes nothing (JSON is the only
+// format). Errors: nothing on stdout; exit 2 usage, 3 not-found, 4 parse (reader error), 5 loudness
+// error (sample rate outside 8000..192000). WAV and AIFF/AIFF-C via read_audio.
+static int cmd_loudness(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "loudness needs <in.wav>"); }
+    std::string path;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--json")) continue;
+        if (!path.empty() || argv[i][0] == '-') { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
+        path = argv[i];
+    }
+    if (path.empty()) { usage(); return fail("usage", "loudness needs <in.wav>"); }
+    if (!fs::exists(path)) return fail("not_found", path);
+
+    op::wav::ReadResult rr = op::wav::read_audio(path);
+    if (!rr.ok) return fail("parse", rr.error);
+    if (rr.sample_rate < 8000 || rr.sample_rate > 192000)
+        return fail("loudness", "unsupported sample rate " + std::to_string(rr.sample_rate));
+
+    const op::loudness::Result r = op::loudness::measure(rr.samples, rr.channels, rr.sample_rate);
+    const std::string json = op::loudness::to_json(r);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 // Parse a decimal argument that must be all digits and fit in [0, max]. Rejects "", "-1", "1.0",
 // "x" and anything that would overflow. Example: parse_decimal("16", 256, v) → true, v == 16.
 static bool parse_decimal(const std::string& s, long long max, long long& out) {
@@ -718,6 +746,7 @@ int main(int argc, char** argv) {
     if (cmd == "unpack") return cmd_unpack(argc - 1, argv + 1);
     if (cmd == "info") return cmd_info(argc - 1, argv + 1);
     if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
+    if (cmd == "loudness") return cmd_loudness(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
     usage();
