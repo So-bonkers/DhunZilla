@@ -126,6 +126,26 @@ bool add_attachment(Project& p, Attachment a, std::string& err);
 //   for (size_t i = 0; i < p.tracks.size(); ++i) if (track_audible(p, i)) render_track(i);
 bool track_audible(const Project& p, std::size_t i);
 
+// New-project factory (WP-0165, spec project-model.md §New project — additive). Pure: no I/O, no
+// clock, no randomness; builds the Project struct directly (never through Document) and does NOT
+// validate ranges — callers do (e.g. `opd new`). Content is fixed by the spec: format_version 0,
+// seed 42, one Pattern{track:i, notes:[]} + Clip{pattern:i, start_bar:0, repeats:1} per track.
+struct NewTrackSpec {
+    std::string name;                     // non-empty (validated by the caller, e.g. opd new)
+    VoiceKind kind = VoiceKind::Synth;
+    std::string path;                     // sampler only: stored verbatim as voice.path
+};
+struct NewProjectSpec {
+    double bpm = 120.0;                   // (0, 1000]
+    int bars = 4;                         // 1..4096  -> Project::length_bars
+    int beats_per_bar = 4;                // 1..32
+    int sample_rate = 48000;              // 8000..192000
+    std::vector<NewTrackSpec> tracks;     // empty = the single default track {"Synth", Synth, ""}
+};
+Project new_project(const NewProjectSpec& spec);
+// Example: op::NewProjectSpec s; s.bars = 8;
+//          op::Project p = op::new_project(s);   // renders silence until notes are added
+
 // Load/validate per spec. Returns false + machine-parsable err string on any violation.
 bool load_project(const std::string& path, Project& out, std::string& err);
 
