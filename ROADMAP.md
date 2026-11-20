@@ -15,6 +15,12 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 ## Work packages — Phase 0
 | WP | Title | Status | Owner |
 |---|---|---|---|
+| WP-0179 | `duplicate_pattern` op + optional pattern `id` (`patterns[]` name, `opd diff` step-8 `add_pattern` rule) | **done** | qwen-goldfish |
+| WP-0178 | Clip fades — optional `fade_in_beats`/`fade_out_beats` per arrangement clip, `set_clip_fades` op, `clip_fades` golden | **done** | qwen-goldfish |
+| WP-0176 (master-limiter) | Master brickwall peak limiter — `opd render --limit-dbfs X` on the final mix (`docs/spec/limiter.md`); NOT the floorplan WP-0176/0177 in the loop chat | **done** | qwen-goldfish |
+| WP-0175 | `tools/render_bench.py` — render benchmark + determinism soak | **done** | qwen-goldfish |
+| WP-0174 | Stem bundle contract (`stems.json`) for separate jobs (sidecar `stem_bundle`) | **done** | qwen-goldfish |
+| WP-0173b (models-verify-pin) | Model manager offline `verify` + `pin` — redo; supersedes the failed WP-0173 attempt | **done** | qwen-goldfish |
 | WP-0172 | Sidecar job event log — every state/progress change a numbered, resumable event (`GET /jobs/{id}/events?after=`) | **done** | qwen-goldfish |
 | WP-0171 | `opd peaks` — min/max waveform peaks per bin as JSON (new engine module `peaks`) | **done** | qwen-goldfish |
 | WP-0170 | `opd lint` — read-only project sanity checks ("why is my beat silent?") as JSON (new engine module `lint`) | **done** | qwen-goldfish |
@@ -100,6 +106,7 @@ Source plan: `../ai-daw-plan.md` (workspace root). This file is the in-repo inde
 2. Signing certs budget (~$100–500/yr): Apple dev account + Azure Trusted Signing/EV.
 3. **ADRs approved 2026-11-18** by product owner: ADR-0001 (GPLv3 core), ADR-0002 (headless-core-first, JUCE deferred), ADR-0003 (HTTP sidecar v0), ADR-0005 (ONNX transcription), ADR-0006 (Linux-only target). Distribution deferred by product owner — not blocked, just not scheduled.
 4. **ADR-0007 approved 2026-11-18** by product owner: JUCE 9 for the GUI shell + live audio in a new `src/app/` module (engine/CLI stay JUCE-free); PipeWire-via-ALSA default at 128 samples/48 kHz; licensing consequence accepted (shipped GUI app effectively AGPLv3 via JUCE 9; core remains GPLv3).
+5a. **ADR-0008 approved 2026-11-20** by product owner: out-of-process plugin protocol ("everything is a plugin") + CLA before outside contributions; monetisation stays undecided.
 5. **Platform scope** — Linux x86_64 + aarch64 only for now (ADR-0006). Revisit at first GUI/public beta; macOS/Windows are deferred, not dropped.
 
 ## Nightly (CI live on push)
