@@ -1,8 +1,9 @@
 """FastAPI app implementing docs/spec/sidecar-protocol.md (v0 transport).
 
 Endpoints: GET /health, POST /jobs, GET /jobs (list, oldest first), GET /jobs/{id},
-POST /jobs/{id}/cancel, GET /jobs/{id}/events (SSE; the stream is fed by cheap polling
-per the spec's "polling fallback allowed"), GET /models, POST /models/{id}/download.
+POST /jobs/{id}/cancel, GET /jobs/{id}/event-log (numbered job events, WP-0172),
+GET /jobs/{id}/events (SSE replay + live, resumable via Last-Event-ID / ?after=),
+GET /models, POST /models/{id}/download.
 
 Errors are always structured ``{code, message, retryable}`` under an ``error`` key.
 
@@ -248,6 +249,31 @@ def create_app(
             raise ApiError("unknown_job", f"no job '{job_id}' (it may have expired)", 404, False)
         return record
 
+    def _cursor(request: Request, after: str | None) -> int:
+        """Resume cursor for the event endpoints (WP-0172).
+
+        ``?after=<n>`` wins; otherwise a present, non-empty ``Last-Event-ID`` header;
+        otherwise ``0``. Anything but a non-negative integer is a 422 ``bad_request``.
+
+        Usage example::
+
+            cursor = _cursor(request, after)   # -> events with seq > cursor
+        """
+        raw = after
+        if raw is None:
+            header = request.headers.get("Last-Event-ID") or ""
+            if not header:
+                return 0
+            raw = header
+        message = f"after must be a non-negative integer, got '{raw}'"
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ApiError("bad_request", message, 422, False) from exc
+        if value < 0:
+            raise ApiError("bad_request", message, 422, False)
+        return value
+
     @app.get("/jobs/{job_id}")
     def get_job(job_id: str) -> dict[str, Any]:
         snap: dict[str, Any] = _require_record(job_id).snapshot()
@@ -259,24 +285,57 @@ def create_app(
         accepted = await runner.cancel(job_id)
         return {"job_id": job_id, "accepted": accepted, "state": record.state}
 
+    @app.get("/jobs/{job_id}/event-log")
+    def job_event_log(job_id: str, request: Request, after: str | None = None) -> dict[str, Any]:
+        """Append-only per-job event log (WP-0172): events with ``seq > after``.
+
+        Usage example::
+
+            tail = client.get(f"/jobs/{j}/event-log", params={"after": 3}).json()["events"]
+        """
+        record = _require_record(job_id)
+        cursor = _cursor(request, after)
+        # Copy first: a worker thread may append while we filter (list copy is atomic).
+        events = list(record.events)
+        return {"job_id": job_id, "events": [e for e in events if int(e["seq"]) > cursor]}
+
     @app.get("/jobs/{job_id}/events")
-    async def job_events(job_id: str) -> StreamingResponse:
-        """SSE stream of job state/progress events (poll-fed; spec allows this)."""
+    async def job_events(
+        job_id: str, request: Request, after: str | None = None
+    ) -> StreamingResponse:
+        """SSE stream of the job event log (WP-0172): replay history, then live events.
+
+        Each frame is ``id: <seq>`` / ``event: job`` / ``data: <event json>``; the
+        stream ends right after the first terminal event, or immediately when the
+        client resumes at or past it (``Last-Event-ID`` / ``?after=``).
+
+        Usage example::
+
+            with client.stream("GET", f"/jobs/{j}/events", params={"after": 2}) as s:
+                for line in s.iter_lines():
+                    ...  # "id: 3", "event: job", "data: {...}", ""
+        """
         _require_record(job_id)
+        cursor = _cursor(request, after)
 
         async def stream() -> AsyncIterator[str]:
-            last_payload: str | None = None
+            sent = cursor
             while True:
                 record = runner.get(job_id)
                 if record is None:
-                    break
-                payload = json.dumps(record.snapshot(), sort_keys=True)
-                if payload != last_payload:
-                    yield f"event: job\ndata: {payload}\n\n"
-                    last_payload = payload
-                    if record.state in TERMINAL_STATES:
-                        break
-                await asyncio.sleep(0.1)
+                    break  # job vanished mid-stream
+                events = list(record.events)  # atomic copy; workers append concurrently
+                for event in events:
+                    seq = int(event["seq"])
+                    if seq <= sent:
+                        continue  # already delivered (or skipped by the cursor)
+                    yield f"id: {seq}\nevent: job\ndata: {json.dumps(event, sort_keys=True)}\n\n"
+                    sent = seq
+                    if event.get("state") in TERMINAL_STATES:
+                        return  # terminal frame delivered: stream is over
+                if events and events[-1].get("state") in TERMINAL_STATES:
+                    return  # resumed at/past the terminal event: nothing left, don't hang
+                await asyncio.sleep(0.05)
 
         return StreamingResponse(
             stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
