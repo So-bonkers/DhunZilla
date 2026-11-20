@@ -26,6 +26,7 @@ Usage example::
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from datetime import date  # noqa: TC003 - pydantic evaluates at runtime
 from enum import StrEnum
@@ -94,6 +95,12 @@ class DownloadFailed(ModelManagerError):
 
     error_code = "download_failed"
     retryable = True
+
+
+class WeightsMissing(ModelManagerError):
+    """A local file the manifest expects is absent (WP-0173 pin refuses; manifest untouched)."""
+
+    error_code = "weights_missing"
 
 
 # ----------------------------------------------------------------- manifest schema
@@ -321,6 +328,119 @@ class ModelManager:
                 '{{"accept": true}} after reviewing: {}'.format(entry.id, entry.license.notes)
             )
 
+    # -- offline verify & pin (WP-0173) ----------------------------------------------
+
+    def verify(self, model_id: str) -> dict[str, Any]:
+        """Hash every source file already in cache_dir and compare against the pins.
+
+        Offline only — never touches the network or the license gate. Result (files in
+        source order): ``{"id", "ok", "files": [{"file", "status", "expected_sha256",
+        "actual_sha256"}, ...]}`` with ``status`` one of ``missing``, ``size_mismatch``
+        (declared ``size_bytes`` differs; the file is then not hashed), ``hash_mismatch``
+        or ``ok``. ``ok`` is true only when there is at least one file and all are ``ok``.
+
+        Usage example::
+
+            report = mgr.verify("htdemucs")   # nothing raised? see report["files"]
+            if not report["ok"]:               # e.g. a truncated cache file
+                bad = [f for f in report["files"] if f["status"] != "ok"]
+        """
+        entry = self.get_entry(model_id)
+        if entry.status is ModelStatus.AWAITING_WEIGHTS:
+            raise ModelAwaitingWeights(
+                f"model '{entry.id}' has status awaiting-weights: nothing to verify — "
+                "the sources are not declared yet."
+            )
+        root = self.cache_root(entry)
+        files: list[dict[str, Any]] = []
+        for source in entry.sources:
+            name = filename_for(source.url)
+            path = root / name
+            status = "ok"
+            actual: str | None = None
+            if not path.is_file():
+                status = "missing"
+            elif source.size_bytes is not None and path.stat().st_size != source.size_bytes:
+                status = "size_mismatch"  # wrong size → pointless to hash; report null digest
+            else:
+                actual = sha256_file(path)
+                if actual != source.sha256:
+                    status = "hash_mismatch"
+            files.append(
+                {
+                    "file": name,
+                    "status": status,
+                    "expected_sha256": source.sha256,
+                    "actual_sha256": actual,
+                }
+            )
+        ok = bool(files) and all(f["status"] == "ok" for f in files)
+        return {"id": model_id, "ok": ok, "files": files}
+
+    def pin(self, model_id: str, *, from_dir: Path | None = None) -> dict[str, Any]:
+        """Measure local files and write the real digests into the manifest (offline).
+
+        For each source, ``<from_dir or cache_dir>/<basename of url>`` is hashed. Only
+        when **every** file exists does the manifest get rewritten atomically (temp file
+        + ``os.replace``); then each source's ``sha256``/``size_bytes`` become the
+        measured values and ``hash_verified`` becomes ``true`` — nothing else changes.
+        A missing file raises :class:`WeightsMissing` and leaves the manifest untouched.
+
+        Result: ``{"id", "pinned": [{"file", "sha256", "size_bytes"}, ...]}`` (source order).
+
+        Usage example::
+
+            out = mgr.pin("htdemucs", from_dir=Path("/media/delivery"))
+            # → {"id": "htdemucs", "pinned": [{"file": "htdemucs.pth", ...}]}
+        """
+        entry = self.get_entry(model_id)
+        if entry.status is ModelStatus.AWAITING_WEIGHTS:
+            raise ModelAwaitingWeights(
+                f"model '{entry.id}' has status awaiting-weights: nothing to pin — "
+                "the sources are not declared yet."
+            )
+        root = from_dir if from_dir is not None else self.cache_root(entry)
+
+        # Measure everything first; refuse to write a single byte unless all files exist.
+        measured: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for source in entry.sources:
+            name = filename_for(source.url)
+            path = root / name
+            if not path.is_file():
+                missing.append(str(path))
+                continue
+            measured.append(
+                {
+                    "file": name,
+                    "sha256": sha256_file(path),
+                    "size_bytes": path.stat().st_size,
+                }
+            )
+        if missing:
+            raise WeightsMissing(
+                f"cannot pin '{model_id}': file(s) not found under {root}: "
+                f"{', '.join(missing)}. Place every source file there and re-run; "
+                "the manifest was left untouched."
+            )
+
+        raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        raw_matches = [m for m in raw["models"] if m.get("id") == model_id]
+        if len(raw_matches) != 1:
+            raise ManifestError(
+                f"manifest {self.manifest_path} changed under us: id '{model_id}' matched "
+                f"{len(raw_matches)} entries; nothing was written."
+            )
+        raw_entry = raw_matches[0]
+        for raw_source, pin_value in zip(raw_entry["sources"], measured, strict=True):
+            raw_source["sha256"] = pin_value["sha256"]
+            raw_source["size_bytes"] = pin_value["size_bytes"]
+            raw_source["hash_verified"] = True
+        tmp = self.manifest_path.with_name(self.manifest_path.name + ".tmp")
+        tmp.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, self.manifest_path)
+        return {"id": model_id, "pinned": measured}
+
     # -- downloader ------------------------------------------------------------------
 
     def download(
@@ -400,6 +520,23 @@ class ModelManager:
                 "not retrying. Verify the manifest pin or fix the server."
             )
         os.replace(part, dest)
+
+
+def sha256_file(path: Path) -> str:
+    """Streaming sha256 hex digest of a local file, read in ``CHUNK_SIZE`` blocks.
+
+    Usage example::
+
+        from pathlib import Path
+        from ai_sidecar.model_manager import sha256_file
+
+        digest = sha256_file(Path("models/cache/htdemucs/htdemucs.pth"))
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(CHUNK_SIZE), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def filename_for(url: str) -> str:

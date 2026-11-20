@@ -7,6 +7,8 @@ Usage examples::
     uv run opsidecar jobs submit --backend mockgen --task generate \\
         --params '{"prompt": "chill", "duration_s": 1.0, "seed": 42}' --wait --port 8765
     uv run opsidecar jobs status <job_id> --port 8765
+    uv run opsidecar models verify htdemucs        # offline: cache files vs manifest pins
+    uv run opsidecar models pin htdemucs --from-dir /media/delivery   # write real digests
 """
 
 from __future__ import annotations
@@ -90,6 +92,31 @@ def _jobs_status(args: argparse.Namespace) -> int:
         return 0 if resp.status_code < 400 else 1
 
 
+def _models(args: argparse.Namespace) -> int:
+    """``opsidecar models verify|pin`` — offline manifest/weights tooling (WP-0173).
+
+    Success prints the JSON outcome (indent 2, sorted keys) on stdout; ``verify`` still
+    prints its full report when it fails and exits 1. A ``ModelManagerError`` prints
+    ``error: <error_code>: <message>`` on stderr with nothing on stdout, exit 1.
+    """
+    from ai_sidecar.model_manager import ModelManager, ModelManagerError
+
+    mgr = ModelManager(Path(args.manifest) if args.manifest else None)
+    try:
+        if args.models_command == "verify":
+            outcome = mgr.verify(args.model_id)
+        else:
+            from_dir = Path(args.from_dir) if args.from_dir else None
+            outcome = mgr.pin(args.model_id, from_dir=from_dir)
+    except ModelManagerError as exc:
+        print(f"error: {exc.error_code}: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(outcome, indent=2, sort_keys=True))
+    if args.models_command == "verify" and not outcome["ok"]:
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Argparse tree for the ``opsidecar`` entry point."""
     parser = argparse.ArgumentParser(prog="opsidecar", description="DhunZilla AI sidecar")
@@ -123,6 +150,28 @@ def build_parser() -> argparse.ArgumentParser:
     status_p.add_argument("--port", type=int, required=True)
     status_p.add_argument("job_id")
     status_p.set_defaults(func=_jobs_status)
+
+    models = sub.add_parser(
+        "models", help="offline weights tooling: verify cache files, pin real digests"
+    )
+    models_sub = models.add_subparsers(dest="models_command", required=True)
+
+    verify_p = models_sub.add_parser(
+        "verify", help="hash cached weight files and compare against the manifest pins"
+    )
+    verify_p.add_argument("model_id")
+    verify_p.add_argument("--manifest", default=None, help="manifest.json (default: bundled)")
+    verify_p.set_defaults(func=_models)
+
+    pin_p = models_sub.add_parser(
+        "pin", help="measure local files and write their real sha256/size into the manifest"
+    )
+    pin_p.add_argument("model_id")
+    pin_p.add_argument("--manifest", default=None, help="manifest.json (default: bundled)")
+    pin_p.add_argument(
+        "--from-dir", default=None, help="directory holding the files (default: entry cache_dir)"
+    )
+    pin_p.set_defaults(func=_models)
 
     return parser
 
