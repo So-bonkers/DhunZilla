@@ -5,6 +5,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #include "engine/lint.hpp"
 #include "engine/model.hpp"
@@ -177,7 +178,7 @@ static void test_rule8_sampler_missing() {
 
 static void test_rule8_sampler_present() {
     std::error_code ec;
-    const fs::path dir = fs::temp_directory_path() / "op_lint_tests_wp0170";
+    const fs::path dir = fs::temp_directory_path() / ("op_lint_tests_wp0170_" + std::to_string(static_cast<long>(::getpid())));  // per-process: concurrent runs never collide
     fs::create_directories(dir, ec);
     if (ec) { CHECK(false, "rule8_present_setup"); return; }
     const fs::path wav = dir / "kick.wav";
