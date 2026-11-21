@@ -438,6 +438,11 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
         } else if (name == "clear_loop") {
             if (!check_keys(op_json, {}, err)) return false;
             j.erase("loop");  // no-op when absent; still a successful (undoable) apply
+        } else if (name == "set_time_signature") {  // WP-0191: range/derivation rules come from the model parse below
+            if (!check_keys(op_json, {"num", "den"}, err) ||
+                !has_integer(op_json, "num", err) || !has_integer(op_json, "den", err)) return false;
+            j["time_signature"] = json{{"num", op_json.at("num")}, {"den", op_json.at("den")}};
+            j.erase("beats_per_bar");  // the parse re-derives it from the signature (no second ruleset)
         } else if (name == "insert_bars" || name == "delete_bars") {  // WP-0180: song structure
             const bool insert = (name == "insert_bars");
             if (!check_keys(op_json, {"at_bar", "count"}, err)) return false;
@@ -651,7 +656,6 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
     if (ja.at("format_version") != jb.at("format_version")) return unsupported("format_version");
     if (ja.at("sample_rate") != jb.at("sample_rate")) return unsupported("sample_rate");
     if (ja.at("seed") != jb.at("seed")) return unsupported("seed");
-    if (ja.at("beats_per_bar") != jb.at("beats_per_bar")) return unsupported("beats_per_bar");
     static const json kEmptyArray = json::array();
     const json& tempo_a = field_or(ja, "tempo_map", kEmptyArray);
     const json& tempo_b = field_or(jb, "tempo_map", kEmptyArray);
@@ -708,6 +712,15 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
 
     static const json kZeroDb = 0.0;   // canonical default of master/clip gain_db
     static const json kFalse = false;  // canonical default of mute/solo (omitted at false)
+    // Time signature (WP-0191, task §opd diff): effective signature = stored object else
+    // {beats_per_bar, 4}; on a difference emit exactly one set_time_signature with b's values.
+    static const json kDen4 = 4;
+    const json sig_a = ja.contains("time_signature") ? ja.at("time_signature")
+                                                     : json{{"num", ja.at("beats_per_bar")}, {"den", kDen4}};
+    const json sig_b = jb.contains("time_signature") ? jb.at("time_signature")
+                                                     : json{{"num", jb.at("beats_per_bar")}, {"den", kDen4}};
+    if (sig_a != sig_b)
+        ops.push_back({{"op", "set_time_signature"}, {"num", sig_b.at("num")}, {"den", sig_b.at("den")}});
     if (ja.at("bpm") != jb.at("bpm")) ops.push_back({{"op", "set_bpm"}, {"bpm", jb.at("bpm")}});
     if (ja.at("length_bars") != jb.at("length_bars"))
         ops.push_back({{"op", "set_length_bars"}, {"length_bars", jb.at("length_bars")}});

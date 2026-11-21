@@ -103,6 +103,15 @@ struct LoopRegion {
     double end_bar = 0.0;
 };
 
+// Time signature (WP-0191, task WP-0191 §Project JSON key): num quarter-note-beat multiples of a
+// `den`-note. Only whole-quarter bar lengths load: (num * 4) % den == 0 and num * 4 / den <= 32.
+// The engine maps bars through Project::beats_per_bar; this struct only records /8-and-/16
+// signatures that beats_per_bar alone cannot carry (den != 4).
+struct TimeSignature {
+    int num = 4;
+    int den = 4;
+};
+
 struct Project {
     int format_version = 0;
     double bpm = 120.0;
@@ -118,7 +127,15 @@ struct Project {
     std::vector<TempoPoint> tempo_map;  // empty = constant bpm (legacy bit-exact); else first bar must be 0
     std::vector<Attachment> attachments;  // empty when absent (legacy byte-stable); informational only
     std::optional<LoopRegion> loop;  // absent = no loop region (WP-0155); saved only when set
+    std::optional<TimeSignature> time_signature;  // WP-0191: present only for den != 4 (3/4 normalizes to beats_per_bar)
 };
+
+// The signature a project plays with (WP-0191): its stored time_signature if present, else
+// {beats_per_bar, 4}. Example: op::Project p; p.beats_per_bar = 6;
+//   op::effective_time_signature(p);  // → {6, 4}
+inline TimeSignature effective_time_signature(const Project& p) {
+    return p.time_signature.value_or(TimeSignature{p.beats_per_bar, 4});
+}
 
 // Model-driven mutation op: validate and append an attachment. Rejects blank/absolute/escaping
 // paths, kinds outside {stem, transcription, other}, and duplicate paths. Returns false + err on

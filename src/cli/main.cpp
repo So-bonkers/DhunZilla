@@ -665,6 +665,8 @@ static int cmd_info(int argc, char** argv) {
                 path.c_str(), p.bpm, p.length_bars, p.tracks.size(), p.patterns.size(), total,
                 static_cast<double>(total) / p.sample_rate,
                 static_cast<unsigned long long>(p.seed));
+    const op::TimeSignature ts = op::effective_time_signature(p);  // WP-0191: silent for the 4/4 default
+    if (ts.num != 4 || ts.den != 4) std::printf("time_signature: %d/%d\n", ts.num, ts.den);
     if (p.master_gain_db != 0.0f)  // mixer state (WP-0136): markers per track, master when non-default
         std::printf("master_gain_db=%.2f\n", static_cast<double>(p.master_gain_db));
     if (p.loop)  // WP-0155: printed only when a loop region is set

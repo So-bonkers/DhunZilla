@@ -6074,6 +6074,208 @@ static void test_pattern_mode() {
     CHECK(scratch.length_bars == 42.0 && scratch.arrangement.empty(), "pmode.failure_leaves_out_untouched");
 }
 
+// ---------------------------------------------------------------- time signature (WP-0191)
+static void test_time_signature() {
+    using nlohmann::json;
+
+    // Minimal valid project JSON: 4/4, one metronome track, one empty pattern.
+    auto base = [] {
+        json j;
+        j["format_version"] = 0; j["bpm"] = 120.0; j["sample_rate"] = 48000; j["seed"] = 7;
+        j["length_bars"] = 2.0; j["beats_per_bar"] = 4;
+        j["tracks"] = json::array({json{{"name", "M"}, {"voice", json{{"kind", "metronome"}}}}});
+        j["patterns"] = json::array({json{{"track", 0}, {"notes", json::array()}}});
+        return j;
+    };
+    auto proj_of = [](const json& j) {  // base() is valid: failures surface as later CHECKs failing
+        op::Project p; std::string e;
+        op::project_from_json(j, p, e);
+        return p;
+    };
+    // Parse `base()` + time_signature = ts and report the exact error string. No beats_per_bar
+    // key (default 4) so only the ts checks can fire.
+    auto parse_err = [&](const json& ts, const std::string& expect) {
+        json j;
+        j["format_version"] = 0; j["bpm"] = 120.0; j["sample_rate"] = 48000; j["seed"] = 7;
+        j["length_bars"] = 2.0;
+        j["tracks"] = json::array({json{{"name", "M"}, {"voice", json{{"kind", "metronome"}}}}});
+        j["patterns"] = json::array({json{{"track", 0}, {"notes", json::array()}}});
+        j["time_signature"] = ts;
+        op::Project p; std::string err;
+        return !op::project_from_json(j, p, err) && err == expect;
+    };
+
+    // --- parse: 6/8 derives beats_per_bar 3 and keeps the key; save writes it back.
+    {
+        json j = base(); j.erase("beats_per_bar"); j["time_signature"] = {{"num", 6}, {"den", 8}};
+        op::Project p; std::string err;
+        CHECK(op::project_from_json(j, p, err) && p.beats_per_bar == 3 && p.time_signature &&
+                  p.time_signature->num == 6 && p.time_signature->den == 8,
+              "ts.parse_6_8_derives_3_keeps_key");
+        const std::string saved = op::project_bytes(p);
+        CHECK(saved.find("\"time_signature\"") != std::string::npos &&
+                  saved.find("\"beats_per_bar\": 3") != std::string::npos,
+              "ts.save_6_8_writes_key_and_bpb3");
+    }
+    // --- parse: 3/4 derives 3 and drops the key (normalisation); save has no time_signature.
+    {
+        json j = base(); j.erase("beats_per_bar"); j["time_signature"] = {{"num", 3}, {"den", 4}};
+        op::Project p; std::string err;
+        CHECK(op::project_from_json(j, p, err) && p.beats_per_bar == 3 && !p.time_signature,
+              "ts.parse_3_4_derives_3_drops_key");
+        CHECK(op::project_bytes(p).find("time_signature") == std::string::npos,
+              "ts.save_3_4_no_time_signature_key");
+    }
+    // --- conflict rule: an explicit beats_per_bar must equal the derived value.
+    {
+        json j = base(); j["time_signature"] = {{"num", 6}, {"den", 8}};  // file says beats_per_bar 4
+        op::Project p; std::string err;
+        CHECK(!op::project_from_json(j, p, err) && err == "beats_per_bar conflicts with time_signature",
+              "ts.conflict_bpb4_vs_6_8_rejected");
+        json k = base(); k["beats_per_bar"] = 3; k["time_signature"] = {{"num", 6}, {"den", 8}};
+        op::Project q; std::string e2;
+        CHECK(op::project_from_json(k, q, e2) && q.beats_per_bar == 3 &&
+                  q.time_signature && q.time_signature->num == 6,
+              "ts.conflict_matching_bpb3_ok");
+    }
+    // --- every parse error string, exactly (spec §Project JSON key; first failure wins).
+    CHECK(parse_err(json{{"num", 3}}, "time_signature must be an object {num, den}"),
+          "ts.err_object_missing_den");
+    CHECK(parse_err(json("4/4"), "time_signature must be an object {num, den}"),
+          "ts.err_object_string_value");
+    CHECK(parse_err(json{{"num", 6}, {"den", 8}, {"x", 1}}, "time_signature must be an object {num, den}"),
+          "ts.err_object_extra_key");
+    CHECK(parse_err(json{{"num", 0}, {"den", 4}}, "time_signature.num must be an integer in [1, 32]"),
+          "ts.err_num_zero");
+    CHECK(parse_err(json{{"num", 33}, {"den", 4}}, "time_signature.num must be an integer in [1, 32]"),
+          "ts.err_num_33");
+    CHECK(parse_err(json{{"num", 3.0}, {"den", 4}}, "time_signature.num must be an integer in [1, 32]"),
+          "ts.err_num_float_3_0");
+    CHECK(parse_err(json{{"num", "3"}, {"den", 4}}, "time_signature.num must be an integer in [1, 32]"),
+          "ts.err_num_string");
+    CHECK(parse_err(json{{"num", true}, {"den", 4}}, "time_signature.num must be an integer in [1, 32]"),
+          "ts.err_num_bool");
+    CHECK(parse_err(json{{"num", 1e30}, {"den", 4}}, "time_signature.num must be an integer in [1, 32]"),
+          "ts.err_num_huge_no_overflow");
+    CHECK(parse_err(json{{"num", 6}, {"den", 3}}, "time_signature.den must be 2, 4, 8 or 16"),
+          "ts.err_den_3");
+    CHECK(parse_err(json{{"num", 6}, {"den", "8"}}, "time_signature.den must be 2, 4, 8 or 16"),
+          "ts.err_den_string");
+    CHECK(parse_err(json{{"num", 7}, {"den", 8}},
+                     "time_signature bar must be a whole number of quarter-note beats"),
+          "ts.err_7_8_not_whole");
+    CHECK(parse_err(json{{"num", 9}, {"den", 8}},
+                     "time_signature bar must be a whole number of quarter-note beats"),
+          "ts.err_9_8_not_whole");
+    CHECK(parse_err(json{{"num", 32}, {"den", 2}},
+                     "time_signature bar must be at most 32 quarter-note beats"),
+          "ts.err_32_2_too_long");
+
+    // --- legacy project: loads, saves with no time_signature key, bytes stable across a round trip.
+    {
+        const std::string path = tmp_file("ts_legacy.opj");
+        op::Project p = proj_of(base());
+        std::string err;
+        CHECK(op::save_project(path, p, err) && op::project_bytes(p).find("time_signature") == std::string::npos,
+              "ts.legacy_save_no_key");
+        op::Project back;
+        CHECK(op::load_project(path, back, err) && op::project_bytes(back) == op::project_bytes(p) &&
+                  !back.time_signature && back.beats_per_bar == 4,
+              "ts.legacy_roundtrip_bytes_stable");
+    }
+    // --- effective_time_signature: stored value wins; legacy bpb 3 reads as 3/4.
+    {
+        json j = base(); j.erase("beats_per_bar"); j["time_signature"] = {{"num", 6}, {"den", 8}};
+        const op::TimeSignature s68 = op::effective_time_signature(proj_of(j));
+        json k34 = base(); k34["beats_per_bar"] = 3;  // legacy: effective signature carries bpb as the num
+        const op::TimeSignature s34 = op::effective_time_signature(proj_of(k34));
+        CHECK(s68.num == 6 && s68.den == 8 && s34.num == 3 && s34.den == 4, "ts.effective_time_signature");
+    }
+
+    // --- op set_time_signature: set / undo / redo via History.
+    {
+        op::Project p = proj_of(base());
+        op::History h; std::string err;
+        CHECK(h.apply(p, json{{"op", "set_time_signature"}, {"num", 6}, {"den", 8}}, err) &&
+                  p.beats_per_bar == 3 && p.time_signature &&
+                  p.time_signature->num == 6 && p.time_signature->den == 8,
+              "ts.op_set_6_8");
+        CHECK(h.undo(p) && p.beats_per_bar == 4 && !p.time_signature, "ts.op_undo_restores_4_4");
+        CHECK(h.redo(p) && p.beats_per_bar == 3 && p.time_signature && p.time_signature->num == 6,
+              "ts.op_redo_back_to_6_8");
+    }
+    // --- op normalisation: {3,4} → no key + bpb 3; {4,4} → no key + bpb 4.
+    {
+        op::Project p = proj_of(base()); std::string err;
+        CHECK(op::apply_op(p, json{{"op", "set_time_signature"}, {"num", 3}, {"den", 4}}, err) &&
+                  !p.time_signature && p.beats_per_bar == 3,
+              "ts.op_set_3_4_no_key_bpb3");
+        CHECK(op::apply_op(p, json{{"op", "set_time_signature"}, {"num", 4}, {"den", 4}}, err) &&
+                  !p.time_signature && p.beats_per_bar == 4,
+              "ts.op_set_4_4_back_to_default");
+    }
+    // --- op rejections: exact "<op>: <reason>" strings and *p untouched.
+    {
+        const op::Project orig = proj_of(base());
+        op::Project p = orig; std::string err;
+        CHECK(!op::apply_op(p, json{{"op", "set_time_signature"}, {"num", 7}, {"den", 8}}, err) &&
+                  err == "set_time_signature: time_signature bar must be a whole number of quarter-note beats" &&
+                  p.beats_per_bar == 4 && !p.time_signature,
+              "ts.op_reject_7_8");
+        CHECK(!op::apply_op(p, json{{"op", "set_time_signature"}, {"num", 6}}, err) &&
+                  err == "set_time_signature: missing argument 'den'",
+              "ts.op_missing_den");
+        CHECK(!op::apply_op(p, json{{"op", "set_time_signature"}, {"num", 6.0}, {"den", 8}}, err) &&
+                  err == "set_time_signature: 'num' must be an integer",
+              "ts.op_float_num_rejected");
+        CHECK(!op::apply_op(p, json{{"op", "set_time_signature"}, {"num", 6}, {"den", 8}, {"extra", 1}}, err) &&
+                  err == "set_time_signature: unknown argument 'extra'",
+              "ts.op_unknown_key_rejected");
+    }
+
+    // --- diff: emit line, ordering before set_bpm, and byte-level reproductions.
+    {
+        const op::Project a = proj_of(base());  // legacy 4/4
+        json jb = base(); jb.erase("beats_per_bar"); jb["time_signature"] = {{"num", 6}, {"den", 8}};
+        const op::Project b = proj_of(jb);
+        std::vector<json> ops; std::string err;
+        CHECK(op::diff_projects(a, b, ops, err) &&
+                  journal_text(ops) == "{\"den\":8,\"num\":6,\"op\":\"set_time_signature\"}\n",
+              "ts.diff_4_4_to_6_8_emits_one_op");
+        op::Project c = a;
+        CHECK(op::apply_journal(c, journal_text(ops), err) && op::project_bytes(c) == op::project_bytes(b),
+              "ts.diff_reproduces_6_8_bytes");
+
+        // 3/4 → 6/8 (a: bpb 3 no key; b: kept {6,8}).
+        json ja = base(); ja.erase("beats_per_bar"); ja["time_signature"] = {{"num", 3}, {"den", 4}};
+        std::vector<json> ops2;
+        CHECK(op::diff_projects(proj_of(ja), b, ops2, err) &&
+                  journal_text(ops2) == "{\"den\":8,\"num\":6,\"op\":\"set_time_signature\"}\n",
+              "ts.diff_3_4_to_6_8");
+        op::Project c2 = proj_of(ja);
+        CHECK(op::apply_journal(c2, journal_text(ops2), err) && op::project_bytes(c2) == op::project_bytes(b),
+              "ts.diff_3_4_to_6_8_reproduces");
+
+        // 6/8 → back to 4/4: emits {4,4}; reproduces the key-free legacy bytes.
+        std::vector<json> ops3;
+        CHECK(op::diff_projects(b, a, ops3, err) &&
+                  journal_text(ops3) == "{\"den\":4,\"num\":4,\"op\":\"set_time_signature\"}\n",
+              "ts.diff_6_8_to_4_4_emits_4_4");
+        op::Project c3 = b;
+        CHECK(op::apply_journal(c3, journal_text(ops3), err) && op::project_bytes(c3) == op::project_bytes(a),
+              "ts.diff_6_8_to_4_4_reproduces_legacy");
+
+        // Ordering: with bpm also differing, set_time_signature lands before set_bpm.
+        json jbo = jb; jbo["bpm"] = 90.0;
+        const op::Project bo = proj_of(jbo);
+        std::vector<json> ops4;
+        CHECK(op::diff_projects(a, bo, ops4, err) &&
+                  journal_text(ops4) == "{\"den\":8,\"num\":6,\"op\":\"set_time_signature\"}\n"
+                                        "{\"bpm\":90.0,\"op\":\"set_bpm\"}\n",
+              "ts.diff_emitted_before_set_bpm");
+    }
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -6122,6 +6324,7 @@ int main() {
     test_sample_index();
     test_duplicate_pattern();
     test_player();
+    test_time_signature();
     test_pattern_mode();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     if (g_failures == 0) {

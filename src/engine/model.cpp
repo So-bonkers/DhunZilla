@@ -170,6 +170,39 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
     if (p.sample_rate <= 0) { err = "sample_rate must be > 0"; return false; }
     if (p.beats_per_bar <= 0) { err = "beats_per_bar must be > 0"; return false; }
     if (p.length_bars <= 0.0) { err = "length_bars must be > 0"; return false; }
+    // Time signature (WP-0191, task §Project JSON key): optional key that only derives
+    // beats_per_bar; range/derivation rules live here alone (the set_time_signature op re-runs
+    // this parse). Values are read as double before casting so huge integers cannot overflow.
+    p.time_signature.reset();
+    if (j.contains("time_signature")) {
+        const json& ts = j.at("time_signature");
+        if (!ts.is_object() || !ts.contains("num") || !ts.contains("den") || ts.size() != 2) {
+            err = "time_signature must be an object {num, den}"; return false;
+        }
+        const json& num_j = ts.at("num");
+        if (!num_j.is_number_integer() || !(num_j.get<double>() >= 1.0 && num_j.get<double>() <= 32.0)) {
+            err = "time_signature.num must be an integer in [1, 32]"; return false;
+        }
+        const json& den_j = ts.at("den");
+        if (!den_j.is_number_integer() || !(den_j.get<double>() == 2.0 || den_j.get<double>() == 4.0 ||
+                                            den_j.get<double>() == 8.0 || den_j.get<double>() == 16.0)) {
+            err = "time_signature.den must be 2, 4, 8 or 16"; return false;
+        }
+        const int num = static_cast<int>(num_j.get<double>());  // exact: in [1, 32] after the check above
+        const int den = static_cast<int>(den_j.get<double>());  // exact: one of 2, 4, 8, 16
+        if ((num * 4) % den != 0) {
+            err = "time_signature bar must be a whole number of quarter-note beats"; return false;
+        }
+        const int derived = num * 4 / den;
+        if (derived > 32) {
+            err = "time_signature bar must be at most 32 quarter-note beats"; return false;
+        }
+        if (j.contains("beats_per_bar") && p.beats_per_bar != derived) {
+            err = "beats_per_bar conflicts with time_signature"; return false;
+        }
+        p.beats_per_bar = derived;
+        if (den != 4) p.time_signature = TimeSignature{num, den};  // den == 4 normalizes away (spec)
+    }
     p.master_gain_db = j.value("master_gain_db", 0.0f);  // mixer master fader (spec §mixer)
     if (!(p.master_gain_db >= -96.0f) || p.master_gain_db > 24.0f) {  // NaN-safe: rejects NaN too
         err = "master_gain_db out of range [-96, 24]"; return false;
@@ -518,6 +551,9 @@ json project_to_json(const Project& p) {
     j["seed"] = p.seed;
     j["length_bars"] = p.length_bars;
     j["beats_per_bar"] = p.beats_per_bar;
+    // WP-0191: written only when held (den != 4) — legacy/4-normalized projects keep their bytes.
+    if (p.time_signature)
+        j["time_signature"] = json{{"num", p.time_signature->num}, {"den", p.time_signature->den}};
     if (p.master_gain_db != 0.0f) j["master_gain_db"] = p.master_gain_db;  // omit at default (spec §mixer)
     json tracks = json::array();
     for (const auto& t : p.tracks) {

@@ -46,9 +46,11 @@ bool apply_journal(Project& p, const std::string& jsonl_text, std::string& err,
 // Build the journal of existing operations that transforms `a` into `b` (docs/spec/operations.md
 // §opd diff): ops is cleared first, filled in the spec's fixed emission order, and left empty on
 // failure. "Equal" means equal canonical JSON (project_to_json), i.e. equal saved bytes. Fields
-// no operation can change (format_version, sample_rate, seed, beats_per_bar, tempo_map, existing
+// no operation can change (format_version, sample_rate, seed, tempo_map, existing
 // tracks' voice, patterns' track, non-prefix attachments) make it return
-// false with err "unsupported difference: <field>" (0-based decimal indices). As a safety net the
+// false with err "unsupported difference: <field>" (0-based decimal indices). Signature changes
+// are supported (WP-0191): one set_time_signature carrying b's effective signature, emitted
+// before the set_bpm op. As a safety net the
 // journal is applied to a copy of `a` and must reproduce b; otherwise err ends in
 // "(journal does not reproduce target)". Example:
 //   std::vector<nlohmann::json> ops; std::string err;
