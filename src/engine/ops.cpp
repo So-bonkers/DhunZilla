@@ -94,6 +94,24 @@ bool fits_int(const json& v) {
 // Step-sequencer limits (WP-0154): step index range [0, 4096), MIDI pitch range [0, 127].
 constexpr std::size_t kStepLimit = 4096;
 
+// Song-structure limits (WP-0180, spec §Song-structure operations): bar index in [0, 1e9],
+// bars per operation in [1, 4096].
+constexpr long long kBarMax = 1000000000LL;
+constexpr long long kBarsPerOpMax = 4096;
+
+// Read an integer JSON value into a long long without wrapping (values above LLONG_MAX → false).
+// Same unsigned handling as arg_index, exposed on its own for range-checked arguments.
+bool as_long_long(const json& v, long long& out) {
+    if (v.is_number_unsigned()) {
+        const uint64_t uv = v.get<uint64_t>();
+        if (uv > static_cast<uint64_t>(std::numeric_limits<long long>::max())) return false;
+        out = static_cast<long long>(uv);
+        return true;
+    }
+    out = v.get<long long>();
+    return true;
+}
+
 // True when the integer JSON value v lies in [lo, hi]. Caller has checked is_number_integer().
 // Unsigned values above the signed range are out of range for any hi < 2^63.
 bool int_in_range(const json& v, long long lo, long long hi) {
@@ -118,6 +136,81 @@ bool check_keys(const json& o, std::initializer_list<const char*> allowed, std::
             if (it.key() == a) { known = true; break; }
         if (!known) { err = "unknown argument '" + it.key() + "'"; return false; }
     }
+    return true;
+}
+
+// Song-structure edit (WP-0180, spec §Song-structure operations): open `count` empty bars at bar
+// `at` (insert) or remove the bars in [at, at + count) (delete) on a project copy — clips and the
+// loop region move with the cut, everything else is untouched. Returns false with `err` set to the
+// bare reason for the project-dependent rejections (tempo map, insert past the end, range past the
+// end, deleting every clip); a length result of 0 is left to the model parse. Example:
+//   op::Project q = p; std::string err;
+//   if (shift_bars(q, /*insert=*/true, /*at=*/3, /*count=*/2, err)) { /* q now has 2 more bars */ }
+bool shift_bars(Project& q, bool insert, long long at, long long count, std::string& err) {
+    if (!q.tempo_map.empty()) { err = "tempo_map is not supported"; return false; }
+
+    const double a = static_cast<double>(at);
+    const double n = static_cast<double>(count);
+
+    if (insert) {
+        if (a > q.length_bars) { err = "'at_bar' out of range"; return false; }  // a == length appends
+        for (Clip& c : q.arrangement)
+            if (c.start_bar >= a) c.start_bar += n;  // clips starting before the cut are never split
+        if (q.loop) {
+            if (q.loop->start_bar >= a) {  // whole loop after the cut: move it
+                q.loop->start_bar += n;
+                q.loop->end_bar += n;
+            } else if (q.loop->end_bar > a) {  // the cut opens inside the loop: it grows
+                q.loop->end_bar += n;
+            }
+        }
+        q.length_bars += n;
+        return true;
+    }
+
+    const double b = a + n;  // deleted range [a, b); at <= 1e9 and count <= 4096 cannot overflow
+    if (b > q.length_bars) { err = "range exceeds length_bars"; return false; }
+
+    // Clips are classified against their ORIGINAL values; arrangement order is preserved.
+    std::vector<Clip> kept;
+    kept.reserve(q.arrangement.size());
+    for (const Clip& c : q.arrangement) {
+        if (c.start_bar >= b) {  // entirely after the cut: move earlier
+            Clip k = c;
+            k.start_bar -= n;
+            kept.push_back(k);
+        } else if (c.start_bar >= a) {  // starts inside the cut: removed
+            continue;
+        } else {  // starts before the cut: keep the statements that start before it
+            const std::size_t pi = static_cast<std::size_t>(c.pattern);
+            const double extent = pi < q.patterns.size() ? pattern_extent(q.patterns[pi]) : 0.0;
+            const double step = extent / static_cast<double>(q.beats_per_bar);  // bars between statements
+            Clip k = c;
+            k.repeats = 0;
+            for (int i = 0; i < c.repeats; ++i)
+                if (c.start_bar + static_cast<double>(i) * step < a) ++k.repeats;
+            if (k.repeats < 1) k.repeats = 1;  // i = 0 always qualifies (start_bar < a): never zero
+            kept.push_back(k);
+        }
+    }
+    // An empty arrangement means "every pattern once at bar 0", so deletion must never produce one.
+    if (!q.arrangement.empty() && kept.empty()) { err = "would remove every clip"; return false; }
+    q.arrangement = std::move(kept);
+
+    // Loop bounds map through f(x) = x (x <= a) | a (a < x < b) | x - count (x >= b).
+    if (q.loop) {
+        const double ls = q.loop->start_bar <= a ? q.loop->start_bar
+                                                 : (q.loop->start_bar < b ? a : q.loop->start_bar - n);
+        const double le = q.loop->end_bar <= a ? q.loop->end_bar
+                                               : (q.loop->end_bar < b ? a : q.loop->end_bar - n);
+        if (le <= ls) q.loop.reset();  // the loop was swallowed by the cut: same as clear_loop
+        else {
+            q.loop->start_bar = ls;
+            q.loop->end_bar = le;
+        }
+    }
+
+    q.length_bars -= n;  // a result of 0 is rejected by the model parse ("length_bars must be > 0")
     return true;
 }
 
@@ -345,6 +438,23 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
         } else if (name == "clear_loop") {
             if (!check_keys(op_json, {}, err)) return false;
             j.erase("loop");  // no-op when absent; still a successful (undoable) apply
+        } else if (name == "insert_bars" || name == "delete_bars") {  // WP-0180: song structure
+            const bool insert = (name == "insert_bars");
+            if (!check_keys(op_json, {"at_bar", "count"}, err)) return false;
+            if (!has_integer(op_json, "at_bar", err) || !has_integer(op_json, "count", err)) return false;
+            // Both bounds are read explicitly here: int_in_range() ignores its lower bound for
+            // unsigned values (a parsed 0 arrives as unsigned), which would let `count: 0` through.
+            long long at = 0, count = 0;
+            if (!as_long_long(op_json.at("at_bar"), at) || at < 0 || at > kBarMax) {
+                err = "'at_bar' out of range"; return false;
+            }
+            if (!as_long_long(op_json.at("count"), count) || count < 1 || count > kBarsPerOpMax) {
+                err = "'count' out of range [1..4096]"; return false;
+            }
+            // Edit a copy, then let the save→parse validation below run on the result (no second ruleset).
+            Project q = p;
+            if (!shift_bars(q, insert, at, count, err)) return false;
+            j = project_to_json(q);
         } else if (name == "add_attachment") {
             // Same rules as op::add_attachment: valid_attachment (enforced by the parse below)
             // plus duplicate-path rejection (the only rule load_project does not enforce).

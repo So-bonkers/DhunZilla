@@ -467,3 +467,51 @@ ruleset). Argument checks, in this order, error strings `set_choke_group: <reaso
 `{"group": null}` clears the group and the canonical save then omits the key (byte-identical to a track that never had
 one). Setting the value it already has is a successful op (pushes an undo snapshot). Undo/redo: whole-project
 snapshots, byte-exact as for every op. `opd diff` emits this op (see §`opd diff` step 5).
+
+## Song-structure operations — additive (WP-0180)
+| op | arguments | effect |
+|---|---|---|
+| `insert_bars` | `at_bar`, `count` | open `count` empty bars at bar `at_bar`: later material moves later |
+| `delete_bars` | `at_bar`, `count` | remove bars `[at_bar, at_bar + count)`: later material moves earlier |
+
+Both follow the Apply semantics unchanged (strict keys, copy → edit → save→parse validation → commit). Both
+arguments are JSON **integers** (bars, `at_bar` 0-based); `4.0` is rejected. Let `a = at_bar`, `n = count`,
+`b = a + n`, `L = length_bars`. Error strings are `<op>: <reason>`; checks run in exactly this order, first hit wins:
+1. unknown key → `unknown argument '<key>'`;
+2. `at_bar` then `count`: absent → `missing argument '<key>'`; not an integer → `'<key>' must be an integer`;
+3. `at_bar` outside `[0, 1000000000]` → `'at_bar' out of range`;
+4. `count` outside `[1, 4096]` → `'count' out of range [1..4096]`;
+5. the project has a non-empty `tempo_map` → `tempo_map is not supported` (tempo points are not shifted; unsupported by design);
+6. `insert_bars`: `a > L` → `'at_bar' out of range` (`a == L` appends); `delete_bars`: `b > L` → `range exceeds length_bars`;
+7. `delete_bars`: the arrangement was non-empty and no clip would remain → `would remove every clip` (an empty
+   arrangement means "every pattern once at bar 0", so deletion must never produce one);
+8. the edited project goes through the model parse; deleting down to `L - n == 0` on a project with no clips gives
+   `length_bars must be > 0`.
+
+### `insert_bars` effect
+- `length_bars += n`.
+- Every clip with `start_bar >= a` gets `start_bar += n`. Clips with `start_bar < a` are unchanged even when they
+  extend past `a` (never split).
+- Loop region `[ls, le)` (when present): if `ls >= a` both bounds `+= n`; else if `le > a` only `le += n` (the loop
+  grows); else unchanged.
+- Tracks, patterns, notes, attachments, everything else: unchanged.
+
+### `delete_bars` effect
+Clip handling, evaluated per clip against the ORIGINAL values, arrangement order preserved:
+1. `start_bar >= b` → kept with `start_bar -= n`;
+2. `a <= start_bar < b` → removed;
+3. `start_bar < a` → kept with `repeats` replaced by the number of statements `i` in `[0, repeats)` for which
+   `start_bar + i * (pattern_extent(pattern) / beats_per_bar) < a` (computed in `double`; `pattern_extent` is
+   the pattern's explicit `length_beats`, else `max(t + dur)`, in beats). `i = 0` always qualifies, so at least one
+   statement stays. A kept statement that starts before `a` is never shortened, even if it ends after `a`.
+   `gain_db`, `pattern` are unchanged.
+Loop region `[ls, le)`: map each bound with `f(x) = x` for `x <= a`, `f(x) = a` for `a < x < b`, `f(x) = x - n` for
+`x >= b`. If `f(le) <= f(ls)` the loop is removed (as `clear_loop`); otherwise it becomes `[f(ls), f(le))`.
+Finally `length_bars -= n`.
+
+Undo/redo: whole-project snapshots, byte-exact as for every op; a rejected op changes nothing. 
+
+### `opd diff` and song structure (WP-0180)
+`opd diff` never emits `insert_bars` / `delete_bars`; the results of these ops are expressed with the existing ops
+(`set_length_bars`, clip and loop ops), exactly as §`opd diff` defines. It is a requirement that for any project `a`
+and `b = a` after one of these ops, `diff_projects(a, b)` succeeds and its journal reproduces `b` byte-for-byte.

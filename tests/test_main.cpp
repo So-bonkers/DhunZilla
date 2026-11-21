@@ -5601,6 +5601,382 @@ static void test_clip_fades() {
     }
 }
 
+// WP-0180: song-structure ops insert_bars / delete_bars (docs/spec/operations.md
+// §Song-structure operations). Clips and the loop region move with the cut, nothing else does;
+// every rejection leaves the project byte-for-byte unchanged; `opd diff` still reproduces the
+// result using existing operations only.
+static void test_insert_delete_bars() {
+    using nlohmann::json;
+    std::string err;
+
+    // Base project = the work-package example: 8 bars of 4/4, patterns p0/p1/p2 with extents
+    // 1 / 2 / 1.5 bars (explicit length_beats 4 / 8 / 6), six clips and a loop over [1, 5).
+    const std::string kBody =
+        R"("beats_per_bar":4,"tracks":[)"
+        R"({"name":"Drums","voice":{"kind":"metronome"}},)"
+        R"({"name":"Bass","voice":{"kind":"sine","freq_hz":110.0}},)"
+        R"({"name":"Lead","voice":{"kind":"sine","freq_hz":440.0}}],)"
+        R"("patterns":[)"
+        R"({"track":0,"length_beats":4.0,"notes":[{"t":0.0,"dur":0.25}]},)"
+        R"({"track":1,"length_beats":8.0,"notes":[{"t":0.0,"dur":0.5,"note":36}]},)"
+        R"({"track":2,"length_beats":6.0,"notes":[{"t":0.0,"dur":0.5,"note":60}]}])";
+    const std::string kClips =
+        R"(,"arrangement":[)"
+        R"({"pattern":0,"start_bar":0.0,"repeats":1},)"
+        R"({"pattern":0,"start_bar":2.0,"repeats":4},)"
+        R"({"pattern":1,"start_bar":3.0,"repeats":2},)"
+        R"({"pattern":2,"start_bar":1.0,"repeats":3,"gain_db":-3.0},)"
+        R"({"pattern":0,"start_bar":5.0,"repeats":1},)"
+        R"({"pattern":0,"start_bar":6.5,"repeats":1}])";
+    const std::string kLoop = R"(,"loop":{"start_bar":1.0,"end_bar":5.0})";
+    auto text_of = [&](const std::string& length_bars, const std::string& arrangement,
+                       const std::string& loop) {
+        return std::string(R"({"format_version":0,"bpm":120,"sample_rate":48000,"seed":42,)"
+                           R"("length_bars":)") +
+               length_bars + "," + kBody + arrangement + loop + "}";
+    };
+    const std::string base = text_of("8", kClips, kLoop);
+
+    auto starts_of = [](const op::Project& p) {
+        std::vector<double> v;
+        for (const op::Clip& c : p.arrangement) v.push_back(c.start_bar);
+        return v;
+    };
+    auto repeats_of = [](const op::Project& p) {
+        std::vector<int> v;
+        for (const op::Clip& c : p.arrangement) v.push_back(c.repeats);
+        return v;
+    };
+    // "pattern@start_bar xrepeats/gain_db;" per clip, in arrangement order — readable on failure.
+    auto clips_of = [](const op::Project& p) {
+        std::string s;
+        char buf[96];
+        for (const op::Clip& c : p.arrangement) {
+            std::snprintf(buf, sizeof buf, "%d@%g x%d/%+.4g;", c.pattern, c.start_bar, c.repeats,
+                          c.gain_db);
+            s += buf;
+        }
+        return s;
+    };
+    auto rejected_unchanged = [&](op::Project& p, const json& o, const std::string& want) {
+        const std::string before = op::project_bytes(p);
+        std::string e;
+        const bool ok = op::apply_op(p, o, e);
+        return !ok && e == want && op::project_bytes(p) == before;
+    };
+
+    // (1) The base project parses as described: 8 bars, 6 clips, loop [1, 5).
+    op::Project b;
+    CHECK(parse_text(base, b, err) && b.length_bars == 8.0 && b.arrangement.size() == 6 &&
+              b.loop && b.loop->start_bar == 1.0 && b.loop->end_bar == 5.0,
+          "sb.base_parses");
+
+    // (2) insert_bars in the middle: later clips move, earlier ones stay put, the loop grows.
+    op::Project q;
+    CHECK(parse_text(base, q, err) &&
+              op::apply_op(q, json{{"op", "insert_bars"}, {"at_bar", 3}, {"count", 2}}, err),
+          "sb.insert_mid_applies");
+    CHECK(q.length_bars == 10.0, "sb.insert_mid_length_grows_by_count");
+    CHECK(starts_of(q) == std::vector<double>({0.0, 2.0, 5.0, 1.0, 7.0, 8.5}),
+          "sb.insert_mid_starts_shifted");
+    CHECK(repeats_of(q) == std::vector<int>({1, 4, 2, 3, 1, 1}) && q.arrangement[3].gain_db == -3.0,
+          "sb.insert_mid_repeats_and_gain_untouched");
+    CHECK(q.loop && q.loop->start_bar == 1.0 && q.loop->end_bar == 7.0, "sb.insert_mid_loop_grows");
+    {  // the same project written out by hand parses to identical saved bytes
+        const std::string want = text_of(
+            "10",
+            R"(,"arrangement":[)"
+            R"({"pattern":0,"start_bar":0.0,"repeats":1},)"
+            R"({"pattern":0,"start_bar":2.0,"repeats":4},)"
+            R"({"pattern":1,"start_bar":5.0,"repeats":2},)"
+            R"({"pattern":2,"start_bar":1.0,"repeats":3,"gain_db":-3.0},)"
+            R"({"pattern":0,"start_bar":7.0,"repeats":1},)"
+            R"({"pattern":0,"start_bar":8.5,"repeats":1}])",
+            R"(,"loop":{"start_bar":1.0,"end_bar":7.0})");
+        op::Project w;
+        CHECK(parse_text(want, w, err) && saved_text(q) == saved_text(w),
+              "sb.insert_mid_bytes_match_handbuilt");
+    }
+
+    // (3) insert_bars at bar 0: every clip moves, the whole loop moves.
+    op::Project z;
+    CHECK(parse_text(base, z, err) &&
+              op::apply_op(z, json{{"op", "insert_bars"}, {"at_bar", 0}, {"count", 2}}, err) &&
+              z.length_bars == 10.0 &&
+              starts_of(z) == std::vector<double>({2.0, 4.0, 5.0, 3.0, 7.0, 8.5}),
+          "sb.insert_at_zero_shifts_every_clip");
+    CHECK(z.loop && z.loop->start_bar == 3.0 && z.loop->end_bar == 7.0,
+          "sb.insert_at_zero_moves_whole_loop");
+
+    // (4) insert_bars at length_bars appends: no clip and no loop bound moves.
+    op::Project ap;
+    CHECK(parse_text(base, ap, err) &&
+              op::apply_op(ap, json{{"op", "insert_bars"}, {"at_bar", 8}, {"count", 2}}, err) &&
+              ap.length_bars == 10.0 && ap.arrangement.size() == 6 &&
+              starts_of(ap) == std::vector<double>({0.0, 2.0, 3.0, 1.0, 5.0, 6.5}),
+          "sb.insert_at_length_appends");
+    CHECK(ap.loop && ap.loop->start_bar == 1.0 && ap.loop->end_bar == 5.0,
+          "sb.insert_at_length_loop_unchanged");
+
+    // (5) insert_bars at the loop start moves both bounds; at the loop end the loop stays put
+    //     (the cut opens after it) while a clip sitting exactly on the boundary still moves.
+    op::Project l1, l2;
+    CHECK(parse_text(base, l1, err) &&
+              op::apply_op(l1, json{{"op", "insert_bars"}, {"at_bar", 1}, {"count", 2}}, err) &&
+              l1.loop && l1.loop->start_bar == 3.0 && l1.loop->end_bar == 7.0 &&
+              starts_of(l1) == std::vector<double>({0.0, 4.0, 5.0, 3.0, 7.0, 8.5}),
+          "sb.insert_at_loop_start_moves_both_bounds");
+    CHECK(parse_text(base, l2, err) &&
+              op::apply_op(l2, json{{"op", "insert_bars"}, {"at_bar", 5}, {"count", 2}}, err) &&
+              l2.loop && l2.loop->start_bar == 1.0 && l2.loop->end_bar == 5.0 &&
+              starts_of(l2) == std::vector<double>({0.0, 2.0, 3.0, 1.0, 7.0, 8.5}),
+          "sb.insert_at_loop_end_loop_unchanged_boundary_clip_moves");
+
+    // (6) count 4096 is the accepted upper bound.
+    op::Project big;
+    CHECK(parse_text(base, big, err) &&
+              op::apply_op(big, json{{"op", "insert_bars"}, {"at_bar", 0}, {"count", 4096}}, err) &&
+              big.length_bars == 8.0 + 4096.0 && starts_of(big).front() == 4096.0,
+          "sb.insert_count_4096_accepted");
+
+    // (7) delete_bars of the work-package example: clip removed, repeats trimmed, later clips
+    //     shift earlier, gain kept, loop end pulled back to the cut.
+    op::Project d;
+    CHECK(parse_text(base, d, err) &&
+              op::apply_op(d, json{{"op", "delete_bars"}, {"at_bar", 3}, {"count", 2}}, err),
+          "sb.delete_example_applies");
+    CHECK(d.length_bars == 6.0, "sb.delete_length_shrinks_by_count");
+    CHECK(clips_of(d) == "0@0 x1/+0;0@2 x1/+0;2@1 x2/-3;0@3 x1/+0;0@4.5 x1/+0;",
+          "sb.delete_clips_removed_trimmed_shifted");
+    CHECK(d.loop && d.loop->start_bar == 1.0 && d.loop->end_bar == 3.0,
+          "sb.delete_loop_end_shifted_earlier");
+    {
+        const std::string want = text_of(
+            "6",
+            R"(,"arrangement":[)"
+            R"({"pattern":0,"start_bar":0.0,"repeats":1},)"
+            R"({"pattern":0,"start_bar":2.0,"repeats":1},)"
+            R"({"pattern":2,"start_bar":1.0,"repeats":2,"gain_db":-3.0},)"
+            R"({"pattern":0,"start_bar":3.0,"repeats":1},)"
+            R"({"pattern":0,"start_bar":4.5,"repeats":1}])",
+            R"(,"loop":{"start_bar":1.0,"end_bar":3.0})");
+        op::Project w;
+        CHECK(parse_text(want, w, err) && saved_text(d) == saved_text(w),
+              "sb.delete_bytes_match_handbuilt");
+    }
+
+    // (8) delete_bars that only cuts a gap: clips before keep their repeats, the clip starting in
+    //     the cut is dropped, later ones move earlier by count.
+    op::Project g;
+    CHECK(parse_text(base, g, err) &&
+              op::apply_op(g, json{{"op", "delete_bars"}, {"at_bar", 1}, {"count", 1}}, err) &&
+              g.length_bars == 7.0 &&
+              clips_of(g) == "0@0 x1/+0;0@1 x4/+0;1@2 x2/+0;0@4 x1/+0;0@5.5 x1/+0;",
+          "sb.delete_shifts_later_clips_earlier");
+
+    // (9) Loop region mapping on a clip-free project (length 8): the start is clamped to `a`, an
+    //     entirely swallowed loop is removed, a later loop moves earlier, an earlier one stays.
+    op::Project lc;
+    CHECK(parse_text(text_of("8", "", R"(,"loop":{"start_bar":2.0,"end_bar":6.0})"), lc, err) &&
+              op::apply_op(lc, json{{"op", "delete_bars"}, {"at_bar", 1}, {"count", 2}}, err) &&
+              lc.loop && lc.loop->start_bar == 1.0 && lc.loop->end_bar == 4.0,
+          "sb.delete_loop_start_clamped_to_cut");
+    op::Project lr;
+    CHECK(parse_text(text_of("8", "", R"(,"loop":{"start_bar":2.0,"end_bar":3.0})"), lr, err) &&
+              op::apply_op(lr, json{{"op", "delete_bars"}, {"at_bar", 2}, {"count", 1}}, err) &&
+              !lr.loop,
+          "sb.delete_loop_swallowed_is_removed");
+    op::Project lm;
+    CHECK(parse_text(text_of("8", "", R"(,"loop":{"start_bar":5.0,"end_bar":7.0})"), lm, err) &&
+              op::apply_op(lm, json{{"op", "delete_bars"}, {"at_bar", 1}, {"count", 2}}, err) &&
+              lm.loop && lm.loop->start_bar == 3.0 && lm.loop->end_bar == 5.0,
+          "sb.delete_loop_after_cut_shifts");
+    op::Project lu;
+    CHECK(parse_text(text_of("8", "", R"(,"loop":{"start_bar":1.0,"end_bar":2.0})"), lu, err) &&
+              op::apply_op(lu, json{{"op", "delete_bars"}, {"at_bar", 3}, {"count", 2}}, err) &&
+              lu.loop && lu.loop->start_bar == 1.0 && lu.loop->end_bar == 2.0,
+          "sb.delete_loop_before_cut_unchanged");
+
+    // (10) A kept statement that starts before the cut is never shortened: a 2-bar clip at bar 2
+    //      survives delete(3,1) whole, and its pattern notes are untouched.
+    op::Project st;
+    CHECK(parse_text(text_of("8", R"(,"arrangement":[{"pattern":1,"start_bar":2.0,"repeats":1}])", ""),
+                     st, err) &&
+              op::apply_op(st, json{{"op", "delete_bars"}, {"at_bar", 3}, {"count", 1}}, err) &&
+              st.length_bars == 7.0 && clips_of(st) == "1@2 x1/+0;" &&
+              st.patterns[1].length_beats && *st.patterns[1].length_beats == 8.0 &&
+              st.patterns[1].notes.size() == 1,
+          "sb.delete_straddling_statement_kept_not_trimmed");
+
+    // (10b) Statement spacing comes from pattern_extent: derived from the notes when a pattern has
+    //       no explicit length_beats, and an empty pattern (extent 0) keeps all of its repeats.
+    const std::string derived =
+        std::string(R"({"format_version":0,"bpm":120,"sample_rate":48000,"seed":42,"length_bars":8,)"
+                    R"("beats_per_bar":4,"tracks":[{"name":"T","voice":{"kind":"sine"}}],)"
+                    R"("patterns":[)"
+                    R"({"track":0,"notes":[{"t":0.0,"dur":2.0}]},)"
+                    R"({"track":0,"notes":[]}],)"
+                    R"("arrangement":[)"
+                    R"({"pattern":0,"start_bar":1.0,"repeats":4},)"
+                    R"json({"pattern":1,"start_bar":0.5,"repeats":3}]})json");
+    op::Project dv;
+    CHECK(parse_text(derived, dv, err) && op::pattern_extent(dv.patterns[0]) == 2.0 &&
+              op::pattern_extent(dv.patterns[1]) == 0.0,
+          "sb.derived_extents_are_as_expected");
+    op::Project dt;
+    CHECK(parse_text(derived, dt, err) &&
+              op::apply_op(dt, json{{"op", "delete_bars"}, {"at_bar", 2}, {"count", 1}}, err) &&
+              dt.length_bars == 7.0 && clips_of(dt) == "0@1 x2/+0;1@0.5 x3/+0;",
+          "sb.delete_trims_by_derived_extent_empty_pattern_keeps_all");
+
+    // (11) Legacy project without an arrangement: insert keeps the key absent, delete shortens.
+    const std::string legacy = text_of("4", "", "");
+    op::Project lg;
+    CHECK(parse_text(legacy, lg, err) && lg.arrangement.empty() &&
+              op::apply_op(lg, json{{"op", "insert_bars"}, {"at_bar", 2}, {"count", 3}}, err) &&
+              lg.length_bars == 7.0 && lg.arrangement.empty() &&
+              saved_text(lg).find("arrangement") == std::string::npos,
+          "sb.legacy_insert_keeps_arrangement_absent");
+    op::Project ld;
+    CHECK(parse_text(legacy, ld, err) &&
+              op::apply_op(ld, json{{"op", "delete_bars"}, {"at_bar", 1}, {"count", 3}}, err) &&
+              ld.length_bars == 1.0 && saved_text(ld).find("arrangement") == std::string::npos,
+          "sb.legacy_delete_shortens_length");
+
+    // (12) Argument checks in spec order; every rejection leaves the project bytes untouched.
+    op::Project r;
+    CHECK(parse_text(base, r, err), "sb.rules_base_parse");
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", 1}, {"count", 2}, {"oops", 1}},
+                             "insert_bars: unknown argument 'oops'"),
+          "sb.err_unknown_argument_insert");
+    CHECK(rejected_unchanged(r, json{{"op", "delete_bars"}, {"at_bar", 1}, {"count", 2}, {"oops", 1}},
+                             "delete_bars: unknown argument 'oops'"),
+          "sb.err_unknown_argument_delete");
+    // Unknown key is checked before the arguments are present at all.
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"oops", 1}},
+                             "insert_bars: unknown argument 'oops'"),
+          "sb.err_unknown_key_before_missing_argument");
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"count", 2}},
+                             "insert_bars: missing argument 'at_bar'"),
+          "sb.err_missing_at_bar");
+    {  // `1.0` is a JSON float: rejected even though integral
+        const json o = json::parse(R"({"op":"insert_bars","at_bar":1.0,"count":2})");
+        CHECK(rejected_unchanged(r, o, "insert_bars: 'at_bar' must be an integer"),
+              "sb.err_at_bar_float_rejected");
+    }
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", 1}},
+                             "insert_bars: missing argument 'count'"),
+          "sb.err_missing_count");
+    {
+        const json o = json::parse(R"({"op":"delete_bars","at_bar":1,"count":2.5})");
+        CHECK(rejected_unchanged(r, o, "delete_bars: 'count' must be an integer"),
+              "sb.err_count_not_integer");
+    }
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", -1}, {"count", 2}},
+                             "insert_bars: 'at_bar' out of range"),
+          "sb.err_at_bar_negative");
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", 1000000001}, {"count", 2}},
+                             "insert_bars: 'at_bar' out of range"),
+          "sb.err_at_bar_above_max");
+    {  // count == 0 arrives as an UNSIGNED JSON value: the lower bound must still be enforced
+        const json oi = json::parse(R"({"op":"insert_bars","at_bar":1,"count":0})");
+        const json od = json::parse(R"({"op":"delete_bars","at_bar":1,"count":0})");
+        CHECK(rejected_unchanged(r, oi, "insert_bars: 'count' out of range [1..4096]"),
+              "sb.err_count_zero_insert_rejected");
+        CHECK(rejected_unchanged(r, od, "delete_bars: 'count' out of range [1..4096]"),
+              "sb.err_count_zero_delete_rejected");
+    }
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", 1}, {"count", -2}},
+                             "insert_bars: 'count' out of range [1..4096]"),
+          "sb.err_count_negative");
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", 1}, {"count", 4097}},
+                             "insert_bars: 'count' out of range [1..4096]"),
+          "sb.err_count_above_max");
+    // count is range-checked before the project-dependent past-the-end check (99 <= 1e9 passes).
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", 99}, {"count", 0}},
+                             "insert_bars: 'count' out of range [1..4096]"),
+          "sb.err_count_range_before_past_end_check");
+    CHECK(rejected_unchanged(r, json{{"op", "insert_bars"}, {"at_bar", 9}, {"count", 1}},
+                             "insert_bars: 'at_bar' out of range"),
+          "sb.err_insert_past_end");
+    CHECK(rejected_unchanged(r, json{{"op", "delete_bars"}, {"at_bar", 7}, {"count", 2}},
+                             "delete_bars: range exceeds length_bars"),
+          "sb.err_delete_range_exceeds_length");
+    CHECK(rejected_unchanged(r, json{{"op", "delete_bars"}, {"at_bar", 0}, {"count", 8}},
+                             "delete_bars: would remove every clip"),
+          "sb.err_would_remove_every_clip");
+
+    // (13) A non-empty tempo map is refused before any project-dependent range check.
+    op::Project tm;
+    CHECK(parse_text(text_of("8", kClips, R"(,"tempo_map":[{"bar":0.0,"bpm":120.0},{"bar":4.0,"bpm":90.0}])"),
+                     tm, err),
+          "sb.tempo_base_parse");
+    CHECK(rejected_unchanged(tm, json{{"op", "insert_bars"}, {"at_bar", 2}, {"count", 1}},
+                             "insert_bars: tempo_map is not supported"),
+          "sb.err_tempo_map_insert");
+    CHECK(rejected_unchanged(tm, json{{"op", "delete_bars"}, {"at_bar", 2}, {"count", 1}},
+                             "delete_bars: tempo_map is not supported"),
+          "sb.err_tempo_map_delete");
+    CHECK(rejected_unchanged(tm, json{{"op", "insert_bars"}, {"at_bar", 99}, {"count", 1}},
+                             "insert_bars: tempo_map is not supported"),
+          "sb.err_tempo_map_before_past_end_check");
+
+    // (14) Deleting a clip-free project down to zero bars fails in the model parse.
+    op::Project lz;
+    CHECK(parse_text(legacy, lz, err) &&
+              rejected_unchanged(lz, json{{"op", "delete_bars"}, {"at_bar", 0}, {"count", 4}},
+                                 "delete_bars: length_bars must be > 0"),
+          "sb.err_delete_to_zero_length");
+
+    // (15) History: undo and redo restore the exact bytes; a rejected op changes nothing at all.
+    op::Project h;
+    CHECK(parse_text(base, h, err), "sb.history_base_parse");
+    const std::string bytes0 = saved_text(h);
+    op::History hist;
+    CHECK(hist.apply(h, json{{"op", "insert_bars"}, {"at_bar", 3}, {"count", 2}}, err) &&
+              hist.undo_depth() == 1 && saved_text(h) != bytes0,
+          "sb.history_insert_pushes_one_snapshot");
+    const std::string bytes1 = saved_text(h);
+    CHECK(hist.undo(h) && saved_text(h) == bytes0, "sb.history_undo_byte_exact");
+    CHECK(hist.redo(h) && saved_text(h) == bytes1, "sb.history_redo_byte_exact");
+    // (the project is the 10-bar one from the redo, so bars [9, 11) run past its end)
+    CHECK(!hist.apply(h, json{{"op", "delete_bars"}, {"at_bar", 9}, {"count", 2}}, err) &&
+              hist.undo_depth() == 1 && saved_text(h) == bytes1,
+          "sb.history_rejected_leaves_depth_and_bytes");
+    CHECK(hist.apply(h, json{{"op", "delete_bars"}, {"at_bar", 3}, {"count", 2}}, err) &&
+              hist.undo_depth() == 2 && hist.undo(h) && saved_text(h) == bytes1,
+          "sb.history_delete_undo_byte_exact");
+
+    // (16) opd diff never emits these ops, but its journal reproduces the result byte-for-byte.
+    op::Project after_ins;
+    CHECK(parse_text(base, after_ins, err) &&
+              op::apply_op(after_ins, json{{"op", "insert_bars"}, {"at_bar", 3}, {"count", 2}}, err),
+          "sb.diff_insert_base_ready");
+    std::vector<json> ops;
+    CHECK(op::diff_projects(b, after_ins, ops, err) && !ops.empty(), "sb.diff_insert_succeeds");
+    const std::string journal = journal_text(ops);
+    CHECK(journal.find("insert_bars") == std::string::npos &&
+              journal.find("delete_bars") == std::string::npos,
+          "sb.diff_emits_no_song_structure_ops");
+    op::Project replay = b;
+    CHECK(op::apply_journal(replay, journal, err) && saved_text(replay) == saved_text(after_ins),
+          "sb.diff_insert_replay_byte_exact");
+
+    op::Project after_del;
+    CHECK(parse_text(base, after_del, err) &&
+              op::apply_op(after_del, json{{"op", "delete_bars"}, {"at_bar", 3}, {"count", 2}}, err),
+          "sb.diff_delete_base_ready");
+    std::vector<json> ops2;
+    CHECK(op::diff_projects(b, after_del, ops2, err) && !ops2.empty(), "sb.diff_delete_succeeds");
+    const std::string journal2 = journal_text(ops2);
+    CHECK(journal2.find("insert_bars") == std::string::npos &&
+              journal2.find("delete_bars") == std::string::npos,
+          "sb.diff_delete_emits_no_song_structure_ops");
+    op::Project replay2 = b;
+    CHECK(op::apply_journal(replay2, journal2, err) && saved_text(replay2) == saved_text(after_del),
+          "sb.diff_delete_replay_byte_exact");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -5644,6 +6020,7 @@ int main() {
     test_pattern_length();
     test_new_project();
     test_pattern_swing();
+    test_insert_delete_bars();
     test_sampler_repitch();
     test_sample_index();
     test_duplicate_pattern();
