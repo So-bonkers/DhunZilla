@@ -112,7 +112,8 @@ a zero-byte file (exit 0). Operations are emitted in this fixed order (output is
 3. `remove_track` likewise;
 4. `set_bpm`, `set_length_bars`, `set_master_gain` (each only if different);
 5. for track i = 0.. (i < min track count), only those that differ, in this order: `rename_track`,
-   `set_track_gain`, `set_track_pan`, `set_track_mute`, `set_track_solo` (mute/solo absent = false);
+   `set_track_gain`, `set_track_pan`, `set_track_mute`, `set_track_solo` (mute/solo absent = false), then (WP-0181)
+   `set_choke_group` if the track's `choke_group` differs (absent = none; `group` = b's value, `null` when b's is absent);
 6. `add_track` for b's extra tracks, ascending (`track` = b's canonical track JSON);
 7. for pattern i = 0.. (i < min pattern count): let k = length of the longest common prefix of a's and b's
    note lists; `remove_note` for a's note indices `size-1` down to k (descending), then `add_note` for b's
@@ -137,6 +138,8 @@ journal bytes as before WP-0159.
 Projects whose patterns all have equal `swing` produce exactly the same journals as before WP-0166.
 Projects whose clips all have equal fades produce exactly the same journals as before WP-0178
 (a clip pair where neither side has a fade key, or both sides carry identical values).
+
+Projects whose tracks all have equal `choke_group` produce exactly the same journals as before WP-0181.
 
 Finally `diff_projects` applies its own journal to a copy of `a` and returns false with
 `unsupported difference: (journal does not reproduce target)` if the result is not equal to `b` (safety
@@ -446,3 +449,21 @@ An id difference on a **shared** pattern index cannot be expressed — no operat
 unsupported difference: `patterns[i].id`, checked immediately after `patterns[i].track` for i ascending (first hit
 reports; absent counts as "unnamed", so present-vs-absent differs too). Projects whose patterns all have equal ids
 produce exactly the same journal bytes as before WP-0179.
+
+## Choke group operation — additive (WP-0181)
+| op | arguments | effect |
+|---|---|---|
+| `set_choke_group` | `index`, `group` | set (or clear) the choke group of `tracks[index]` (semantics: `docs/spec/project-model.md` §Sampler choke groups) |
+
+Follows the Apply semantics unchanged (strict keys, copy → JSON edit → save→parse validation → commit; no second
+ruleset). Argument checks, in this order, error strings `set_choke_group: <reason>`:
+1. unknown key → `unknown argument '<key>'`;
+2. `index` an integer in `[0, #tracks)` (existing `arg_index` messages);
+3. `group` required (`missing argument 'group'`) and a JSON integer or `null` (anything else, including `1.5` and
+   strings → `'group' must be an integer or null`);
+4. the track's voice must be a sampler → `track is not a sampler voice` (also for `null`);
+5. the edit writes `tracks[index].choke_group = group` (or removes the key for `null`), then the model parse enforces the
+   range, giving `set_choke_group: track.choke_group must be an integer in [1, 16]` for e.g. `0` or `17`.
+`{"group": null}` clears the group and the canonical save then omits the key (byte-identical to a track that never had
+one). Setting the value it already has is a successful op (pushes an undo snapshot). Undo/redo: whole-project
+snapshots, byte-exact as for every op. `opd diff` emits this op (see §`opd diff` step 5).

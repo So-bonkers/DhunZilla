@@ -64,12 +64,17 @@ add_executable(op_limiter_tests tests/test_limiter.cpp)
 target_link_libraries(op_limiter_tests PRIVATE opengine)
 add_test(NAME limiter COMMAND op_limiter_tests)
 
+add_executable(op_choke_tests tests/test_choke.cpp)
+target_link_libraries(op_choke_tests PRIVATE opengine)
+add_test(NAME choke COMMAND op_choke_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
 list(APPEND DZ_OUR_TARGETS op_normalize_tests)  # WP-0169
 list(APPEND DZ_OUR_TARGETS op_lint_tests)  # WP-0170
 list(APPEND DZ_OUR_TARGETS op_peaks_tests)  # WP-0171
+list(APPEND DZ_OUR_TARGETS op_choke_tests)  # WP-0181
 list(APPEND DZ_OUR_TARGETS op_limiter_tests)  # WP-0176
 
 if(DZ_WERROR)

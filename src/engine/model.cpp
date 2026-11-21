@@ -194,7 +194,27 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
             if (!tj.at("solo").is_boolean()) { err = "track.solo must be a boolean"; return false; }
             t.solo = tj.at("solo").get<bool>();
         }
+        // Sampler choke group (WP-0181, spec project-model.md §Sampler choke groups): checked right
+        // after solo, before the voice. Only a JSON integer in 1..16 passes — same unsigned/signed
+        // read pattern as voice.root_note above; null/string/float/bool/out-of-range share one message.
+        if (tj.contains("choke_group")) {
+            const json& cg = tj.at("choke_group");
+            bool ok = false;
+            if (cg.is_number_integer()) {
+                if (cg.is_number_unsigned()) ok = cg.get<uint64_t>() >= 1 && cg.get<uint64_t>() <= 16;
+                else {
+                    const long long iv = cg.get<long long>();
+                    ok = iv >= 1 && iv <= 16;
+                }
+            }
+            if (!ok) { err = "track.choke_group must be an integer in [1, 16]"; return false; }
+            t.choke_group = static_cast<int>(cg.get<long long>());
+        }
         if (!parse_voice(tj.value("voice", json::object()), t.voice, err)) return false;
+        // Checked after the voice parsed (spec §Sampler choke groups rule 2).
+        if (t.choke_group != 0 && t.voice.kind != VoiceKind::Sampler) {
+            err = "track.choke_group is only valid for sampler tracks"; return false;
+        }
         p.tracks.push_back(std::move(t));
     }
 
@@ -507,6 +527,7 @@ json project_to_json(const Project& p) {
         tj["pan"] = t.pan;
         if (t.mute) tj["mute"] = true;  // omitted at default → legacy canonical bytes unchanged
         if (t.solo) tj["solo"] = true;
+        if (t.choke_group != 0) tj["choke_group"] = t.choke_group;  // WP-0181: omitted when none → legacy bytes
         tj["voice"] = voice_to_json(t.voice);
         tracks.push_back(std::move(tj));
     }

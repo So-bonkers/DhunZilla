@@ -1,0 +1,74 @@
+{
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 1.0,
+  "patterns": [
+    {
+      "notes": [
+        {
+          "dur": 1.0,
+          "t": 0.0
+        },
+        {
+          "dur": 1.0,
+          "t": 1.0
+        },
+        {
+          "dur": 1.0,
+          "t": 2.0
+        },
+        {
+          "dur": 1.0,
+          "t": 3.5625
+        }
+      ],
+      "track": 0
+    },
+    {
+      "notes": [
+        {
+          "dur": 0.25,
+          "t": 0.125
+        },
+        {
+          "dur": 0.25,
+          "t": 1.0
+        },
+        {
+          "dur": 0.25,
+          "t": 3.0
+        },
+        {
+          "dur": 0.25,
+          "t": 3.5
+        }
+      ],
+      "track": 1
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 7,
+  "tracks": [
+    {
+      "choke_group": 1,
+      "gain_db": 0.0,
+      "name": "OpenHat",
+      "pan": 0.0,
+      "voice": {
+        "kind": "sampler",
+        "path": "kits/saw48k.wav"
+      }
+    },
+    {
+      "choke_group": 1,
+      "gain_db": 0.0,
+      "name": "ClosedHat",
+      "pan": 0.0,
+      "voice": {
+        "kind": "sampler",
+        "path": "kits/ramp48k.wav"
+      }
+    }
+  ]
+}

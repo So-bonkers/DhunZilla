@@ -220,6 +220,19 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
                 !has_bool(op_json, "solo", err)) return false;
             j["tracks"][idx]["solo"] = op_json.at("solo");
+        } else if (name == "set_choke_group") {  // WP-0181; range checks come from the model parse below
+            if (!check_keys(op_json, {"index", "group"}, err)) return false;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err)) return false;
+            if (!op_json.contains("group")) { err = "missing argument 'group'"; return false; }
+            const json& group_v = op_json.at("group");
+            if (!group_v.is_number_integer() && !group_v.is_null()) {  // 1.0 is rejected: integer or null only
+                err = "'group' must be an integer or null"; return false;
+            }
+            if (j["tracks"][idx]["voice"].value("kind", std::string{}) != "sampler") {
+                err = "track is not a sampler voice"; return false;  // also for group = null
+            }
+            if (group_v.is_null()) j["tracks"][idx].erase("choke_group");  // null clears: canonical save omits the key
+            else j["tracks"][idx]["choke_group"] = group_v;
         } else if (name == "set_master_gain") {  // range checked by the parse below (no second ruleset)
             if (!check_keys(op_json, {"gain_db"}, err) || !has_number(op_json, "gain_db", err)) return false;
             j["master_gain_db"] = op_json.at("gain_db");
@@ -612,6 +625,11 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
         const json& solo_b = field_or(tb, "solo", kFalse);
         if (field_or(ta, "solo", kFalse) != solo_b)
             ops.push_back({{"op", "set_track_solo"}, {"index", i}, {"solo", solo_b}});
+        // Choke group (WP-0181, spec §opd diff step 5): absent = none; b's value or null.
+        static const json kNoGroup = nullptr;
+        const json& cg_b = field_or(tb, "choke_group", kNoGroup);
+        if (field_or(ta, "choke_group", kNoGroup) != cg_b)
+            ops.push_back({{"op", "set_choke_group"}, {"index", i}, {"group", cg_b}});
     }
     for (std::size_t i = tracks_a.size(); i < tracks_b.size(); ++i)
         ops.push_back({{"op", "add_track"}, {"track", tracks_b[i]}});

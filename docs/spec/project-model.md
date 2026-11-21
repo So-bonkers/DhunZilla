@@ -635,3 +635,44 @@ for humans, the GUI and the copilot. It does **not** replace index addressing: e
   `add_pattern` (a pattern JSON may carry `id`; a duplicate one is refused by rule 4 above). No rename
   operation exists yet, so `opd diff` reports an id difference on a shared pattern as
   `unsupported difference: patterns[i].id`.
+
+## Sampler choke groups — additive (WP-0181)
+A **sampler track** may carry an optional integer `choke_group` (a **track-level** key, next to `mute`/`solo`, NOT inside
+`voice`): `{"name": "OpenHat", "choke_group": 1, "voice": {"kind": "sampler", "path": "..."}}`. Tracks that share the same
+group number choke each other, like an open and a closed hi-hat: when a note of one track starts, the voices of the
+other tracks of the group that are still sounding are cut with a short fade. Absent = no group (`0` internally).
+
+**Validation** (project parse, same path as `load_project` and operations; checked in this order, first failure wins):
+1. `choke_group` present but not a JSON integer in `1..16` (a string, a float such as `1.0`, `null`, a boolean, `0`,
+   `17`, `-1`) → `track.choke_group must be an integer in [1, 16]` (checked right after `solo`, before the voice);
+2. `choke_group` on a track whose voice is not a sampler → `track.choke_group is only valid for sampler tracks`
+   (checked after the voice parsed).
+**Canonical save** writes `choke_group` (after `solo`, before `voice`) only when the track has one; every existing file
+and golden round-trips byte-identically. Operation: `set_choke_group` (see `operations.md`).
+
+**Render semantics (normative).** Definitions, per render of the whole project (mix, stems, app playback alike):
+- A **trigger** is any note of a track that has a `choke_group` and is **audible** (`track_audible`, spec §mixer —
+  evaluated on the whole project, so a muted track neither sounds nor triggers, and a stem render sees exactly the
+  same triggers as the mix) whose start frame `s` satisfies `s < total_samples`. The start frame is the one the
+  renderer computes for placement anyway (clips, repeats, tempo map and pattern swing included). Velocity, `dur`,
+  pitch and the sample's length do not matter: every such note is a trigger.
+- A **voice** is one note of a sampler track with a `choke_group`, started at frame `s`. Its **cut frame** `c` is the
+  smallest trigger start frame `c` with `c > s` (strictly greater) among the triggers of the **same group** that
+  belong to a **different track**; no such trigger → the voice is never cut. Notes of the same track never cut each
+  other; triggers of other groups are ignored; a trigger on the very same frame `s` does not cut (so two
+  simultaneous hits both sound and the result does not depend on track order).
+- **Fade.** `F = max(1, sample_rate * 5 / 1000)` frames (integer division; **5 ms**: 240 frames at 48000 Hz, 220 at
+  44100 Hz). For an output frame `f` of the voice: `f < c` → unchanged; `c <= f < c + F` → the voice's contribution
+  (the sample after trim/repitch, multiplied by track gain, pan, clip gain and velocity exactly as today) is
+  multiplied by the linear gain `g = float(F - d) / float(F)` with `d = f - c` (so `g = 1.0` at `f = c`, `g = 1/F`
+  at `f = c + F - 1`); `f >= c + F` → the voice adds nothing. A voice that ends before `c + F` simply ends
+  (a trigger after the voice's natural end changes nothing).
+- Only the voice's own contribution is faded; the triggering note and every other voice play normally, and the
+  cut is applied per voice, so a voice already fading is never restarted by a later trigger (the earliest `c` wins).
+- With no `choke_group` anywhere the render is the existing path, byte for byte (committed goldens prove it).
+  The multiplication order of a faded sample is `(sample * track_gain_channel) * g` in `float`; checks compare
+  with a tolerance, not bit-exactly.
+Example (120 bpm, 48 kHz, tracks `Open` = long asset and `Closed` = short asset, both `choke_group: 1`): `Open` note at
+beat 0 and `Closed` note at beat 0.125 (frame 3000) → `Open` plays frames 0..2999 unchanged, then fades linearly to
+silence over frames 3000..3239 and is silent from frame 3240; `Closed` plays normally from frame 3000.
+New golden `tests/fixtures/goldens/sampler_choke.{opj,wav}` covers open/closed hi-hat (see WP-0181 task).

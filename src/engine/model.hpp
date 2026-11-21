@@ -82,6 +82,7 @@ struct Track {
     float pan = 0.0f;            // -1..1 equal-power, validated at parse (WP-0136)
     bool mute = false;           // mixer (spec §mixer): silent regardless of solo; omitted at default
     bool solo = false;           // mixer: when any track solos, only non-muted solo tracks are audible
+    int choke_group = 0;         // sampler choke group 1..16 (WP-0181); 0 = none
     Voice voice;
 };
 
