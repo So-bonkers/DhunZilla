@@ -12,6 +12,11 @@
 // the very bottom: a status line showing the audio device (or the last error) — empty in snapshot
 // mode.
 //
+// Channel rack (WP-0195): below the track rows, one 16-step row per project pattern (built once
+// from doc.project().patterns). A cell click reads its step from the model via op::step_grid and
+// applies the set_step operation through Document::apply — one click = one undo entry; refresh()
+// re-reads every cell's lit state from the model, so the widgets hold no step state of their own.
+//
 // Two flavours (WP-0153): with `playback == nullptr` (headless --snapshot) the transport buttons
 // stay disabled, no timer runs, the status line stays empty and the position reads "1.1". With a
 // controller: Play/Stop are wired, and a 30 Hz timer reclaims retired buffers, re-renders when the
@@ -55,6 +60,9 @@ public:
     static constexpr int kHeight = 700;
     static constexpr int kTransportHeight = 56;
     static constexpr int kRowHeight = 48;
+    static constexpr int kRackSteps = 16;      // step cells per rack row
+    static constexpr int kRackRowHeight = 32;  // rack row pitch
+    static constexpr int kRackCellPitch = 36;  // cell-to-cell distance; each cell is 32x24
 
     // `doc` must outlive this component and is mutated by every edit. The row widgets are built
     // once here — one per track, in Document::track_rows() order — and refresh() only re-reads
@@ -88,6 +96,17 @@ public:
     double widgetValue(const std::string& what, int track) const;
     int trackCount() const;
 
+    // --- channel rack (WP-0195): scripted driving and verification of the step cells ---
+    // Invokes the cell's onClick() std::function directly (never triggerClick()): exactly one
+    // `set_step` through Document::apply. On a bad index returns false and sets err to EXACTLY:
+    //   "pattern index <p> out of range (0..<n-1>)"   (n = patternCount(); checked first)
+    //   "step index <s> out of range (0..15)"
+    bool scriptStep(int pattern, int step, std::string& err);
+    // The 16 cells' ACTUAL toggle states as a 16-char string of 'x' (lit) and '.' (unlit);
+    // "" for a bad index.
+    std::string gridText(int pattern) const;
+    int patternCount() const;   // number of rack rows = project().patterns.size() when the component was built
+
     // Fired at the end of every refresh(); the window uses it to re-check menu enablement.
     std::function<void()> onDocumentChanged;
 
@@ -97,6 +116,7 @@ public:
 
 private:
     struct RowWidgets;  // defined in the .cpp: name label, gain/pan sliders, M/S buttons
+    struct RackRow;     // defined in the .cpp (WP-0195): a juce::Label name + kRackSteps cells
 
     // 30 Hz (only started with a controller): reclaim retired buffers, re-render after any model
     // change while playing, refresh the bar.beat position and the device/error status line.
@@ -109,6 +129,12 @@ private:
     juce::Label bpm_, position_, status_;
     std::uint64_t requested_revision_ = 0;  // doc.revision() at the last render request
     std::vector<std::unique_ptr<RowWidgets>> rows_;
+
+    // Channel rack (WP-0195): one row per pattern, built once in the constructor; lit states live
+    // only in the model (refresh() pushes them into the cells). rack_top_ is the y of the first
+    // rack row, computed in resized().
+    std::vector<std::unique_ptr<RackRow>> rack_;
+    int rack_top_ = 0;
 
     // Full-width row rectangles computed in resized(); paintOverChildren() washes the inaudible
     // ones. Sized to match rows_ (empty until the first resized()).

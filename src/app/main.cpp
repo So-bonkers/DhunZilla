@@ -27,6 +27,7 @@
 // is '#' are skipped; tokens separated by spaces/tabs):
 //   drag gain <track> <db> | drag pan <track> <pan>        — a full gesture: ONE undo entry
 //   click mute <track>     | click solo <track>            — one toggle = one undo entry
+//   click step <pattern> <step>                            — scriptStep(): ONE set_step through the Document (WP-0195)
 //   undo | redo | save                                     — doUndo/doRedo/doSave; false → exit 6
 //   key ctrl+z | key ctrl+shift+z | key ctrl+s             — handleKey(); never fails at runtime
 //   expect undo|redo|dirty <0|1>                           — Document flags must equal the value
@@ -34,6 +35,8 @@
 //   expect mute|solo <track> <0|1>                         — model flags equal
 //   expect widget gain|pan <track> <v>                     — actual widget value within 0.001
 //   expect widget mute|solo <track> <0|1>                  — actual widget toggle state
+//   expect grid <pattern> <16 chars of x/.>                — the MODEL: op::step_grid(project().patterns[pattern], 16) (WP-0195)
+//   expect widget grid <pattern> <16 chars of x/.>         — the WIDGETS: component.gridText(pattern) (WP-0195)
 // The WHOLE file is parsed before any command runs (syntax errors → exit 4). On success stdout
 // gets one line per executed command: `[<line>] <tokens…> undo=<0|1> redo=<0|1> dirty=<0|1>`
 // (flags read AFTER the command), then the two WP-0143 snapshot lines if --snapshot, then
@@ -144,6 +147,7 @@ enum class Cmd {
     expectUndo, expectRedo, expectDirty,
     expectGain, expectPan, expectMute, expectSolo,
     expectWidgetGain, expectWidgetPan, expectWidgetMute, expectWidgetSolo,
+    clickStep, expectGrid, expectWidgetGrid,  // channel rack (WP-0195)
 };
 
 struct ScriptCommand {
@@ -153,6 +157,9 @@ struct ScriptCommand {
     int track = 0;                   // <track> for drag/click/track-expects
     double value = 0.0;              // <db>/<pan>/<v> for numeric commands and expects
     bool flag = false;               // <0|1> for boolean expects
+    int pattern = 0;                 // <pattern> for click step / grid expects (WP-0195)
+    int step = 0;                    // <step> for click step (WP-0195)
+    std::string grid;                // the validated 16-char x/. string for grid expects (WP-0195)
 };
 
 // Split on spaces/tabs only (the script grammar's separators); empty tokens never appear.
@@ -201,6 +208,16 @@ bool parseBool(const std::string& tok, bool& out) {
     return false;
 }
 
+// A grid string for the WP-0195 rack commands: exactly 16 characters, each 'x' or '.'.
+bool parseGrid(const std::string& tok, std::string& out) {
+    if (tok.size() != 16) return false;
+    for (const char c : tok) {
+        if (c != 'x' && c != '.') return false;
+    }
+    out = tok;
+    return true;
+}
+
 // Parse the WHOLE script before anything runs. Returns 0 on success, or 4 with `reason` set and
 // `bad_line` holding the offending 1-based line number.
 int parseScript(const std::string& text, std::vector<ScriptCommand>& out, int& bad_line,
@@ -240,12 +257,22 @@ int parseScript(const std::string& text, std::vector<ScriptCommand>& out, int& b
             if (!parseNumber(toks[3], sc.value))
                 return fail(line_no, "expected a number, got '" + toks[3] + "'");
         } else if (c0 == "click") {
-            if (toks.size() != 3) return fail(line_no, "'click' expects 'mute|solo <track>'");
-            if (toks[1] == "mute")      sc.cmd = Cmd::clickMute;
-            else if (toks[1] == "solo") sc.cmd = Cmd::clickSolo;
-            else return fail(line_no, "unknown click control '" + toks[1] + "'");
-            if (!parseTrack(toks[2], sc.track))
-                return fail(line_no, "expected a track index, got '" + toks[2] + "'");
+            if (toks.size() >= 2 && toks[1] == "step") {  // channel rack cell (WP-0195)
+                if (toks.size() != 4)
+                    return fail(line_no, "'click step' expects '<pattern> <step>'");
+                sc.cmd = Cmd::clickStep;
+                if (!parseTrack(toks[2], sc.pattern))
+                    return fail(line_no, "expected a pattern index, got '" + toks[2] + "'");
+                if (!parseTrack(toks[3], sc.step))
+                    return fail(line_no, "expected a step index, got '" + toks[3] + "'");
+            } else {  // click mute|solo — exactly as before (WP-0152)
+                if (toks.size() != 3) return fail(line_no, "'click' expects 'mute|solo <track>'");
+                if (toks[1] == "mute")      sc.cmd = Cmd::clickMute;
+                else if (toks[1] == "solo") sc.cmd = Cmd::clickSolo;
+                else return fail(line_no, "unknown click control '" + toks[1] + "'");
+                if (!parseTrack(toks[2], sc.track))
+                    return fail(line_no, "expected a track index, got '" + toks[2] + "'");
+            }
         } else if (c0 == "undo") {
             if (toks.size() != 1) return fail(line_no, "'undo' takes no arguments");
             sc.cmd = Cmd::undo;
@@ -284,21 +311,34 @@ int parseScript(const std::string& text, std::vector<ScriptCommand>& out, int& b
                 if (!parseBool(toks[3], sc.flag))
                     return fail(line_no, "expected 0 or 1, got '" + toks[3] + "'");
                 sc.cmd = what == "mute" ? Cmd::expectMute : Cmd::expectSolo;
+            } else if (what == "grid") {  // channel rack model check (WP-0195)
+                if (toks.size() != 4 || !parseTrack(toks[2], sc.pattern) ||
+                    !parseGrid(toks[3], sc.grid))
+                    return fail(line_no, "'expect grid' expects '<pattern> <16 characters x or .>'");
+                sc.cmd = Cmd::expectGrid;
             } else if (what == "widget") {
-                if (toks.size() != 5) return fail(line_no, "'expect widget' expects 'gain|pan <track> <value>' or 'mute|solo <track> <0|1>'");
-                const auto& sub = toks[2];
-                if (!parseTrack(toks[3], sc.track))
-                    return fail(line_no, "expected a track index, got '" + toks[3] + "'");
-                if (sub == "gain" || sub == "pan") {
-                    if (!parseNumber(toks[4], sc.value))
-                        return fail(line_no, "expected a number, got '" + toks[4] + "'");
-                    sc.cmd = sub == "gain" ? Cmd::expectWidgetGain : Cmd::expectWidgetPan;
-                } else if (sub == "mute" || sub == "solo") {
-                    if (!parseBool(toks[4], sc.flag))
-                        return fail(line_no, "expected 0 or 1, got '" + toks[4] + "'");
-                    sc.cmd = sub == "mute" ? Cmd::expectWidgetMute : Cmd::expectWidgetSolo;
+                if (toks.size() >= 3 && toks[2] == "grid") {  // channel rack widget check (WP-0195)
+                    if (toks.size() != 5 || !parseTrack(toks[3], sc.pattern) ||
+                        !parseGrid(toks[4], sc.grid))
+                        return fail(line_no, "'expect widget grid' expects '<pattern> <16 characters x or .>'");
+                    sc.cmd = Cmd::expectWidgetGrid;
+                } else if (toks.size() != 5) {  // gain/pan/mute/solo widgets — exactly as before
+                    return fail(line_no, "'expect widget' expects 'gain|pan <track> <value>' or 'mute|solo <track> <0|1>'");
                 } else {
-                    return fail(line_no, "unknown widget control '" + sub + "'");
+                    const auto& sub = toks[2];
+                    if (!parseTrack(toks[3], sc.track))
+                        return fail(line_no, "expected a track index, got '" + toks[3] + "'");
+                    if (sub == "gain" || sub == "pan") {
+                        if (!parseNumber(toks[4], sc.value))
+                            return fail(line_no, "expected a number, got '" + toks[4] + "'");
+                        sc.cmd = sub == "gain" ? Cmd::expectWidgetGain : Cmd::expectWidgetPan;
+                    } else if (sub == "mute" || sub == "solo") {
+                        if (!parseBool(toks[4], sc.flag))
+                            return fail(line_no, "expected 0 or 1, got '" + toks[4] + "'");
+                        sc.cmd = sub == "mute" ? Cmd::expectWidgetMute : Cmd::expectWidgetSolo;
+                    } else {
+                        return fail(line_no, "unknown widget control '" + sub + "'");
+                    }
                 }
             } else {
                 return fail(line_no, "unknown expect object '" + what + "'");
@@ -660,6 +700,16 @@ void App::initialise(const juce::String&) {
                 }
             }
 
+            // --- run-time index checks for the grid-based expects (WP-0195) ---
+            if (sc.cmd == Cmd::expectGrid || sc.cmd == Cmd::expectWidgetGrid) {
+                const int pc = component.patternCount();
+                if (sc.pattern < 0 || sc.pattern >= pc) {
+                    fail(6, sc.line, jstr("pattern index " + std::to_string(sc.pattern) +
+                                          " out of range (0.." + std::to_string(pc - 1) + ")"));
+                    return;
+                }
+            }
+
             bool ok = true;
             juce::String why;
             int fcode = 7;  // failure exit code: expect misses are 7, command failures are 6
@@ -678,6 +728,13 @@ void App::initialise(const juce::String&) {
                     std::string err;
                     ok = component.scriptClick(sc.cmd == Cmd::clickMute ? "mute" : "solo",
                                                sc.track, err);
+                    why = juce::String::fromUTF8(err.c_str());
+                    fcode = 6;
+                    break;
+                }
+                case Cmd::clickStep: {  // one set_step through the Document (WP-0195)
+                    std::string err;
+                    ok = component.scriptStep(sc.pattern, sc.step, err);
                     why = juce::String::fromUTF8(err.c_str());
                     fcode = 6;
                     break;
@@ -775,6 +832,24 @@ void App::initialise(const juce::String&) {
                         ok = false;
                         why = jstr(std::string(sc.cmd == Cmd::expectWidgetMute ? "expected widget mute " : "expected widget solo ") +
                                    boolTxt(sc.flag) + ", got " + boolTxt(got >= 0.5));
+                    }
+                    break;
+                }
+                case Cmd::expectGrid: {  // the MODEL grid (WP-0195); index range-checked above
+                    const auto& patterns = doc_->project().patterns;
+                    const std::string got = op::step_grid(
+                        patterns[static_cast<std::size_t>(sc.pattern)], dz::MainComponent::kRackSteps);
+                    if (got != sc.grid) {
+                        ok = false;
+                        why = jstr("expected grid " + sc.grid + ", got " + got);
+                    }
+                    break;
+                }
+                case Cmd::expectWidgetGrid: {  // the WIDGETS' grid (WP-0195); index range-checked above
+                    const std::string got = component.gridText(sc.pattern);
+                    if (got != sc.grid) {
+                        ok = false;
+                        why = jstr("expected widget grid " + sc.grid + ", got " + got);
                     }
                     break;
                 }

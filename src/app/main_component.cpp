@@ -22,6 +22,8 @@ const Colour kCaption{0xff8b8fa0};      // secondary labels
 const Colour kButtonOff{0xff3a3e4a};    // unlit button face
 const Colour kMuteOn{0xffb03a2e};       // M lit: reddish
 const Colour kSoloOn{0xffd9a13b};       // S lit: amber
+const Colour kStepOn{0xffe8742a};       // rack step lit: orange (WP-0195)
+const Colour kStepOffAlt{0xff2a2d38};   // rack step unlit, off-beat groups 4-7 / 12-15 (WP-0195)
 const Colour kRowShade{0x590d0e12};     // wash over an inaudible row (~35% near-black — dims the
                                         // row while keeping lit M/S colours recognisable through it)
 
@@ -43,6 +45,13 @@ struct dz::MainComponent::RowWidgets {
     juce::Slider pan;
     juce::TextButton mute;
     juce::TextButton solo;
+};
+
+// One channel-rack row (WP-0195): the pattern's label plus its 16 step cells. Cells carry no text —
+// the lit/unlit face IS the state, and it comes only from refresh() reading the model.
+struct dz::MainComponent::RackRow {
+    juce::Label name;
+    juce::TextButton cells[MainComponent::kRackSteps];
 };
 
 dz::MainComponent::~MainComponent() = default;  // RowWidgets complete here (see header note)
@@ -176,6 +185,45 @@ dz::MainComponent::MainComponent(op::Document& doc, PlaybackController* playback
         rows_.push_back(std::move(row));
     }
 
+    // --- channel rack: one 16-step row per pattern, in Document order (WP-0195) ---
+    const auto& patterns = doc.project().patterns;
+    rack_.reserve(patterns.size());
+    for (std::size_t p = 0; p < patterns.size(); ++p) {
+        const int pattern = static_cast<int>(p);  // row index captured by value in every callback
+        auto rack_row = std::make_unique<RackRow>();
+
+        rack_row->name.setColour(juce::Label::textColourId, kText);
+        rack_row->name.setJustificationType(juce::Justification::centredLeft);
+        addAndMakeVisible(rack_row->name);  // the label is a child of MainComponent, like rows_ labels
+
+        for (int s = 0; s < kRackSteps; ++s) {
+            auto& cell = rack_row->cells[s];
+            // Beat groups: steps 0-3 and 8-11 keep the standard unlit face, 4-7 and 12-15 get the
+            // darker alternate (spec look). Lit colour is orange for every step.
+            const bool beat_group = (s % 8) < 4;
+            cell.setColour(juce::TextButton::buttonOnColourId, kStepOn);
+            cell.setColour(juce::TextButton::buttonColourId, beat_group ? kButtonOff : kStepOffAlt);
+            // No setClickingTogglesState: the lit state comes ONLY from refresh() reading the model.
+            // One click = ONE set_step through Document::apply (the op creates/removes the step's
+            // notes; off-grid notes are never touched — that is set_step's job, not ours).
+            cell.onClick = [this, pattern, s] {
+                std::string err;
+                const auto& pats = doc_.project().patterns;
+                if (pattern >= 0 && static_cast<std::size_t>(pattern) < pats.size()) {
+                    const auto grid = op::step_grid(pats[static_cast<std::size_t>(pattern)], kRackSteps);
+                    const bool on = s < static_cast<int>(grid.size()) &&
+                                    grid[static_cast<std::size_t>(s)] == 'x';
+                    doc_.apply(nlohmann::json{{"op", "set_step"}, {"pattern", pattern},
+                                              {"step", s}, {"on", !on}}, err);
+                }
+                refresh();  // runs even when apply() failed — the model stays the truth
+            };
+            addAndMakeVisible(cell);
+        }
+
+        rack_.push_back(std::move(rack_row));
+    }
+
     setWantsKeyboardFocus(true);  // key presses reach us; child sliders bubble unhandled keys up
 
     refresh();
@@ -204,6 +252,27 @@ void dz::MainComponent::refresh() {
         // Dim the name itself (spec example: alpha 0.45); the row wash in paintOverChildren covers
         // the rest of the widgets.
         row.name.setColour(juce::Label::textColourId, track.audible ? kText : kText.withAlpha(0.45f));
+    }
+
+    // Channel rack (WP-0195): every cell's lit state comes ONLY from the model — step_grid over
+    // the pattern — and each label is the owning track's name ("Pattern <i>" if pattern.track does
+    // not index a track). dontSendNotification: pushing model values never triggers a callback.
+    const auto& patterns = doc_.project().patterns;
+    for (std::size_t p = 0; p < rack_.size() && p < patterns.size(); ++p) {
+        auto& rack_row = *rack_[p];
+        const int track_index = patterns[p].track;
+        const std::string label =
+            (track_index >= 0 && static_cast<std::size_t>(track_index) < tracks.size())
+                ? tracks[static_cast<std::size_t>(track_index)].name
+                : "Pattern " + std::to_string(p);
+        rack_row.name.setText(String::fromUTF8(label.c_str()), juce::dontSendNotification);
+
+        const auto grid = op::step_grid(patterns[p], kRackSteps);
+        for (int s = 0; s < kRackSteps; ++s) {
+            const bool lit = s < static_cast<int>(grid.size()) &&
+                             grid[static_cast<std::size_t>(s)] == 'x';
+            rack_row.cells[s].setToggleState(lit, juce::dontSendNotification);
+        }
     }
 
     repaint();  // row dimming depends on track_rows() too, not just widget values
@@ -318,6 +387,34 @@ double dz::MainComponent::widgetValue(const std::string& what, int track) const 
 
 int dz::MainComponent::trackCount() const { return static_cast<int>(rows_.size()); }
 
+bool dz::MainComponent::scriptStep(int pattern, int step, std::string& err) {
+    const int n = static_cast<int>(rack_.size());
+    if (pattern < 0 || pattern >= n) {
+        err = "pattern index " + std::to_string(pattern) + " out of range (0.." +
+              std::to_string(n - 1) + ")";
+        return false;
+    }
+    if (step < 0 || step >= kRackSteps) {
+        err = "step index " + std::to_string(step) + " out of range (0.." +
+              std::to_string(kRackSteps - 1) + ")";
+        return false;
+    }
+    // Invoke the std::function directly: triggerClick() posts an asynchronous message that never
+    // runs in a headless script. The onClick applies exactly one set_step through Document::apply.
+    rack_[static_cast<std::size_t>(pattern)]->cells[step].onClick();
+    return true;
+}
+
+std::string dz::MainComponent::gridText(int pattern) const {
+    if (pattern < 0 || pattern >= static_cast<int>(rack_.size())) return {};
+    std::string out;
+    for (int s = 0; s < kRackSteps; ++s)
+        out += rack_[static_cast<std::size_t>(pattern)]->cells[s].getToggleState() ? 'x' : '.';
+    return out;
+}
+
+int dz::MainComponent::patternCount() const { return static_cast<int>(rack_.size()); }
+
 void dz::MainComponent::timerCallback() {
     if (playback_ == nullptr) return;  // defensive: the timer only starts with a controller
     auto& player = playback_->player();
@@ -353,6 +450,14 @@ void dz::MainComponent::paint(juce::Graphics& g) {
         g.setColour(kCaption);
         g.drawFittedText(String::fromUTF8("Position"), pos_bounds.getX() - 96, pos_bounds.getY(),
                          88, pos_bounds.getHeight(), juce::Justification::centredRight, 1);
+    }
+
+    // Channel rack caption (WP-0195), just above the first rack row.
+    if (!rack_.empty()) {
+        g.setFont(juce::Font(juce::FontOptions(13.0f)));
+        g.setColour(kCaption);
+        g.drawFittedText(String::fromUTF8("Channel rack"), 16, rack_top_ - 20, 240, 18,
+                         juce::Justification::centredLeft, 1);
     }
 }
 
@@ -395,5 +500,17 @@ void dz::MainComponent::resized() {
         widgets.pan.setBounds(row.getX() + 600, row.getY() + 4, 40, 40);
         widgets.mute.setBounds(row.getX() + 672, row.getY() + 10, 52, 28);
         widgets.solo.setBounds(row.getX() + 732, row.getY() + 10, 52, 28);
+    }
+
+    // Channel rack (WP-0195): below the track rows. Rows that would extend past the window bottom
+    // are simply not handled — no scrolling in this package.
+    rack_top_ = kTransportHeight + 12 + static_cast<int>(rows_.size()) * kRowHeight + 28;
+    for (std::size_t p = 0; p < rack_.size(); ++p) {
+        const int y = rack_top_ + static_cast<int>(p) * kRackRowHeight;
+        auto& widgets = *rack_[p];
+        widgets.name.setBounds(16, y, 240, kRackRowHeight);
+        for (int s = 0; s < kRackSteps; ++s) {
+            widgets.cells[s].setBounds(16 + 256 + s * kRackCellPitch, y + 4, 32, 24);
+        }
     }
 }
