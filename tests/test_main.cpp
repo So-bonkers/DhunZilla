@@ -5977,6 +5977,103 @@ static void test_insert_delete_bars() {
           "sb.diff_delete_replay_byte_exact");
 }
 
+// --- WP-0192: pattern mode — op::pattern_mode_project (docs/spec/project-model.md §Pattern mode) ----
+
+// Song with three patterns ("Drums" explicit length_beats 4, "Bass" derived extent 0.5, "Fills" derived
+// extent 2.5), a deliberate song arrangement, a loop region and a non-default seed — everything pattern
+// mode must either copy verbatim or ignore. `extra_patterns` (e.g. `,{"track":0,"notes":[]}`) is appended
+// to the "patterns" array.
+static std::string pmode_song_text(const std::string& extra_patterns = "") {
+    return std::string(R"({"format_version":0,"bpm":120,"sample_rate":48000,"seed":7,)"
+                       R"("length_bars":9,"beats_per_bar":4,)"
+                       R"("tracks":[{"name":"A","voice":{"kind":"sine","freq_hz":220.0}},)"
+                       R"({"name":"B","voice":{"kind":"sine","freq_hz":330.0}}],)"
+                       R"("patterns":[)"
+                       R"({"track":0,"id":"Drums","notes":[{"t":0.0,"dur":0.25},{"t":1.0,"dur":0.25},)"
+                       R"({"t":2.0,"dur":0.25},{"t":3.0,"dur":0.25}],"length_beats":4.0},)"
+                       R"({"track":1,"id":"Bass","notes":[{"t":0.0,"dur":0.5}]},)"
+                       R"({"track":1,"id":"Fills","notes":[{"t":0.0,"dur":0.5},{"t":2.0,"dur":0.5}]})" +
+                       extra_patterns +
+                       R"(],"arrangement":[{"pattern":1,"start_bar":0.0,"repeats":2},)"
+                       R"({"pattern":2,"start_bar":3.0,"repeats":1}],)"
+                       R"("loop":{"start_bar":1.0,"end_bar":3.0}})");
+}
+
+static void test_pattern_mode() {
+    std::string err;
+    op::Project song;
+    CHECK(parse_text(pmode_song_text(), song, err), "pmode.song_parses");
+
+    // One clip with the right fields; explicit length_beats drives length_bars (loops 1 → 1 bar).
+    op::Project pm;
+    CHECK(op::pattern_mode_project(song, 0, 1, pm, err) && pm.arrangement.size() == 1 &&
+              pm.arrangement[0].pattern == 0 && pm.arrangement[0].start_bar == 0.0 &&
+              pm.arrangement[0].repeats == 1 && pm.arrangement[0].gain_db == 0.0 &&
+              pm.arrangement[0].fade_in_beats == 0.0 && pm.arrangement[0].fade_out_beats == 0.0 &&
+              pm.length_bars == 1.0,
+          "pmode.one_clip_explicit_length");
+
+    // The input project is untouched; the copy keeps seed, tracks, patterns and tempo as in the song.
+    CHECK(song.arrangement.size() == 2 && song.length_bars == 9.0, "pmode.input_untouched");
+    CHECK(pm.seed == 7u && pm.bpm == 120.0 && pm.sample_rate == 48000 && pm.beats_per_bar == 4 &&
+              pm.tracks.size() == 2 && pm.patterns.size() == 3 && pm.loop.has_value() &&
+              pm.loop->start_bar == 1.0,
+          "pmode.copy_keeps_song_fields");
+
+    // loops 3 with explicit length_beats 4 → repeats 3, length_bars = ceil(3*4/4) = 3.
+    op::Project pm3;
+    CHECK(op::pattern_mode_project(song, 0, 3, pm3, err) && pm3.arrangement.size() == 1 &&
+              pm3.arrangement[0].repeats == 3 && pm3.length_bars == 3.0,
+          "pmode.loops_3_explicit_length");
+
+    // Derived extent (max(t+dur)) and ceil: "Fills" extent 2.5 beats → ceil(3*2.5/4) = ceil(1.875) = 2.
+    op::Project pf;
+    CHECK(op::pattern_mode_project(song, 2, 3, pf, err) && pf.arrangement[0].pattern == 2 &&
+              pf.length_bars == 2.0,
+          "pmode.derived_extent_ceil");
+    op::Project pb;
+    CHECK(op::pattern_mode_project(song, 1, 1, pb, err) && pb.length_bars == 1.0, "pmode.derived_extent_min_one_bar");
+
+    // The pattern-mode render is bit-identical to the hand-written equivalent one-clip project (whose own
+    // song arrangement, length_bars and loop region differ from the source song — they must not matter).
+    op::Project hand;
+    CHECK(parse_text(R"({"format_version":0,"bpm":120,"sample_rate":48000,"seed":7,)"
+                     R"("length_bars":3,"beats_per_bar":4,)"
+                     R"("tracks":[{"name":"A","voice":{"kind":"sine","freq_hz":220.0}},)"
+                     R"({"name":"B","voice":{"kind":"sine","freq_hz":330.0}}],)"
+                     R"("patterns":[)"
+                     R"({"track":0,"id":"Drums","notes":[{"t":0.0,"dur":0.25},{"t":1.0,"dur":0.25},)"
+                     R"({"t":2.0,"dur":0.25},{"t":3.0,"dur":0.25}],"length_beats":4.0},)"
+                     R"({"track":1,"id":"Bass","notes":[{"t":0.0,"dur":0.5}]}],)"
+                     R"("arrangement":[{"pattern":0,"start_bar":0.0,"repeats":3}],)"
+                     R"("loop":{"start_bar":0.0,"end_bar":2.0}})",
+                     hand, err),
+          "pmode.hand_written_parses");
+    op::wav::StereoBuffer a, b;
+    const bool ra = op::render_project(pm3, tmp_dir(), a, err);
+    const bool rb = op::render_project(hand, tmp_dir(), b, err);
+    CHECK(ra && rb && !a.interleaved.empty() && a.interleaved.size() == b.interleaved.size() &&
+              std::memcmp(a.interleaved.data(), b.interleaved.data(),
+                          a.interleaved.size() * sizeof(float)) == 0,
+          "pmode.render_byte_identical_to_handwritten");
+
+    // A pattern with no notes and no length_beats: the spec's error string, verbatim (named and unnamed).
+    op::Project empty_song;
+    CHECK(parse_text(pmode_song_text(R"(,{"track":0,"id":"Empty","notes":[]},{"track":0,"notes":[]})"),
+                     empty_song, err) && empty_song.patterns.size() == 5,
+          "pmode.empty_patterns_parse");
+    op::Project scratch;
+    scratch.length_bars = 42.0;
+    CHECK(!op::pattern_mode_project(empty_song, 3, 1, scratch, err) &&
+              err == "pattern 'Empty' has no length (no notes and no length_beats)",
+          "pmode.err_no_length_named");
+    std::string err2;
+    CHECK(!op::pattern_mode_project(empty_song, 4, 1, scratch, err2) &&
+              err2 == "pattern '' has no length (no notes and no length_beats)",
+          "pmode.err_no_length_unnamed");
+    CHECK(scratch.length_bars == 42.0 && scratch.arrangement.empty(), "pmode.failure_leaves_out_untouched");
+}
+
 int main() {
     test_pcm16();
     test_rng();
@@ -6025,6 +6122,7 @@ int main() {
     test_sample_index();
     test_duplicate_pattern();
     test_player();
+    test_pattern_mode();
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASS" : "FAILURES", g_failures);
     if (g_failures == 0) {
         std::error_code ec;

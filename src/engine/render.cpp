@@ -707,4 +707,27 @@ bool render_click(const Project& p, wav::StereoBuffer& out, std::string& err) {
     return true;
 }
 
+// --- Pattern mode (WP-0192, spec project-model.md §Pattern mode) -----------------------------------
+// Builds the pattern-mode project: a copy of `p` with a one-clip arrangement for one pattern and the
+// length_bars that clip needs. Pure struct work — no render, no I/O, no clock; the caller renders the
+// result through the normal path, which is what makes the output bit-identical to the equivalent
+// hand-written project. Preconditions (caller-checked): pattern_index < p.patterns.size(), loops >= 1.
+bool pattern_mode_project(const Project& p, std::size_t pattern_index, long long loops, Project& out,
+                          std::string& err) {
+    const Pattern& pat = p.patterns[pattern_index];
+    const double extent = pattern_extent(pat);  // loop period, beats (same helper as the renderer)
+    if (!(extent > 0.0)) {
+        err = "pattern '" + pat.id + "' has no length (no notes and no length_beats)";
+        return false;
+    }
+    out = p;
+    Clip clip;                        // gain_db 0, no fades: the defaults
+    clip.pattern = static_cast<int>(pattern_index);
+    clip.start_bar = 0.0;
+    clip.repeats = static_cast<int>(loops);
+    out.arrangement = {clip};
+    out.length_bars = std::ceil(static_cast<double>(loops) * extent / static_cast<double>(p.beats_per_bar));
+    return true;
+}
+
 }  // namespace op

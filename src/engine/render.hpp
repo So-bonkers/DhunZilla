@@ -1,5 +1,6 @@
 // engine/render.hpp — offline deterministic renderer (spec/project-model.md). Pure function of (project, base_dir).
 #pragma once
+#include <cstddef>
 #include <string>
 
 #include "engine/model.hpp"
@@ -43,5 +44,18 @@ std::vector<long long> beat_onsets(const Project& p);
 // Example: op::wav::StereoBuffer buf; std::string err;
 //          if (!op::render_click(p, buf, err)) { /* zero-length or >600s cap */ }
 bool render_click(const Project& p, wav::StereoBuffer& out, std::string& err);
+
+// Pattern mode (WP-0192, spec project-model.md §Pattern mode): build the *pattern-mode project* for one
+// pattern — a copy of `p` whose arrangement is exactly one clip {pattern_index, start_bar 0.0, repeats
+// loops} (gain 0, no fades) and whose length_bars = std::ceil(double(loops) * pattern_extent(pat) /
+// double(beats_per_bar)), computed in exactly that order in double. Everything else is copied verbatim
+// (tracks, mute/solo, bpm/tempo_map, sample rate, master gain, seed); the loop region is kept but the
+// renderer does not use it. Caller-validated: requires pattern_index < p.patterns.size() and loops >= 1.
+// A pattern with no length (pattern_extent == 0: no notes and no length_beats) fails with the spec's
+// message (using pat.id); `out` is left untouched on failure. Example:
+//   op::Project pm; std::string err;
+//   if (!op::pattern_mode_project(p, 1, 3, pm, err)) { /* pattern '<id>' has no length (...) */ }
+bool pattern_mode_project(const Project& p, std::size_t pattern_index, long long loops, Project& out,
+                          std::string& err);
 
 }  // namespace op

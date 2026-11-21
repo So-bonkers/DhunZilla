@@ -676,3 +676,35 @@ Example (120 bpm, 48 kHz, tracks `Open` = long asset and `Closed` = short asset,
 beat 0 and `Closed` note at beat 0.125 (frame 3000) → `Open` plays frames 0..2999 unchanged, then fades linearly to
 silence over frames 3000..3239 and is silent from frame 3240; `Closed` plays normally from frame 3000.
 New golden `tests/fixtures/goldens/sampler_choke.{opj,wav}` covers open/closed hi-hat (see WP-0181 task).
+
+## Pattern mode — additive (WP-0192)
+FL-style "pattern mode vs song mode": `opd render <proj.opj> -o <out.wav> --pattern NAME [--loops N]` renders ONE
+pattern on its own, ignoring the project's arrangement. Read-only: no model change, no new project key, no op.
+
+- **NAME** is matched byte-for-byte against `patterns[i].id` (§Pattern ids). Unnamed patterns cannot be selected
+  (`--pattern ""` matches nothing). **N** (`--loops`, default 1) is a decimal integer in `[1, 1000]` (digits only).
+  Repeating either flag: the last value wins.
+- **Definition (normative):** the output is **bit-identical** to `opd render` of the *pattern-mode project*: a copy
+  of the loaded project (after `--seed`) in which `arrangement` is exactly one clip
+  `{"pattern": i, "start_bar": 0.0, "repeats": N}` (clip gain 0, no fades) and
+  `length_bars = ceil(double(N) * pattern_extent(pattern) / double(beats_per_bar))` (computed in `double`, in that
+  order; `pattern_extent` = explicit `length_beats`, else max(note.t + note.dur)). Everything else is unchanged:
+  the pattern's own `length_beats` and `swing`, its track, `bpm`/`tempo_map`, sample rate, master gain, mute/solo
+  (a muted pattern track, or a solo on another track, renders silence exactly as in the equivalent arrangement),
+  and the other options (`-o`, `--seed`, `--stems-dir`, `--format`, `--limit-dbfs`). The loop region is not used.
+  Other tracks and patterns are silent (they are in no clip). Notes that would start at or after the end of the
+  last bar are dropped by the existing render-window rule.
+- **Errors** (`error: usage: <detail>`, exit 2, nothing written), checked in this order. The first three are
+  option-syntax checks made before the project file is opened, after the existing `--loop`/`--from-bar`/`--to-bar`
+  combination check:
+  1. `--pattern` with `--loop` → `--pattern cannot be combined with --loop`
+  2. `--pattern` with `--from-bar` or `--to-bar` → `--pattern cannot be combined with --from-bar/--to-bar`
+  3. `--loops` without `--pattern` → `--loops requires --pattern`
+  4. `--loops` value not a decimal integer in `[1, 1000]` (`0`, `-1`, `2.5`, `abc`, empty, `1001`, `1e2`, `+3`, ` 2`) →
+     `bad --loops value '<value as given>'`
+  5. after the project loads (so file errors 3 / 4 keep precedence): no pattern with that id →
+     `unknown pattern '<NAME as given>'`
+  Then (exit 5, `error: render: <detail>`): the pattern's extent is 0 (no notes, no `length_beats`) →
+  `pattern '<NAME>' has no length (no notes and no length_beats)`; the existing 600 s cap still applies.
+- Engine API: `op::pattern_mode_project(p, pattern_index, loops, out, err)` in `engine/render.hpp` builds the
+  pattern-mode project; `opd render` then runs its normal path on it.

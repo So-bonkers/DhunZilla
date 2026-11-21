@@ -34,6 +34,7 @@ static void usage() {
     std::fprintf(stderr,
         "usage:\n"
         "  opd render <project.opj> -o <out.wav> [--seed N] [--stems-dir DIR] [--from-bar A] [--to-bar B] [--loop]\n"
+        "             [--pattern NAME [--loops N]]\n"
         "             [--normalize-lufs L [--ceiling-dbfs C]]\n"
         "             [--format pcm16|pcm24|f32]\n"
         "             [--limit-dbfs X]   (master brickwall limiter on the final mix, docs/spec/limiter.md)\n"
@@ -110,6 +111,9 @@ static int cmd_render(int argc, char** argv) {
     bool has_norm = false, has_ceiling = false;  // WP-0189: normalize while rendering (docs/spec/normalize.md)
     std::string norm_arg, ceiling_arg;           // raw strings for error messages ("<L as given>", "<C as given>")
     double norm_lufs = 0.0, norm_ceiling = -1.0; // parsed values; ceiling default per spec
+    bool has_pattern = false, has_loops = false;  // WP-0192: pattern mode (spec §Pattern mode)
+    std::string pattern_arg, loops_arg;           // raw strings for error messages ("<NAME as given>", ...)
+    long long loops = 1;                          // parsed --loops value; default 1
     op::wav::SampleFormat fmt = op::wav::SampleFormat::Pcm16;  // default: existing behavior (WP-0149)
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out_path = argv[++i];
@@ -128,11 +132,22 @@ static int cmd_render(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--limit-dbfs") && i + 1 < argc) { limit_arg = argv[++i]; has_limit = true; }
         else if (!std::strcmp(argv[i], "--normalize-lufs") && i + 1 < argc) { norm_arg = argv[++i]; has_norm = true; }
         else if (!std::strcmp(argv[i], "--ceiling-dbfs") && i + 1 < argc) { ceiling_arg = argv[++i]; has_ceiling = true; }
+        else if (!std::strcmp(argv[i], "--pattern") && i + 1 < argc) { pattern_arg = argv[++i]; has_pattern = true; }
+        else if (!std::strcmp(argv[i], "--loops") && i + 1 < argc) { loops_arg = argv[++i]; has_loops = true; }
         else { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
     }
     if (out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
     if (want_loop && (has_from || has_to))
         return fail("usage", "--loop cannot be combined with --from-bar/--to-bar");
+
+    // WP-0192 (spec §Pattern mode): pattern-mode option syntax, checked here — before the project file is
+    // opened, so nothing is written on error — right after the existing --loop combination check above.
+    if (has_pattern && want_loop) return fail("usage", "--pattern cannot be combined with --loop");
+    if (has_pattern && (has_from || has_to))
+        return fail("usage", "--pattern cannot be combined with --from-bar/--to-bar");
+    if (has_loops && !has_pattern) return fail("usage", "--loops requires --pattern");
+    if (has_loops && (!parse_decimal(loops_arg, 1000, loops) || loops < 1))
+        { usage(); return fail("usage", "bad --loops value '" + loops_arg + "'"); }
 
     // WP-0189 (docs/spec/normalize.md §opd render --normalize-lufs): value checks with the other option-syntax
     // checks, i.e. before the project file is opened — nothing is written on any error. Repeating a flag: last wins.
@@ -164,6 +179,17 @@ static int cmd_render(int argc, char** argv) {
     if (!fs::exists(proj)) return fail("not_found", proj);
     if (!op::load_project(proj, p, err)) return fail("parse", err);
     if (seed_override >= 0) p.seed = static_cast<uint64_t>(seed_override);
+    if (has_pattern) {  // WP-0192 (spec §Pattern mode): render one pattern on its own, ignoring the arrangement.
+        size_t pat_index = 0;
+        bool found = false;
+        for (size_t i = 0; i < p.patterns.size(); ++i) {  // unnamed patterns cannot be selected
+            if (!p.patterns[i].id.empty() && p.patterns[i].id == pattern_arg) { pat_index = i; found = true; break; }
+        }
+        if (!found) return fail("usage", "unknown pattern '" + pattern_arg + "'");
+        op::Project pm;
+        if (!op::pattern_mode_project(p, pat_index, loops, pm, err)) return fail("render", err);
+        p = std::move(pm);
+    }
     if (want_loop) {  // WP-0155: identical to --from-bar <start> --to-bar <end> (same path below)
         if (!p.loop) { usage(); return fail("usage", "project has no loop region"); }
         has_from = has_to = true;
