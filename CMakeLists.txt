@@ -68,6 +68,10 @@ add_executable(op_choke_tests tests/test_choke.cpp)
 target_link_libraries(op_choke_tests PRIVATE opengine)
 add_test(NAME choke COMMAND op_choke_tests)
 
+# WP-0190: dz_latency — Phase 0 callback-budget report for the JUCE-free dzplayer core (report, not a gate).
+add_executable(dz_latency tools/dz_latency.cpp)
+target_link_libraries(dz_latency PRIVATE opengine dzplayer)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -76,6 +80,7 @@ list(APPEND DZ_OUR_TARGETS op_lint_tests)  # WP-0170
 list(APPEND DZ_OUR_TARGETS op_peaks_tests)  # WP-0171
 list(APPEND DZ_OUR_TARGETS op_choke_tests)  # WP-0181
 list(APPEND DZ_OUR_TARGETS op_limiter_tests)  # WP-0176
+list(APPEND DZ_OUR_TARGETS dz_latency)  # WP-0190
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
