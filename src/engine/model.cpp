@@ -340,6 +340,25 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
                 }
                 c.fade_out_beats = fv.get<double>();
             }
+            // Clip trim (WP-0193a, spec project-model.md §Clip trim): checked right after the fades,
+            // offset before length. -0.0 passes (< 0.0 is false for -0.0) and equals 0; any JSON
+            // number is read as double, so integers beyond 32 bits are simply out of range.
+            if (cj.contains("offset_beats")) {
+                const json& ov = cj.at("offset_beats");
+                if (!ov.is_number() || !std::isfinite(ov.get<double>()) ||
+                    ov.get<double>() < 0.0 || ov.get<double>() > 4096.0) {
+                    err = "clip.offset_beats must be a number in [0, 4096]"; return false;
+                }
+                c.offset_beats = ov.get<double>();
+            }
+            if (cj.contains("length_beats")) {
+                const json& lv = cj.at("length_beats");
+                if (!lv.is_number() || !std::isfinite(lv.get<double>()) ||
+                    lv.get<double>() <= 0.0 || lv.get<double>() > 4096.0) {
+                    err = "clip.length_beats must be a number in (0, 4096]"; return false;
+                }
+                c.length_beats = lv.get<double>();
+            }
             p.arrangement.push_back(c);
         }
     }
@@ -598,6 +617,8 @@ json project_to_json(const Project& p) {
             cj["repeats"] = c.repeats;
             if (c.fade_in_beats != 0.0) cj["fade_in_beats"] = c.fade_in_beats;   // WP-0178: omitted at default
             if (c.fade_out_beats != 0.0) cj["fade_out_beats"] = c.fade_out_beats;  // WP-0178: omitted at default
+            if (c.offset_beats != 0.0) cj["offset_beats"] = c.offset_beats;  // WP-0193a: omitted at default
+            if (c.length_beats) cj["length_beats"] = *c.length_beats;  // WP-0193a: omitted when untrimmed → legacy bytes
             if (c.gain_db != 0.0) cj["gain_db"] = c.gain_db;  // omitted at unity → legacy canonical bytes
             arr.push_back(std::move(cj));
         }

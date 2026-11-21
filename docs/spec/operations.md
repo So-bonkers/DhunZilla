@@ -515,3 +515,25 @@ Undo/redo: whole-project snapshots, byte-exact as for every op; a rejected op ch
 `opd diff` never emits `insert_bars` / `delete_bars`; the results of these ops are expressed with the existing ops
 (`set_length_bars`, clip and loop ops), exactly as §`opd diff` defines. It is a requirement that for any project `a`
 and `b = a` after one of these ops, `diff_projects(a, b)` succeeds and its journal reproduces `b` byte-for-byte.
+
+## Clip trim operation — additive (WP-0193a)
+
+`{"op":"set_clip_trim","index":I,"offset_beats":X,"length_beats":Y}` — exactly these four keys; `index` is a
+clip index (`'index' out of range` as for the other clip ops). `offset_beats` and `length_beats` are both
+**required**; each is a JSON number or `null`. `null` clears that side (offset → 0, length → untrimmed: the
+key is removed from the clip and the canonical save omits it).
+
+Validation order: unknown key → `unknown argument 'x'`; `index`; then for `offset_beats` then `length_beats`:
+absent → `missing argument 'offset_beats'` / `missing argument 'length_beats'`; neither number nor null →
+`'offset_beats' must be a number or null` / `'length_beats' must be a number or null`. Range rules are NOT
+duplicated in the op: the edited project goes through the normal save→parse validation, so a bad value fails
+with the project-model parse error (see project-model.md §Clip trim). All errors surface as
+`set_clip_trim: <message>`; a rejected op leaves the project unchanged. The op is undoable through `History`.
+
+### `opd diff` and clip trim (WP-0193a amendment)
+In step 9, right after the `set_clip_fades` emission for a clip position, emit ONE `set_clip_trim` if
+`offset_beats` or `length_beats` differs between a and b in their canonical JSON (an absent key counts as
+absent; there is no `0` equivalence beyond canonical omission). The op carries b's canonical values and
+`null` for a key b's clip does not have: `{"index":0,"length_beats":2.0,"offset_beats":1.0,"op":"set_clip_trim"}`.
+Clips added by `add_clip` carry their trim keys inside the clip JSON. Pairs where no shared clip differs in
+trim produce exactly the same journals as before.

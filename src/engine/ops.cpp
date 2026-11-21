@@ -389,6 +389,20 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
                 if (v.is_null()) clip.erase(key);  // null clears the side to its default 0
                 else clip[key] = v;
             }
+        } else if (name == "set_clip_trim") {  // WP-0193a; range checks come from the model parse below
+            if (!check_keys(op_json, {"index", "offset_beats", "length_beats"}, err)) return false;
+            const std::size_t n_clips = j.contains("arrangement") ? j["arrangement"].size() : 0;
+            if (!arg_index(op_json, "index", n_clips, idx, err)) return false;
+            json& clip = j["arrangement"][idx];
+            for (const char* key : {"offset_beats", "length_beats"}) {
+                if (!op_json.contains(key)) { err = std::string("missing argument '") + key + "'"; return false; }
+                const json& v = op_json.at(key);
+                if (!v.is_number() && !v.is_null()) {
+                    err = std::string("'") + key + "' must be a number or null"; return false;
+                }
+                if (v.is_null()) clip.erase(key);  // null clears the side: offset → 0, length → untrimmed
+                else clip[key] = v;
+            }
         } else if (name == "remove_clip") {
             if (!check_keys(op_json, {"index"}, err)) return false;
             const std::size_t n_clips = j.contains("arrangement") ? j["arrangement"].size() : 0;
@@ -806,6 +820,15 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
             field_or(clips_a[i], "fade_out_beats", kZeroDb) != fo_b)
             ops.push_back({{"op", "set_clip_fades"}, {"index", i},
                            {"fade_in_beats", fi_b}, {"fade_out_beats", fo_b}});
+        // Clip trim (WP-0193a): ONE op when either canonical key differs (absent = null, no default
+        // equivalence beyond canonical omission); the op carries b's value or null to clear.
+        static const json kNoTrim = nullptr;
+        const json& off_b = field_or(clips_b[i], "offset_beats", kNoTrim);
+        const json& len_b = field_or(clips_b[i], "length_beats", kNoTrim);
+        if (field_or(clips_a[i], "offset_beats", kNoTrim) != off_b ||
+            field_or(clips_a[i], "length_beats", kNoTrim) != len_b)
+            ops.push_back({{"op", "set_clip_trim"}, {"index", i},
+                           {"offset_beats", off_b}, {"length_beats", len_b}});
     }
     for (std::size_t i = clips_a.size(); i < clips_b.size(); ++i)
         ops.push_back({{"op", "add_clip"}, {"clip", clips_b[i]}});

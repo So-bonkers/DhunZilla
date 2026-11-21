@@ -708,3 +708,35 @@ pattern on its own, ignoring the project's arrangement. Read-only: no model chan
   `pattern '<NAME>' has no length (no notes and no length_beats)`; the existing 600 s cap still applies.
 - Engine API: `op::pattern_mode_project(p, pattern_index, loops, out, err)` in `engine/render.hpp` builds the
   pattern-mode project; `opd render` then runs its normal path on it.
+
+## Clip trim — additive (WP-0193a)
+
+A clip may be trimmed to a window of its pattern's unrolled source timeline. WP-0193a (this part) only
+parses, validates, saves and edits the two keys; **rendering and MIDI export ignore them until WP-0193b
+(render) and WP-0193c (MIDI) land**. Untrimmed projects are unchanged byte for byte.
+
+### Clip keys (both optional)
+- `offset_beats`: JSON number, finite, in `[0, 4096]`, default `0`.
+- `length_beats`: JSON number, finite, in `(0, 4096]`; absent = untrimmed.
+
+Any JSON number form is accepted (`3` and `3.0`). Values are read as `double`, so integers beyond 32 bits
+(`4294967296`, `18446744073709551615`) are simply out of range, never wrapped. `-0.0` is a valid offset and
+equals `0`. Non-numbers (string, bool, `null`, array, object) are rejected.
+
+Parse errors (checked after the clip's `fade_out_beats` check, offset before length, first failure wins; the
+text is the whole error string, `opd` prints it as `error: parse: <string>` for project files):
+- `clip.offset_beats must be a number in [0, 4096]`
+- `clip.length_beats must be a number in (0, 4096]`
+
+### Canonical save
+`offset_beats` is written only when it is not `0`; `length_beats` only when present. Both are written as
+doubles (key order is the canonical writer's sorted order). A project whose clips carry neither key saves identically to before.
+
+### Semantics (shared by WP-0193a/b/c — normative for the later parts)
+Let `E = pattern_extent(pat)` and `R = repeats`. The clip's *source* timeline is the unrolled pattern: note `n`
+of repeat `r` sits at source position `s = r*E + n.t`. The trim window is `[offset, offset + len)` with
+`len = length_beats` if present, else `R*E - offset`. A note plays iff `offset <= s < offset + len`, placed at
+beat `base + (s - offset)` where `base` is the clip start (swing keys off the pattern-local `n.t`, unchanged).
+`len <= 0` means the clip plays nothing. Note durations are **not** shortened (onset gating only; use
+`fade_out_beats` to cut sound). The clip end used by the clip fades is `base + len`. A `length_beats` longer
+than the available material leaves silence (no extra repeats).

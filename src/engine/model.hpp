@@ -67,6 +67,8 @@ struct Clip {
     double gain_db = 0.0;        // per-clip level (WP-0120), [-96, 24]; 0 omitted on save → legacy bytes
     double fade_in_beats = 0.0;   // linear fade-in over this many beats from the clip start (WP-0178)
     double fade_out_beats = 0.0;  // linear fade-out over this many beats ending at the clip end (WP-0178)
+    double offset_beats = 0.0;                          // source start inside the unrolled pattern (WP-0193a)
+    std::optional<double> length_beats = std::nullopt;  // trimmed length; absent = untrimmed (WP-0193a)
 };
 
 // Bar-anchored piecewise-constant tempo change (WP-0105): from bar `bar` onward the project

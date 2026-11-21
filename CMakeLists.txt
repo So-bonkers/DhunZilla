@@ -76,6 +76,9 @@ target_link_libraries(dz_latency PRIVATE opengine dzplayer)
 add_executable(op_meters_tests tests/test_meters.cpp)
 target_link_libraries(op_meters_tests PRIVATE opengine)
 add_test(NAME meters COMMAND op_meters_tests)
+add_executable(op_clip_trim_tests tests/test_clip_trim.cpp)
+target_link_libraries(op_clip_trim_tests PRIVATE opengine)
+add_test(NAME clip_trim COMMAND op_clip_trim_tests)
 
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
@@ -88,6 +91,7 @@ list(APPEND DZ_OUR_TARGETS op_limiter_tests)  # WP-0176
 list(APPEND DZ_OUR_TARGETS dz_latency)  # WP-0190
 
 list(APPEND DZ_OUR_TARGETS op_meters_tests)  # WP-0194
+list(APPEND DZ_OUR_TARGETS op_clip_trim_tests)  # WP-0193a
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
