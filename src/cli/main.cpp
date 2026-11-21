@@ -19,6 +19,7 @@
 #include "engine/lint.hpp"
 #include "engine/limiter.hpp"
 #include "engine/loudness.hpp"
+#include "engine/meters.hpp"
 #include "engine/midi.hpp"
 #include "engine/model.hpp"
 #include "engine/normalize.hpp"
@@ -54,6 +55,7 @@ static void usage() {
         "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
         "  opd lint <proj.opj> [--json]   (read-only project sanity checks as JSON)\n"
         "  opd peaks <in.wav> [--bins N]   (min/max waveform peaks per bin as JSON)\n"
+        "  opd meters <project.opj>   (per-track and master peak/RMS dBFS + integrated LUFS as JSON)\n"
         "  opd loudness <in.wav> [--json]   (true peak dBTP, momentary/short-term max LUFS, loudness range as JSON)\n"
         "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
@@ -706,6 +708,29 @@ static int cmd_analyze(int argc, char** argv) {
     return 0;
 }
 
+// opd meters <project.opj> (WP-0194) — per-track and master peak/RMS dBFS + integrated LUFS as canonical
+// JSON. Renders the stems and the mix IN MEMORY (op::meters over op::render_stems); writes nothing and
+// never modifies the project. Exactly one argument, no options. Errors print nothing on stdout: exit 2
+// usage, 3 not-found, 4 parse, 5 meters (sample rate outside 8000..192000) or render.
+static int cmd_meters(int argc, char** argv) {
+    if (argc != 2 || argv[1][0] == '-') { usage(); return fail("usage", "meters needs exactly <project.opj>"); }
+    const std::string path = argv[1];
+    if (!fs::exists(path)) return fail("not_found", path);
+
+    op::Project p;
+    std::string err;
+    if (!op::load_project(path, p, err)) return fail("parse", err);
+    if (p.sample_rate < 8000 || p.sample_rate > 192000)
+        return fail("meters", "unsupported sample rate " + std::to_string(p.sample_rate));
+
+    op::meters::Report r;
+    const std::string base_dir = fs::path(path).parent_path().string();
+    if (!op::meters::measure_project(p, base_dir, r, err)) return fail("render", err);
+    const std::string json = op::meters::to_json(r);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 // opd loudness <in.wav> [--json] — true peak (dBTP), momentary / short-term max LUFS and loudness range
 // as canonical JSON (docs/spec/loudness.md). --json is accepted and changes nothing (JSON is the only
 // format). Errors: nothing on stdout; exit 2 usage, 3 not-found, 4 parse (reader error), 5 loudness
@@ -976,6 +1001,7 @@ int main(int argc, char** argv) {
     if (cmd == "analyze") return cmd_analyze(argc - 1, argv + 1);
     if (cmd == "lint") return cmd_lint(argc - 1, argv + 1);
     if (cmd == "peaks") return cmd_peaks(argc - 1, argv + 1);
+    if (cmd == "meters") return cmd_meters(argc - 1, argv + 1);
     if (cmd == "loudness") return cmd_loudness(argc - 1, argv + 1);
     if (cmd == "normalize") return cmd_normalize(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);

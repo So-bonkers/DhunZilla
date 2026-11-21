@@ -20,6 +20,7 @@ target_sources(opengine PRIVATE src/engine/loudness.cpp)  # WP-0168
 target_sources(opengine PRIVATE src/engine/lint.cpp)  # WP-0170
 target_sources(opengine PRIVATE src/engine/peaks.cpp)  # WP-0171
 target_sources(opengine PRIVATE src/engine/limiter.cpp)  # WP-0176
+target_sources(opengine PRIVATE src/engine/meters.cpp)  # WP-0194
 
 # WP-0141: JUCE-free document layer (open/save/dirty, undo/redo, gestures) for the app + CLI.
 add_library(dzdoc STATIC src/doc/document.cpp)
@@ -72,6 +73,10 @@ add_test(NAME choke COMMAND op_choke_tests)
 add_executable(dz_latency tools/dz_latency.cpp)
 target_link_libraries(dz_latency PRIVATE opengine dzplayer)
 
+add_executable(op_meters_tests tests/test_meters.cpp)
+target_link_libraries(op_meters_tests PRIVATE opengine)
+add_test(NAME meters COMMAND op_meters_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -81,6 +86,8 @@ list(APPEND DZ_OUR_TARGETS op_peaks_tests)  # WP-0171
 list(APPEND DZ_OUR_TARGETS op_choke_tests)  # WP-0181
 list(APPEND DZ_OUR_TARGETS op_limiter_tests)  # WP-0176
 list(APPEND DZ_OUR_TARGETS dz_latency)  # WP-0190
+
+list(APPEND DZ_OUR_TARGETS op_meters_tests)  # WP-0194
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
