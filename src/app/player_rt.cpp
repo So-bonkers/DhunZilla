@@ -31,10 +31,40 @@ void Player::process(float* left, float* right, int num_frames) noexcept {
 
     const long long frames = static_cast<long long>(current_->frames());
     const long long pos = position_.load();
+    const float* data = current_->interleaved.data();
+
+    // WP-0200: snapshot the loop bounds once per block (a control-thread change lands no later than
+    // the next call). end_eff keeps every read inside this buffer, so a window reaching past its end
+    // behaves exactly like one ending on it; a start outside [0, end_eff) is unusable here.
+    const long long loop_start = loop_start_.load();
+    const long long end_eff = std::min(loop_end_.load(), frames);
+
+    if (loop_start >= 0 && loop_start < end_eff) {
+        // Looping: every slot of the block comes from the buffer, switching mid-block. After frame
+        // end_eff - 1 the next read is back at loop_start — no gap, no overlap, no silence — so a
+        // block longer than the window wraps more than once. Playback never ends in here; only
+        // stop() ends it. Integer modulo only: no helper that could allocate.
+        const long long len = end_eff - loop_start;
+        long long p = pos;
+        for (int i = 0; i < num_frames; ++i) {
+            if (p >= end_eff) p = loop_start + (p - loop_start) % len;
+            const long long src = 2 * p;
+            left[i] = data[src];
+            if (right != nullptr) right[i] = data[src + 1];
+            ++p;
+        }
+        // A block ending exactly on end_eff reports its next frame as loop_start, not end_eff.
+        if (p >= end_eff) p = loop_start + (p - loop_start) % len;
+        position_.store(p);
+        frames_played_.store(frames_played_.load() + num_frames);  // every slot was copied
+        return;
+    }
+
+    // No usable window (no loop, or a start this buffer cannot serve): WP-0153 one-shot path —
+    // copy up to the end of the buffer, zero-fill the rest of the block, then park at home.
     long long copied = std::min(static_cast<long long>(num_frames), frames - pos);
     if (copied < 0) copied = 0;  // a shorter swapped-in buffer: copy nothing, end below
 
-    const float* data = current_->interleaved.data();
     for (long long i = 0; i < copied; ++i) {
         const long long src = 2 * (pos + i);
         left[i] = data[src];

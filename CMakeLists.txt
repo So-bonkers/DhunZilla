@@ -93,6 +93,11 @@ target_compile_definitions(op_timeline_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>
 add_dependencies(op_timeline_tests opd)
 add_test(NAME timeline COMMAND op_timeline_tests)
 
+# WP-0200: dz::Player transport loop region (needs the JUCE-free dzplayer core).
+add_executable(op_player_loop_tests tests/test_player_loop.cpp)
+target_link_libraries(op_player_loop_tests PRIVATE opengine dzplayer)
+add_test(NAME player_loop COMMAND op_player_loop_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -108,6 +113,7 @@ list(APPEND DZ_OUR_TARGETS op_clip_trim_tests)  # WP-0193a
 list(APPEND DZ_OUR_TARGETS op_clips_tests)  # WP-0199
 list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
+list(APPEND DZ_OUR_TARGETS op_player_loop_tests)  # WP-0200
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

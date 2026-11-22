@@ -43,4 +43,27 @@ long long Player::position_frames() const {
 
 long long Player::frames_played() const { return frames_played_.load(); }
 
+// ---- transport loop region (WP-0200) -----------------------------------------------------------
+// Enabling is decided here, once, from the pair itself: a window needs a non-negative start and an
+// end strictly past it. Bounds are stored as given — no buffer exists at this point to validate
+// against — and process() clamps them per buffer (player_rt.cpp).
+
+void Player::set_loop(long long start_frame, long long end_frame) {
+    loop_start_.store(start_frame);
+    loop_end_.store(end_frame);
+}
+
+void Player::clear_loop() {
+    // The disabled state: 0/0 fails the predicate in both has_loop() and process(). No seek, no
+    // silence — a running playback simply stops wrapping from here on.
+    loop_start_.store(0);
+    loop_end_.store(0);
+}
+
+bool Player::has_loop() const {
+    const long long start = loop_start_.load();
+    const long long end = loop_end_.load();
+    return start >= 0 && end > start;
+}
+
 }  // namespace dz
