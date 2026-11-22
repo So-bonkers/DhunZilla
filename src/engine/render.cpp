@@ -5,7 +5,10 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "engine/dsp.hpp"
 #include "engine/resample.hpp"
@@ -728,6 +731,40 @@ bool pattern_mode_project(const Project& p, std::size_t pattern_index, long long
     out.arrangement = {clip};
     out.length_bars = std::ceil(static_cast<double>(loops) * extent / static_cast<double>(p.beats_per_bar));
     return true;
+}
+
+// --- Arrangement clip view (WP-0199, docs/spec/operations.md §Arrangement clip view) ------------------
+// The exact text `opd clips <proj.opj>` prints: one entry per arrangement clip in model order, the
+// stored clip fields plus start/end in beats and samples. Geometry mirrors for_each_placement exactly
+// (same pattern_extent helper, same base expression) and the samples come from this renderer's own
+// build_tempo_map/TempoMap::at at the project sample rate — nothing is re-derived here. Pure function
+// of the model: no I/O, no clock, no randomness; unclamped past length_bars by design.
+std::string clips_json(const Project& p) {
+    nlohmann::json arr = nlohmann::json::array();
+    const TempoMap tmap = build_tempo_map(p, p.sample_rate);  // built once for the whole view
+    const double bpb = static_cast<double>(p.beats_per_bar);
+    std::size_t index = 0;
+    for (const Clip& clip : p.arrangement) {
+        const Pattern& pat = p.patterns[static_cast<std::size_t>(clip.pattern)];
+        const double extent = pattern_extent(pat);  // loop period, beats (same helper as the renderer)
+        const double start_beats = clip.start_bar * bpb;  // same expression as for_each_placement's base
+        const double end_beats = start_beats + static_cast<double>(clip.repeats) * extent;  // plain product
+        nlohmann::json e;
+        e["index"] = index++;
+        e["pattern"] = clip.pattern;
+        if (!pat.id.empty()) e["pattern_name"] = pat.id;  // omitted entirely when the pattern has no id
+        e["start_bar"] = clip.start_bar;
+        e["repeats"] = clip.repeats;
+        e["gain_db"] = clip.gain_db;
+        e["fade_in_beats"] = clip.fade_in_beats;
+        e["fade_out_beats"] = clip.fade_out_beats;
+        e["start_beats"] = start_beats;
+        e["end_beats"] = end_beats;
+        e["start_sample"] = tmap.at(start_beats);
+        e["end_sample"] = tmap.at(end_beats);
+        arr.push_back(std::move(e));
+    }
+    return arr.dump(2) + "\n";
 }
 
 }  // namespace op

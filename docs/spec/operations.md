@@ -537,3 +537,83 @@ absent; there is no `0` equivalence beyond canonical omission). The op carries b
 `null` for a key b's clip does not have: `{"index":0,"length_beats":2.0,"offset_beats":1.0,"op":"set_clip_trim"}`.
 Clips added by `add_clip` carry their trim keys inside the clip JSON. Pairs where no shared clip differs in
 trim produce exactly the same journals as before.
+
+## Arrangement clip view — `opd clips` — additive (WP-0199)
+
+```
+opd clips <proj.opj>
+```
+
+Read-only, deterministic: loads the project and prints **one JSON entry per arrangement clip in model
+order** (the order of the `arrangement` array — never sorted by position). It writes nothing, modifies no
+project, and creates no files. Exactly one positional argument, no options; errors print nothing on
+stdout: missing/extra argument or an option-looking token → exit 2 with detail
+`clips needs exactly <project.opj>`; file missing → exit 3 (`not_found`, detail = the path); project fails
+to parse → exit 4 (`parse`, detail = the loader's message).
+
+Engine API (`engine/render.hpp`, namespace `op`): `std::string clips_json(const Project& p);` — a pure
+function returning exactly the text `opd clips` prints: a JSON array dumped with nlohmann `dump(2)`
+(two-space indent, object keys sorted alphabetically) plus **exactly one trailing `\n`**. Doubles are
+serialized by nlohmann exactly as stored (shortest round-trip; integral-valued doubles keep a `.0`);
+`index`, `pattern`, `repeats`, `start_sample`, `end_sample` are JSON integers. An empty or absent
+`arrangement` yields `[]\n` — the implicit legacy placements (every pattern once at bar 0) are **not**
+synthesized by this view.
+
+Each entry has exactly these keys and no others:
+
+| key | value |
+|---|---|
+| `index` | the clip's position in `arrangement` (0-based integer) |
+| `pattern` | the referenced pattern index (`clip.pattern`) |
+| `pattern_name` | the referenced pattern's `id` string — **omitted entirely when the pattern has no id** (never invented as `""`, `"Pattern 0"` or `null`) |
+| `start_bar` | stored `clip.start_bar` (number, bars) |
+| `repeats` | stored `clip.repeats` (integer, verbatim even when placement clamps it — see below) |
+| `gain_db` | stored `clip.gain_db` (number; always present, default 0.0) |
+| `fade_in_beats` / `fade_out_beats` | stored fade values (numbers; always present, default 0.0) |
+| `start_beats` | `clip.start_bar * double(beats_per_bar)` |
+| `end_beats` | `start_beats + repeats * extent` (see geometry) |
+| `start_sample` / `end_sample` | the renderer's own beat→sample mapping applied to `start_beats` / `end_beats` |
+
+**Geometry (normative — identical to the renderer's placement rule in `for_each_placement`):**
+`extent = op::pattern_extent(pattern)` (explicit `length_beats` when present, else
+`max(note.t + note.dur)`, `0.0` for a pattern without notes);
+`end_beats = start_beats + clip.repeats * extent` computed as a plain product (an empty pattern has
+`extent == 0.0`, so `end_beats == start_beats` and both samples are equal for ANY `repeats`, while the entry
+still reports the stored `repeats`; do not add a special case for it). The loader guarantees
+`clip.pattern` is a valid index and `clip.repeats` is in [1, 4096], so the CLI never sees anything else;
+for a hand-built `Project` passed straight to `clips_json` there is no clamping or validation:
+`repeats` 0 prints `end == start` and a negative `repeats` prints `end < start` (pure arithmetic), and an
+out-of-range `clip.pattern` is the caller's error (undefined, not tested). Samples use the renderer's own tempo map (`build_tempo_map(p, p.sample_rate)` /
+`TempoMap::at`: constant-bpm path `llround(beats * sr*60/bpm)`; piecewise path accumulating each full
+segment with `llround`, matching §Tempo map in project-model.md) at the **project's** sample rate —
+48000 in every current project. Values are **unclamped**: a clip may extend past `length_bars` and its
+true mapped position is reported (`end_sample` may exceed `total_samples_for(p)`; that is not an error).
+
+**Omitted, never invented:** the clip trim keys `offset_beats` / `length_beats` (WP-0193a) are NOT part of
+this view and do not affect its geometry (the renderer ignores them in placement); any other key present
+in a project's clip object is dropped by the model parse and can never appear in the output.
+
+Example — one named pattern (`"Intro"`, notes spanning 8 beats), clip at bar 1.5, repeats 2, gain −6.5,
+fades 0.5/1.0 (120 bpm, 4/4, 48 kHz → spb 24000):
+
+```json
+[
+  {
+    "end_beats": 22.0,
+    "end_sample": 528000,
+    "fade_in_beats": 0.5,
+    "fade_out_beats": 1.0,
+    "gain_db": -6.5,
+    "index": 0,
+    "pattern": 0,
+    "pattern_name": "Intro",
+    "repeats": 2,
+    "start_bar": 1.5,
+    "start_beats": 6.0,
+    "start_sample": 144000
+  }
+]
+```
+
+`opd clips` adds no operation and changes no model field; it is a pure view (the future playlist panel
+and the copilot read this instead of parsing project JSON).

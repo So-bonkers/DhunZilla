@@ -58,4 +58,14 @@ bool render_click(const Project& p, wav::StereoBuffer& out, std::string& err);
 bool pattern_mode_project(const Project& p, std::size_t pattern_index, long long loops, Project& out,
                           std::string& err);
 
+// Arrangement clip view (WP-0199, docs/spec/operations.md §Arrangement clip view): the exact text
+// `opd clips <proj.opj>` prints — one JSON entry per clip in p.arrangement order (never sorted),
+// the stored clip fields plus start/end in beats and samples computed with THIS renderer's own
+// tempo map at p.sample_rate. Pure function of the model: no I/O, no clock, no randomness; it
+// writes nothing and modifies nothing. Empty/absent arrangement → exactly "[]\n" (the implicit
+// legacy placements are not synthesized). Values are unclamped: a clip may extend past length_bars
+// and its true mapped position is reported. Example:
+//   const std::string text = op::clips_json(p);  // "[\n  {\n    \"end_beats\": 22.0,\n ... ]\n"
+std::string clips_json(const Project& p);
+
 }  // namespace op

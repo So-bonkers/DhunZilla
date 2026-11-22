@@ -58,6 +58,7 @@ static void usage() {
         "  opd meters <project.opj>   (per-track and master peak/RMS dBFS + integrated LUFS as JSON)\n"
         "  opd loudness <in.wav> [--json]   (true peak dBTP, momentary/short-term max LUFS, loudness range as JSON)\n"
         "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
+        "  opd clips <proj.opj>   (arrangement clips as canonical JSON — read-only, model order)\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
         "  opd samples <dir> [-o <index.json>]   (JSON index of the audio files under a directory)\n");
 }
@@ -856,6 +857,25 @@ static int cmd_lint(int argc, char** argv) {
     return errors > 0 ? 1 : 0;
 }
 
+// opd clips <proj.opj> (WP-0199, docs/spec/operations.md §Arrangement clip view) — the arrangement as
+// canonical JSON: one entry per clip in model order, with start/end in beats and samples from the
+// renderer's own tempo map. Read-only: writes nothing, modifies no project, creates no files; two runs
+// on the same file are byte-identical. Exactly one positional argument, no options. Errors print
+// nothing on stdout: exit 2 usage, 3 not-found (detail = the path), 4 parse (detail = loader message).
+static int cmd_clips(int argc, char** argv) {
+    if (argc != 2 || argv[1][0] == '-') { usage(); return fail("usage", "clips needs exactly <project.opj>"); }
+    const std::string path = argv[1];
+    if (!fs::exists(path)) return fail("not_found", path);
+
+    op::Project p;
+    std::string err;
+    if (!op::load_project(path, p, err)) return fail("parse", err);
+
+    const std::string json = op::clips_json(p);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 // Parse a decimal argument that must be all digits and fit in [0, max]. Rejects "", "-1", "1.0",
 // "x" and anything that would overflow. Example: parse_decimal("16", 256, v) → true, v == 16.
 static bool parse_decimal(const std::string& s, long long max, long long& out) {
@@ -1006,6 +1026,7 @@ int main(int argc, char** argv) {
     if (cmd == "meters") return cmd_meters(argc - 1, argv + 1);
     if (cmd == "loudness") return cmd_loudness(argc - 1, argv + 1);
     if (cmd == "normalize") return cmd_normalize(argc - 1, argv + 1);
+    if (cmd == "clips") return cmd_clips(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
     usage();
