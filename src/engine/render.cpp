@@ -412,14 +412,29 @@ inline double note_abs_beat(const Pattern& pat, const Note& note, double offset_
     return t_abs;
 }
 
+// Clip trim window (WP-0193b, spec §Clip trim — render): a per-placement onset gate over the
+// pattern-local note.t_beats, built by for_each_placement and honoured by both of its consumers.
+// gated == false never gates (the untrimmed path). Example:
+//   ClipGate g{true, 2.0, 4.0}; note_plays(g, Note{t_beats = 3.0}) → true; t_beats = 4.0 → false.
+struct ClipGate {
+    bool gated = false;
+    double lo = 0.0;  // inclusive lower bound on note.t_beats
+    double hi = 0.0;  // exclusive upper bound on note.t_beats
+};
+
+inline bool note_plays(const ClipGate& g, const Note& n) {
+    return !g.gated || (n.t_beats >= g.lo && n.t_beats < g.hi);
+}
+
 // Enumerate every pattern placement of track `ti` exactly as the renderer sees it (spec
 // §arrangement): legacy default = every pattern of the track once at bar 0; otherwise arrangement
 // clips in order, filtered to this track, one call per repeat. Calls f(pattern, offset_beats,
-// clip_gain_db, env) with the clip's fade envelope (WP-0178; nullptr when the clip has no fades)
-// and stops at the first f that returns false. This is the render loop's pre-WP-0181 placement
+// clip_gain_db, env, gate) — WP-0193b adds the fifth argument, the clip trim onset gate (ungated
+// when untrimmed); env is the clip's fade envelope (WP-0178; nullptr when the clip has no fades).
+// Stops at the first f that returns false. This is the render loop's pre-WP-0181 placement
 // code moved verbatim — the choke trigger pre-pass shares it so triggers can never drift from
 // actual placements. Example:
-//   for_each_placement(p, 0, tmap, [&](const Pattern& pat, double off, double, const ClipEnv*) {
+//   for_each_placement(p, 0, tmap, [&](const Pattern& pat, double off, double, const ClipEnv*, const ClipGate&) {
 //       return true; });
 template <class F>
 bool for_each_placement(const Project& p, std::size_t ti, const TempoMap& tmap, F&& f) {
@@ -427,7 +442,7 @@ bool for_each_placement(const Project& p, std::size_t ti, const TempoMap& tmap, 
     if (p.arrangement.empty()) {
         for (const Pattern& pat : p.patterns) {
             if (static_cast<size_t>(pat.track) != ti) continue;
-            if (!f(pat, 0.0, 0.0, nullptr)) return false;
+            if (!f(pat, 0.0, 0.0, nullptr, ClipGate{})) return false;
         }
         return true;
     }
@@ -437,12 +452,21 @@ bool for_each_placement(const Project& p, std::size_t ti, const TempoMap& tmap, 
         const double extent = pattern_extent(pat);  // loop period, beats (WP-0162 helper)
         const int reps = (extent > 0.0) ? clip.repeats : 1;
         const double base = clip.start_bar * bpb;
-        // Clip fades (WP-0178): one envelope per clip spanning all its repeats, built only when
+        // Clip trim window (WP-0193b, spec §Clip trim — render): s = r*extent + t plays iff w0 <= s <
+        // w0 + len, at base + (s - w0); untrimmed ⇒ w0 == 0 and len == reps*extent → bit-exact legacy.
+        const bool trimmed = clip.offset_beats != 0.0 || clip.length_beats.has_value();
+        const double w0 = clip.offset_beats;
+        const double len =
+            clip.length_beats ? *clip.length_beats : static_cast<double>(reps) * extent - w0;
+        if (trimmed && !(len > 0.0)) continue;   // empty window: the clip plays nothing at all
+        ClipGate gate;
+        gate.gated = trimmed;
+        // Clip fades (WP-0178): one envelope per clip spanning its whole window, built only when
         // a fade is set. Region bounds via the renderer's own TempoMap::at() (spec §Clip fades).
         const ClipEnv* env = nullptr;
         ClipEnv cenv;
         if (clip.fade_in_beats != 0.0 || clip.fade_out_beats != 0.0) {
-            const double clip_end_beats = base + static_cast<double>(reps) * extent;
+            const double clip_end_beats = base + len;
             const long long A = tmap.at(base);
             cenv.in_start = A;
             cenv.in_len = tmap.at(base + clip.fade_in_beats) - A;
@@ -452,7 +476,12 @@ bool for_each_placement(const Project& p, std::size_t ti, const TempoMap& tmap, 
             env = &cenv;
         }
         for (int r = 0; r < reps; ++r) {
-            if (!f(pat, base + static_cast<double>(r) * extent, clip.gain_db, env)) return false;
+            const double src = static_cast<double>(r) * extent;
+            if (trimmed) {
+                gate.lo = w0 - src;
+                gate.hi = w0 + len - src;
+            }
+            if (!f(pat, base + (src - w0), clip.gain_db, env, gate)) return false;
         }
     }
     return true;
@@ -554,8 +583,10 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
     for (size_t ti = 0; ti < ntracks; ++ti) {
         if (p.tracks[ti].choke_group == 0 || !track_audible(p, ti)) continue;
         std::vector<std::pair<long long, size_t>>& vec = choke_triggers[p.tracks[ti].choke_group];
-        for_each_placement(p, ti, tmap, [&](const Pattern& pat, double offset_beats, double, const ClipEnv*) {
+        for_each_placement(p, ti, tmap, [&](const Pattern& pat, double offset_beats, double, const ClipEnv*,
+                                            const ClipGate& gate) {
             for (const Note& note : pat.notes) {
+                if (!note_plays(gate, note)) continue;  // WP-0193b: trimmed-out notes are not triggers
                 const long long s = tmap.at(note_abs_beat(pat, note, offset_beats));
                 if (s < total) vec.emplace_back(s, ti);
             }
@@ -586,7 +617,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
         // Placement (spec §arrangement) runs through for_each_placement below — the same code the
         // choke trigger pre-pass enumerates, so triggers and voices can never disagree.
         auto render_pattern_at = [&](const Pattern& pat, double offset_beats, double clip_gain_db,
-                                     const ClipEnv* env) {
+                                     const ClipEnv* env, const ClipGate& gate) {
             // Clip gain (WP-0120): one mix-target copy per clip; 0.0 skips entirely → bit-identical.
             // WP-0178: a fade envelope also needs the copy (it rides on the same target); when both
             // are absent nothing is copied and the default path stays bit-exact.
@@ -603,6 +634,7 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
                 mt = &clip_t;
             }
             for (const Note& note : pat.notes) {
+                if (!note_plays(gate, note)) continue;  // WP-0193b: trimmed-out notes never sound
                 // Absolute beat position: offset + t, pattern swing (WP-0166) added last to odd 16ths
                 // (helper shared with the choke trigger pre-pass — same math, bit-exact).
                 const double t_abs = note_abs_beat(pat, note, offset_beats);
@@ -655,8 +687,8 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
 
         if (!for_each_placement(p, ti, tmap,
                                 [&](const Pattern& pat, double offset_beats, double clip_gain_db,
-                                    const ClipEnv* env) {
-                                    return render_pattern_at(pat, offset_beats, clip_gain_db, env);
+                                    const ClipEnv* env, const ClipGate& gate) {
+                                    return render_pattern_at(pat, offset_beats, clip_gain_db, env, gate);
                                 }))
             return false;
     }

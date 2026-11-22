@@ -1,0 +1,80 @@
+{
+  "arrangement": [
+    {
+      "fade_out_beats": 1.0,
+      "length_beats": 6.0,
+      "offset_beats": 3.0,
+      "pattern": 0,
+      "repeats": 4,
+      "start_bar": 0.0
+    },
+    {
+      "gain_db": -3.0,
+      "offset_beats": 1.0,
+      "pattern": 1,
+      "repeats": 3,
+      "start_bar": 2.0
+    }
+  ],
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 4.0,
+  "patterns": [
+    {
+      "notes": [
+        {
+          "dur": 1.0,
+          "t": 0.0
+        },
+        {
+          "dur": 1.0,
+          "t": 0.75
+        },
+        {
+          "dur": 1.0,
+          "t": 2.0
+        },
+        {
+          "dur": 1.0,
+          "t": 3.0
+        }
+      ],
+      "swing": 0.25,
+      "track": 0
+    },
+    {
+      "notes": [
+        {
+          "dur": 0.5,
+          "t": 0.0
+        },
+        {
+          "dur": 0.5,
+          "t": 1.5
+        }
+      ],
+      "track": 1
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 2027,
+  "tracks": [
+    {
+      "gain_db": -2.0,
+      "name": "Lead",
+      "pan": 0.3,
+      "voice": {
+        "freq_hz": 437.0,
+        "kind": "sine"
+      }
+    },
+    {
+      "name": "Bass",
+      "voice": {
+        "freq_hz": 110.0,
+        "kind": "sine"
+      }
+    }
+  ]
+}

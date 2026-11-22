@@ -740,3 +740,13 @@ beat `base + (s - offset)` where `base` is the clip start (swing keys off the pa
 `len <= 0` means the clip plays nothing. Note durations are **not** shortened (onset gating only; use
 `fade_out_beats` to cut sound). The clip end used by the clip fades is `base + len`. A `length_beats` longer
 than the available material leaves silence (no extra repeats).
+
+## Clip trim — render (WP-0193b)
+The renderer applies the window defined in §Clip trim (WP-0193a) above:
+- Per clip: `w0 = offset_beats`; `len = length_beats` if present, else `R*E - w0`. Note `n` of repeat `r` plays iff
+  `w0 <= r*E + n.t < w0 + len`, at absolute beat `base + (r*E + n.t - w0)`; swing keys off `n.t`.
+- `len <= 0`: the clip contributes nothing (no notes, no fade envelope). Durations are never shortened.
+- Fades: `fade_in_beats` runs from `base`; `fade_out_beats` ends at `base + len`.
+- Only playing notes are choke triggers (the choke pre-pass uses the same enumeration).
+- A clip with neither `offset_beats` (or `0`) nor `length_beats` renders bit for bit as before.
+- Render length (`length_bars`) is unchanged: a trim only stops audio earlier inside the same buffer.

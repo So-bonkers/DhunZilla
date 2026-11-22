@@ -82,6 +82,9 @@ add_test(NAME meters COMMAND op_meters_tests)
 add_executable(op_clip_trim_tests tests/test_clip_trim.cpp)
 target_link_libraries(op_clip_trim_tests PRIVATE opengine)
 add_test(NAME clip_trim COMMAND op_clip_trim_tests)
+add_executable(op_clip_trim_render_tests tests/test_clip_trim_render.cpp)
+target_link_libraries(op_clip_trim_render_tests PRIVATE opengine)
+add_test(NAME clip_trim_render COMMAND op_clip_trim_render_tests)
 
 add_executable(op_clips_tests tests/test_clips.cpp)
 target_link_libraries(op_clips_tests PRIVATE opengine)
@@ -115,6 +118,7 @@ list(APPEND DZ_OUR_TARGETS dz_latency)  # WP-0190
 
 list(APPEND DZ_OUR_TARGETS op_meters_tests)  # WP-0194
 list(APPEND DZ_OUR_TARGETS op_clip_trim_tests)  # WP-0193a
+list(APPEND DZ_OUR_TARGETS op_clip_trim_render_tests)  # WP-0193b
 list(APPEND DZ_OUR_TARGETS op_clips_tests)  # WP-0199
 list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
