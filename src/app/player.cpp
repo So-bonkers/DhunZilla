@@ -3,16 +3,23 @@
 
 #include "player.hpp"
 
+#include "engine/render.hpp"
+
 namespace dz {
 
 Player::Player() = default;
 
 Player::~Player() {
     // Safe here only because ~Player runs after the audio callback is gone (see header contract):
-    // all three mailbox slots are quiescent, so every owned buffer dies on this thread.
+    // all three mailbox slots are quiescent, so every owned buffer dies on this thread. Same for the
+    // WP-0201 click mailboxes: both click slots and the audio-thread's current track are destroyed
+    // here, on the control thread — process() never destroys anything (§3 rule 11).
     delete pending_.exchange(nullptr);
     delete retired_.exchange(nullptr);
     delete current_;
+    delete click_pending_.exchange(nullptr);
+    delete click_retired_.exchange(nullptr);
+    delete click_current_;
 }
 
 void Player::submit(std::unique_ptr<op::wav::StereoBuffer> buf) {
@@ -65,5 +72,38 @@ bool Player::has_loop() const {
     const long long end = loop_end_.load();
     return start >= 0 && end > start;
 }
+
+// ---- metronome click during playback (WP-0201) ------------------------------------------------------
+// prepare_click runs entirely on the calling (control) thread and touches exactly one engine entry:
+// op::render_click — the same code `opd click` runs (spec §Click track render, WP-0148) — so the
+// onsets come from the project's own beat→sample mapping and the accent rule is identical by
+// construction. The Project is not kept; later changes are tracked only by calling again.
+
+bool Player::prepare_click(const op::Project& p, std::string& err) {
+    // Render first: until render_click succeeds nothing in the player changes, so a failure leaves
+    // both the stored track and the flag exactly as they were, with err left exactly as the engine
+    // set it — no invented or rewritten messages (§3 rule 3).
+    auto* track = new op::wav::StereoBuffer();
+    if (!op::render_click(p, *track, err)) {
+        delete track;
+        return false;
+    }
+
+    // Success: hand the rendered track to the callback through the click mailbox — exactly the
+    // single-slot exchange submit() uses for audio. A previous pending-but-never-adopted track and
+    // the most recent retiree are destroyed here, on the control thread (§3 rule 11). The flag is
+    // not touched: there is no implicit enable in prepare_click (§3 rule 2).
+    delete click_pending_.exchange(track);
+    delete click_retired_.exchange(nullptr);
+    click_stored_ = true;
+    err.clear();  // §3 rule 3: success reports an empty err
+    return true;
+}
+
+bool Player::has_click() const { return click_stored_; }
+
+void Player::set_click_enabled(bool enabled) { click_enabled_.store(enabled); }
+
+bool Player::click_enabled() const { return click_enabled_.load(); }
 
 }  // namespace dz

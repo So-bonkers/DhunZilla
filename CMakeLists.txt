@@ -98,6 +98,11 @@ add_executable(op_player_loop_tests tests/test_player_loop.cpp)
 target_link_libraries(op_player_loop_tests PRIVATE opengine dzplayer)
 add_test(NAME player_loop COMMAND op_player_loop_tests)
 
+# WP-0201: dz::Player metronome click mixed in while playing (dzplayer core + engine click track).
+add_executable(op_player_click_tests tests/test_player_click.cpp)
+target_link_libraries(op_player_click_tests PRIVATE opengine dzplayer)
+add_test(NAME player_click COMMAND op_player_click_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -114,6 +119,7 @@ list(APPEND DZ_OUR_TARGETS op_clips_tests)  # WP-0199
 list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
 list(APPEND DZ_OUR_TARGETS op_player_loop_tests)  # WP-0200
+list(APPEND DZ_OUR_TARGETS op_player_click_tests)  # WP-0201
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
