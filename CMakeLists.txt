@@ -83,6 +83,12 @@ add_test(NAME clip_trim COMMAND op_clip_trim_tests)
 add_executable(op_clips_tests tests/test_clips.cpp)
 target_link_libraries(op_clips_tests PRIVATE opengine)
 add_test(NAME clips COMMAND op_clips_tests)
+# WP-0210: opd timeline (bar ruler backend). Runs the opd binary, so it needs OPD_BIN and depends on it.
+add_executable(op_timeline_tests tests/test_timeline.cpp)
+target_link_libraries(op_timeline_tests PRIVATE opengine)
+target_compile_definitions(op_timeline_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>")
+add_dependencies(op_timeline_tests opd)
+add_test(NAME timeline COMMAND op_timeline_tests)
 
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
@@ -97,6 +103,7 @@ list(APPEND DZ_OUR_TARGETS dz_latency)  # WP-0190
 list(APPEND DZ_OUR_TARGETS op_meters_tests)  # WP-0194
 list(APPEND DZ_OUR_TARGETS op_clip_trim_tests)  # WP-0193a
 list(APPEND DZ_OUR_TARGETS op_clips_tests)  # WP-0199
+list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

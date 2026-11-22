@@ -16,6 +16,23 @@ long long total_samples_for(const Project& p);
 // to total_samples_for(p).
 long long sample_at_bar(const Project& p, double bar);
 
+// Bar -> beat on the project's beat timeline (WP-0210): the single definition of bar numbering.
+// Bars are 0-based and fractional bars are allowed; the result is bar * beats_per_bar exactly.
+// Example: beats_at_bar(p, 4.0) == 16.0 for a 4/4 project (p.beats_per_bar == 4).
+double beats_at_bar(const Project& p, double bar);
+
+// Beat -> sample in the PROJECT's sample rate via the renderer's own tempo map (WP-0210), i.e.
+// TempoMap::at(beat) for build_tempo_map(p, p.sample_rate). Unlike sample_at_bar this is NOT
+// clamped to total_samples_for(p): a ruler may draw positions past the last bar. Negative beats
+// are not supported. Example: sample_at_beat(p, 20.0) == 544000 for tests/fixtures/goldens/tempo.opj.
+long long sample_at_beat(const Project& p, double beat);
+
+// Tempo in BPM in effect at `beat` (WP-0210): p.bpm when the project has no tempo_map, else the
+// bpm of the last tempo point whose bar * beats_per_bar <= beat. Example: for
+// tests/fixtures/goldens/tempo.opj (72 bpm from bar 4) bpm_at_beat(p, 15.75) == 120.0 and
+// bpm_at_beat(p, 16.0) == 72.0.
+double bpm_at_beat(const Project& p, double beat);
+
 // Frames [from_frame, to_frame) of `buf` copied into `out` (same sample_rate). Requires 0 <= from < to <= frames.
 void slice_frames(const wav::StereoBuffer& buf, long long from_frame, long long to_frame, wav::StereoBuffer& out);
 

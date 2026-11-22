@@ -60,6 +60,7 @@ static void usage() {
         "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
         "  opd clips <proj.opj>   (arrangement clips as canonical JSON — read-only, model order)\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
+        "  opd timeline <project.opj> [--bars N]   (per-bar ruler: start beat, sample, seconds + tempo as JSON)\n"
         "  opd samples <dir> [-o <index.json>]   (JSON index of the audio files under a directory)\n");
 }
 
@@ -1004,6 +1005,90 @@ static int cmd_peaks(int argc, char** argv) {
     return 0;
 }
 
+// Canonical per-bar ruler JSON (WP-0210, task WP-0210 §JSON): one row per bar i = 0 .. n_bars-1 with its
+// start beat, start sample (project sample rate), start seconds and the tempo in force there. Every value
+// comes from the renderer's own mapping — op::beats_at_bar / op::sample_at_beat / op::bpm_at_beat — so this
+// helper contains no bar/beat/tempo math of its own (the seconds division below is the only arithmetic).
+// Byte-exact output: '\n' line endings, two-space header indent, four-space rows, no comma after the last
+// row. Example: timeline_json(p, 1) on a 4/4 120 bpm project starts "{\n  \"sample_rate\": 48000,\n".
+static std::string timeline_json(const op::Project& p, long long n_bars) {
+    const op::TimeSignature ts = op::effective_time_signature(p);
+    char line[256];
+    std::string out;
+    std::snprintf(line, sizeof line, "{\n  \"sample_rate\": %d,\n", p.sample_rate);
+    out += line;
+    std::snprintf(line, sizeof line, "  \"beats_per_bar\": %d,\n", p.beats_per_bar);
+    out += line;
+    std::snprintf(line, sizeof line, "  \"time_signature\": \"%d/%d\",\n", ts.num, ts.den);
+    out += line;
+    std::snprintf(line, sizeof line, "  \"length_bars\": %.6f,\n", p.length_bars);
+    out += line;
+    out += "  \"bars\": [\n";
+    for (long long i = 0; i < n_bars; ++i) {
+        const double start_beat = op::beats_at_bar(p, static_cast<double>(i));
+        const long long start_sample = op::sample_at_beat(p, start_beat);
+        const double start_seconds =
+            static_cast<double>(start_sample) / static_cast<double>(p.sample_rate);
+        const double bpm = op::bpm_at_beat(p, start_beat);
+        std::snprintf(line, sizeof line,
+                      "    {\"bar\": %lld, \"start_beat\": %.6f, \"start_sample\": %lld,"
+                      " \"start_seconds\": %.6f, \"bpm\": %.2f}%s\n",
+                      i, start_beat, start_sample, start_seconds, bpm, (i + 1 < n_bars) ? "," : "");
+        out += line;
+    }
+    out += "  ]\n";
+    out += "}\n";
+    return out;
+}
+
+// opd timeline <project.opj> [--bars N] (WP-0210) — the bar ruler as canonical JSON: per bar its start
+// beat, start sample and start seconds plus the tempo in force there, all taken from the renderer's own
+// tempo map. Read-only: nothing is written anywhere and the project is never modified; output is
+// deterministic. Options are checked before the file is touched. Exit codes: 2 usage (unknown arg or a
+// second positional, no project argument, a bad --bars value, or --bars above the project's bar count),
+// 3 not-found, 4 parse (message = the loader's error). Errors print nothing on stdout.
+static int cmd_timeline(int argc, char** argv) {
+    std::vector<std::string> pos;
+    bool has_bars = false;
+    long long bars_arg = 0;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--bars") && i + 1 < argc) {
+            long long v = 0;
+            if (!parse_decimal(argv[i + 1], 4096, v) || v < 1)
+                { usage(); return fail("usage", std::string("bad --bars value '") + argv[i + 1] + "'"); }
+            bars_arg = v;
+            has_bars = true;
+            ++i;
+        } else if (argv[i][0] == '-' || !pos.empty()) {  // unknown option (incl. valueless --bars) or extra positional
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        } else {
+            pos.push_back(argv[i]);
+        }
+    }
+    if (pos.empty()) { usage(); return fail("usage", "timeline needs <project.opj>"); }
+    const std::string& proj = pos[0];
+    if (!fs::exists(proj)) return fail("not_found", proj);
+
+    op::Project p;
+    std::string err;
+    if (!op::load_project(proj, p, err)) return fail("parse", err);
+
+    // One row per bar by default: a final partial bar counts (length_bars > 0 is enforced by the model).
+    const long long n_proj = static_cast<long long>(std::ceil(p.length_bars));
+    long long n_bars = n_proj;
+    if (has_bars) {
+        if (bars_arg > n_proj) {
+            usage();
+            return fail("usage", "--bars " + std::to_string(bars_arg) + " is larger than the project's " +
+                                      std::to_string(n_proj) + " bars");
+        }
+        n_bars = bars_arg;
+    }
+    const std::string json = timeline_json(p, n_bars);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -1029,6 +1114,7 @@ int main(int argc, char** argv) {
     if (cmd == "clips") return cmd_clips(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
+    if (cmd == "timeline") return cmd_timeline(argc - 1, argv + 1);
     usage();
     return 2;
 }

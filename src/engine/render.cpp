@@ -355,6 +355,7 @@ struct TempoSeg {
     double start_beats = 0.0;      // segment start on the beat timeline
     long long start_sample = 0;    // exact accumulated sample at segment start
     double spb = 0.0;              // samples per beat inside this segment
+    double bpm = 0.0;              // WP-0210: BPM of the tempo point that starts this segment (bpm_at_beat)
 };
 
 struct TempoMap {
@@ -387,15 +388,17 @@ TempoMap build_tempo_map(const Project& p, int sr) {
     const double bpb = static_cast<double>(p.beats_per_bar);
     double seg_b0 = p.tempo_map[0].bar * bpb;  // model validator guarantees first point at bar 0
     double seg_spb = static_cast<double>(sr) * 60.0 / p.tempo_map[0].bpm;
+    double seg_bpm = p.tempo_map[0].bpm;  // WP-0210: stored bpm, never derived back from spb
     long long cum = 0;
     for (size_t i = 1; i < p.tempo_map.size(); ++i) {
         const double next_b = p.tempo_map[i].bar * bpb;
-        tm.segs.push_back({seg_b0, cum, seg_spb});
+        tm.segs.push_back({seg_b0, cum, seg_spb, seg_bpm});
         cum += static_cast<long long>(std::llround((next_b - seg_b0) * seg_spb));
         seg_b0 = next_b;
         seg_spb = static_cast<double>(sr) * 60.0 / p.tempo_map[i].bpm;
+        seg_bpm = p.tempo_map[i].bpm;  // WP-0210
     }
-    tm.segs.push_back({seg_b0, cum, seg_spb});
+    tm.segs.push_back({seg_b0, cum, seg_spb, seg_bpm});
     return tm;
 }
 
@@ -475,7 +478,7 @@ long long choke_cut_frame(const std::map<int, std::vector<std::pair<long long, s
 }  // namespace
 
 long long total_samples_for(const Project& p) {
-    const double beats = p.length_bars * static_cast<double>(p.beats_per_bar);
+    const double beats = beats_at_bar(p, p.length_bars);
     if (p.tempo_map.empty())
         return static_cast<long long>(std::ceil(beats * static_cast<double>(p.sample_rate) * 60.0 / p.bpm));
     // Piecewise: full segments accumulate llround samples (same rule as placement), final partial ceil.
@@ -493,8 +496,28 @@ long long sample_at_bar(const Project& p, double bar) {
     const long long total = total_samples_for(p);
     if (bar >= p.length_bars) return total;
     const TempoMap tm = build_tempo_map(p, p.sample_rate);
-    const long long s = tm.at(bar * static_cast<double>(p.beats_per_bar));
+    const long long s = tm.at(beats_at_bar(p, bar));
     return std::min(s, total);
+}
+
+double beats_at_bar(const Project& p, double bar) {
+    // WP-0210: the single definition of bar numbering (0-based bars, fractional allowed).
+    return bar * static_cast<double>(p.beats_per_bar);
+}
+
+long long sample_at_beat(const Project& p, double beat) {
+    // WP-0210: the renderer's own mapping, deliberately unclamped — unlike sample_at_bar a ruler
+    // may ask for positions past the end of the project.
+    const TempoMap tm = build_tempo_map(p, p.sample_rate);
+    return tm.at(beat);
+}
+
+double bpm_at_beat(const Project& p, double beat) {
+    // WP-0210: constant bpm when there is no tempo map; otherwise the segment's stored bpm (the
+    // last tempo point at or before `beat`), read straight from the model value.
+    const TempoMap tm = build_tempo_map(p, p.sample_rate);
+    if (tm.segs.empty()) return p.bpm;
+    return tm.segs[tm.seg_index(beat)].bpm;
 }
 
 void slice_frames(const wav::StereoBuffer& buf, long long from_frame, long long to_frame, wav::StereoBuffer& out) {
