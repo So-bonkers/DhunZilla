@@ -56,6 +56,9 @@ add_test(NAME normalize COMMAND op_normalize_tests)
 add_executable(op_lint_tests tests/test_lint.cpp)
 target_link_libraries(op_lint_tests PRIVATE opengine)
 add_test(NAME lint COMMAND op_lint_tests)
+add_executable(op_lint_rules_tests tests/test_lint_rules.cpp)
+target_link_libraries(op_lint_rules_tests PRIVATE opengine)
+add_test(NAME lint_rules COMMAND op_lint_rules_tests)
 
 add_executable(op_peaks_tests tests/test_peaks.cpp)
 target_link_libraries(op_peaks_tests PRIVATE opengine)
@@ -104,6 +107,7 @@ list(APPEND DZ_OUR_TARGETS op_meters_tests)  # WP-0194
 list(APPEND DZ_OUR_TARGETS op_clip_trim_tests)  # WP-0193a
 list(APPEND DZ_OUR_TARGETS op_clips_tests)  # WP-0199
 list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
+list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

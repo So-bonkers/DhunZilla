@@ -61,6 +61,9 @@ legacy playback) is unaffected because `length_beats` has no effect without an a
 | 9 | info | `track_muted` | `tracks[i]` | `track is muted` | `mute == true` |
 | 10 | info | `track_silenced_by_solo` | `tracks[i]` | `silenced because another track is soloed` | some track has `solo == true`, and track i has `solo == false` and `mute == false` |
 | 11 | warning | `tempo_point_past_end` | `tempo_map[k]` | `tempo change at or after length_bars` | `tempo_map[k].bar >= length_bars` |
+| 12 | warning | `fades_exceed_clip_length` | `arrangement[k]` | `fade_in_beats + fade_out_beats exceed the clip length` | `fade_in_beats + fade_out_beats > double(repeats) * extent + 1e-9` (§WP-0203) |
+| 13 | info | `choke_group_single_track` | `tracks[i]` | `choke group has only one track` | `choke_group != 0` and exactly one track shares that value (§WP-0203) |
+| 14 | info | `swing_without_odd_sixteenths` | `patterns[j]` | `swing is set but no note starts on an odd 16th` | `swing != 0.0` and no note passes the WP-0166 odd-16th test (§WP-0203) |
 
 Rule 8 file resolution: `p = voice.path`; if `p` is not absolute and `base_dir` is non-empty, `p = base_dir / p`;
 the issue is raised when `std::filesystem::exists(p, ec)` is false (use the `error_code` overload, never throw).
@@ -77,3 +80,38 @@ accepted and ignored. Exit codes: 0 when there is no error-severity issue (warni
 least one error-severity issue exists (JSON is still printed); 2 usage (no file, extra or unknown argument);
 3 project file not found; 4 project does not parse (use the existing `fail(...)` helper). In cases 2-4 nothing
 is written to stdout.
+
+## Additive rules for recently shipped features (WP-0203)
+
+Rules 12–14 cover the features that landed after WP-0170 — clip fades (WP-0178), sampler choke groups
+(WP-0181), pattern swing (WP-0166). They are read-only like every other rule, and rules 1–11 keep their
+conditions, severities, paths, messages **and relative order**: the three new loops run **after** rule
+11, each emitting in ascending index order. The CLI does not change — all three are warning/info, so a
+project that only trips them still exits 0.
+
+**Rule 12 `fades_exceed_clip_length` (warning).** Per clip `k`, ascending: `extent =
+op::pattern_extent(patterns[clip.pattern])` (the model helper rule 6 uses; an out-of-range
+`clip.pattern`, impossible from a parsed file, counts as extent `0`) and `span = double(clip.repeats) *
+extent` — exactly the span the renderer fades across (WP-0178); flag iff `clip.fade_in_beats +
+clip.fade_out_beats > span + 1e-9`. `sum == span` exactly is **not** flagged, only a genuine overshoot
+(`1e-9` beats is the same absolute guard rule 6 uses). A pattern with no notes and no `length_beats` has
+`span == 0`, so any positive fade sum is flagged. The clip trim keys `offset_beats` / `length_beats`
+(WP-0193a) are **not** consulted — the renderer ignores them until WP-0193b and lint must agree with
+what renders: do not shorten `span` by a clip `length_beats`, and never read `pattern.length_beats`
+instead of `pattern_extent`. Rule 12 is independent of rules 5/6, so past-the-end clips are checked too.
+
+**Rule 13 `choke_group_single_track` (info).** Per track `i`, ascending: let `g = tracks[i].choke_group`
+and skip when `g == 0` (no group); else count the tracks whose `choke_group` equals `g` and flag when
+that count is exactly `1`. A lone member can neither be cut nor cut anything (WP-0181 cuts only *other*
+tracks' voices), so such a group is dead configuration. Only `choke_group` values are compared — voice
+kind, mute/solo and files are irrelevant.
+
+**Rule 14 `swing_without_odd_sixteenths` (info).** Per pattern `j`, ascending: flag when
+`patterns[j].swing != 0.0` (`-0.0` equals `0.0`, so a saved `-0.0` is off) and **no** note of the
+pattern is one swing would move, i.e. no note satisfies the shipped WP-0166 test on its own
+pattern-local `t`: `q = note.t_beats * 4.0` (exact, power-of-two scale), swung iff `std::floor(q) == q
+&& std::fmod(q, 2.0) == 1.0` (so t = 0.25, 0.75, 1.25 … qualify; 0.3 does not). Write that predicate
+inline with `std::floor`/`std::fmod` from `<cmath>`, as the file-local `is_odd_sixteenth` in
+`src/engine/render.cpp` does — do not call, move or export it, and add no new `dsp.hpp` wrapper. A
+pattern with swing set and no notes at all **is** flagged. The rule is arrangement-independent: clip
+references, `start_bar` and `offset_beats` do not matter.

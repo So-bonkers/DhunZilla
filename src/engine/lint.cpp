@@ -4,6 +4,7 @@
 #include "engine/lint.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -137,6 +138,53 @@ std::vector<Issue> lint_project(const Project& p, const std::string& base_dir) {
         if (p.tempo_map[k].bar >= p.length_bars)
             out.push_back({"warning", "tempo_point_past_end", "tempo_map[" + std::to_string(k) + "]",
                            "tempo change at or after length_bars"});
+    }
+
+    // Rule 12 (warning fades_exceed_clip_length, WP-0203): the two fade ramps together longer than the
+    // clip span. span = repeats * pattern_extent() — exactly what the renderer fades across (WP-0178);
+    // the trim keys offset_beats/length_beats are ignored until WP-0193b, so lint must ignore them too.
+    // 1e-9 is the same absolute guard rule 6 uses: sum == span exactly is NOT flagged. Independent of
+    // rules 5/6 — past-the-end clips are checked as well.
+    for (std::size_t k = 0; k < p.arrangement.size(); ++k) {
+        const Clip& c = p.arrangement[k];
+        double extent = 0.0;
+        if (c.pattern >= 0 && static_cast<std::size_t>(c.pattern) < p.patterns.size())
+            extent = pattern_extent(p.patterns[static_cast<std::size_t>(c.pattern)]);  // 0.0 when no notes
+        const double span = static_cast<double>(c.repeats) * extent;
+        if (c.fade_in_beats + c.fade_out_beats > span + 1e-9)
+            out.push_back({"warning", "fades_exceed_clip_length", "arrangement[" + std::to_string(k) + "]",
+                           "fade_in_beats + fade_out_beats exceed the clip length"});
+    }
+
+    // Rule 13 (info choke_group_single_track, WP-0203): a choke group with exactly one member can never
+    // cut anything — WP-0181 cuts only *other* tracks' voices. g == 0 means "no group" and is skipped;
+    // only the value is compared (voice kind, mute/solo and files are irrelevant).
+    for (std::size_t i = 0; i < p.tracks.size(); ++i) {
+        const int g = p.tracks[i].choke_group;
+        if (g == 0) continue;
+        int members = 0;
+        for (const Track& t : p.tracks)
+            if (t.choke_group == g) ++members;
+        if (members == 1)
+            out.push_back({"info", "choke_group_single_track", "tracks[" + std::to_string(i) + "]",
+                           "choke group has only one track"});
+    }
+
+    // Rule 14 (info swing_without_odd_sixteenths, WP-0203): swing set but no note it could ever move.
+    // The predicate is inline-identical to the file-local is_odd_sixteenth in src/engine/render.cpp
+    // (WP-0166); both calls are exact IEEE operations on a power-of-two scale, so no dsp.hpp wrapper.
+    // swing == -0.0 compares equal to 0.0 → off, not flagged. A pattern with no notes IS flagged.
+    for (std::size_t j = 0; j < p.patterns.size(); ++j) {
+        if (p.patterns[j].swing != 0.0) {
+            bool any_moved = false;
+            for (const Note& note : p.patterns[j].notes) {
+                const double q = note.t_beats * 4.0;  // exact: power-of-two scale
+                if (std::floor(q) == q && std::fmod(q, 2.0) == 1.0) { any_moved = true; break; }
+            }
+            if (!any_moved)
+                out.push_back({"info", "swing_without_odd_sixteenths", "patterns[" + std::to_string(j) + "]",
+                               "swing is set but no note starts on an odd 16th"});
+        }
     }
 
     return out;
