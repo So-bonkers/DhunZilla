@@ -166,11 +166,24 @@ bool save_midi(const std::string& path, const Project& p, std::string& err) {
         std::vector<MidiEvent> evs;
         // Placement (WP-0129): mirrors renderer semantics so exported MIDI matches what you hear.
         // Legacy default = every pattern once at bar 0 (offset 0.0 → byte-identical to pre-WP output).
-        struct Placement { const Pattern* pat; double offset_beats; double gain_lin; };
+        // WP-0193c adds the clip trim window: [w0, hi) over the source position s of the unrolled
+        // pattern (spec §Clip trim). `offset_beats` keeps its WP-0129 meaning — the *placement* beat,
+        // never the clip's trim offset; trim values live under their own names (w0 / hi / src_base).
+        struct Placement {
+            const Pattern* pat = nullptr;
+            double offset_beats = 0.0;  // WP-0129 placement beat: clip start + r*E (untrimmed path)
+            double base_beats = 0.0;    // WP-0193c clip start beat (start_bar * beats_per_bar)
+            double src_base = 0.0;      // WP-0193c this repeat's source origin r*E
+            double w0 = 0.0;            // WP-0193c trim offset (inclusive lower bound on s)
+            double hi = 0.0;            // WP-0193c window end w0 + len (exclusive upper bound)
+            bool trimmed = false;       // false → pre-WP-0193c arithmetic, bit for bit
+            double gain_lin = 1.0;
+        };
         std::vector<Placement> placements;
         if (p.arrangement.empty()) {
             for (const Pattern& pat : p.patterns)
-                if (pat.track == static_cast<int>(ti)) placements.push_back({&pat, 0.0, 1.0});
+                if (pat.track == static_cast<int>(ti))
+                    placements.push_back(Placement{.pat = &pat, .offset_beats = 0.0, .gain_lin = 1.0});
         } else {
             const double bpb = static_cast<double>(p.beats_per_bar);
             for (const Clip& clip : p.arrangement) {
@@ -180,17 +193,39 @@ bool save_midi(const std::string& path, const Project& p, std::string& err) {
                 const int reps = (extent > 0.0) ? clip.repeats : 1;
                 // MIDI has no clip level: bake gain_db into note velocities (documented in spec).
                 const double cg = clip.gain_db != 0.0 ? static_cast<double>(dsp::db_to_lin(clip.gain_db)) : 1.0;
-                for (int r = 0; r < reps; ++r)
-                    placements.push_back({&pat, clip.start_bar * bpb + static_cast<double>(r) * extent, cg});
+                // WP-0193c: window [w0, w0 + len) over the unrolled source timeline (spec §Clip trim).
+                // len <= 0 keeps every note outside the window, so such a clip exports nothing.
+                Placement proto;
+                proto.pat = &pat;
+                proto.base_beats = clip.start_bar * bpb;
+                proto.trimmed = (clip.offset_beats != 0.0) || clip.length_beats.has_value();
+                proto.w0 = clip.offset_beats;
+                const double len = clip.length_beats ? *clip.length_beats
+                                                     : static_cast<double>(reps) * extent - clip.offset_beats;
+                proto.hi = clip.offset_beats + len;
+                proto.gain_lin = cg;
+                for (int r = 0; r < reps; ++r) {
+                    Placement pl = proto;
+                    pl.src_base = static_cast<double>(r) * extent;
+                    pl.offset_beats = pl.base_beats + pl.src_base;  // WP-0129 arithmetic, unchanged
+                    placements.push_back(pl);
+                }
             }
         }
         for (const Placement& pl : placements) {
             for (const Note& n : pl.pat->notes) {
+                double t_beats = 0.0;
+                if (!pl.trimmed) {
+                    t_beats = n.t_beats + pl.offset_beats;  // unchanged pre-WP-0193c placement
+                } else {
+                    const double s = pl.src_base + n.t_beats;      // source position in the unrolled pattern
+                    if (!(s >= pl.w0 && s < pl.hi)) continue;      // windowed out: no events at all
+                    t_beats = pl.base_beats + (s - pl.w0);         // spec placement beat base + (s - offset)
+                }
                 const int midi = n.midi_note >= 0 ? n.midi_note : nearest_midi(tr.voice.freq_hz);
                 int out_vel = static_cast<int>(std::llround(n.velocity * pl.gain_lin * 127.0));  // WP-0111 dynamics, WP-0129 clip bake
                 if (out_vel < 1) out_vel = 1;
                 if (out_vel > 127) out_vel = 127;
-                const double t_beats = n.t_beats + pl.offset_beats;
                 long long t1 = std::llround(t_beats * kExportPpq);
                 long long t2 = std::llround((t_beats + n.dur_beats) * kExportPpq);
                 if (t1 < 0) t1 = 0;

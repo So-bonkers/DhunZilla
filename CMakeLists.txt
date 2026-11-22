@@ -86,6 +86,11 @@ add_executable(op_clip_trim_render_tests tests/test_clip_trim_render.cpp)
 target_link_libraries(op_clip_trim_render_tests PRIVATE opengine)
 add_test(NAME clip_trim_render COMMAND op_clip_trim_render_tests)
 
+# WP-0193c: clip trim in MIDI export (save_midi placement window), own test binary.
+add_executable(op_clip_trim_midi_tests tests/test_clip_trim_midi.cpp)
+target_link_libraries(op_clip_trim_midi_tests PRIVATE opengine)
+add_test(NAME clip_trim_midi COMMAND op_clip_trim_midi_tests)
+
 add_executable(op_clips_tests tests/test_clips.cpp)
 target_link_libraries(op_clips_tests PRIVATE opengine)
 add_test(NAME clips COMMAND op_clips_tests)
@@ -124,6 +129,7 @@ list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
 list(APPEND DZ_OUR_TARGETS op_player_loop_tests)  # WP-0200
 list(APPEND DZ_OUR_TARGETS op_player_click_tests)  # WP-0201
+list(APPEND DZ_OUR_TARGETS op_clip_trim_midi_tests)  # WP-0193c
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

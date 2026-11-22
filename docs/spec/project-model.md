@@ -712,8 +712,8 @@ pattern on its own, ignoring the project's arrangement. Read-only: no model chan
 ## Clip trim — additive (WP-0193a)
 
 A clip may be trimmed to a window of its pattern's unrolled source timeline. WP-0193a (this part) only
-parses, validates, saves and edits the two keys; **rendering and MIDI export ignore them until WP-0193b
-(render) and WP-0193c (MIDI) land**. Untrimmed projects are unchanged byte for byte.
+parses, validates, saves and edits the two keys; rendering applies them from WP-0193b, MIDI export
+(`opd opj2mid`) from WP-0193c. Untrimmed projects are unchanged byte for byte.
 
 ### Clip keys (both optional)
 - `offset_beats`: JSON number, finite, in `[0, 4096]`, default `0`.
