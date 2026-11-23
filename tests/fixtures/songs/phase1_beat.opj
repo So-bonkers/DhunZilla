@@ -1,0 +1,546 @@
+{
+  "arrangement": [
+    {
+      "fade_in_beats": 4.0,
+      "pattern": 2,
+      "repeats": 8,
+      "start_bar": 0.0
+    },
+    {
+      "fade_out_beats": 2.0,
+      "pattern": 0,
+      "repeats": 16,
+      "start_bar": 8.0
+    },
+    {
+      "fade_out_beats": 2.0,
+      "pattern": 1,
+      "repeats": 16,
+      "start_bar": 8.0
+    },
+    {
+      "pattern": 2,
+      "repeats": 16,
+      "start_bar": 8.0
+    },
+    {
+      "fade_in_beats": 2.0,
+      "pattern": 3,
+      "repeats": 8,
+      "start_bar": 8.0
+    },
+    {
+      "pattern": 4,
+      "repeats": 16,
+      "start_bar": 8.0
+    },
+    {
+      "fade_out_beats": 2.0,
+      "pattern": 2,
+      "repeats": 8,
+      "start_bar": 24.0
+    },
+    {
+      "pattern": 3,
+      "repeats": 2,
+      "start_bar": 24.0
+    },
+    {
+      "pattern": 0,
+      "repeats": 16,
+      "start_bar": 32.0
+    },
+    {
+      "pattern": 1,
+      "repeats": 16,
+      "start_bar": 32.0
+    },
+    {
+      "pattern": 5,
+      "repeats": 16,
+      "start_bar": 32.0
+    },
+    {
+      "pattern": 3,
+      "repeats": 8,
+      "start_bar": 32.0
+    },
+    {
+      "pattern": 4,
+      "repeats": 16,
+      "start_bar": 32.0
+    },
+    {
+      "fade_in_beats": 2.0,
+      "pattern": 1,
+      "repeats": 4,
+      "start_bar": 48.0
+    },
+    {
+      "pattern": 2,
+      "repeats": 8,
+      "start_bar": 48.0
+    },
+    {
+      "fade_in_beats": 4.0,
+      "pattern": 3,
+      "repeats": 4,
+      "start_bar": 48.0
+    },
+    {
+      "pattern": 6,
+      "repeats": 2,
+      "start_bar": 52.0
+    },
+    {
+      "pattern": 0,
+      "repeats": 8,
+      "start_bar": 56.0
+    },
+    {
+      "pattern": 1,
+      "repeats": 8,
+      "start_bar": 56.0
+    },
+    {
+      "pattern": 5,
+      "repeats": 8,
+      "start_bar": 56.0
+    },
+    {
+      "pattern": 3,
+      "repeats": 4,
+      "start_bar": 56.0
+    },
+    {
+      "pattern": 4,
+      "repeats": 8,
+      "start_bar": 56.0
+    },
+    {
+      "fade_out_beats": 8.0,
+      "length_beats": 26.0,
+      "offset_beats": 2.0,
+      "pattern": 2,
+      "repeats": 8,
+      "start_bar": 64.0
+    },
+    {
+      "pattern": 3,
+      "repeats": 2,
+      "start_bar": 64.0
+    }
+  ],
+  "beats_per_bar": 4,
+  "bpm": 96.0,
+  "format_version": 0,
+  "length_bars": 72.0,
+  "master_gain_db": 1.0,
+  "patterns": [
+    {
+      "length_beats": 4.0,
+      "notes": [
+        {
+          "dur": 0.25,
+          "t": 0.0
+        },
+        {
+          "dur": 0.25,
+          "t": 1.0
+        },
+        {
+          "dur": 0.25,
+          "t": 2.0
+        },
+        {
+          "dur": 0.25,
+          "t": 3.0
+        }
+      ],
+      "track": 0
+    },
+    {
+      "length_beats": 4.0,
+      "notes": [
+        {
+          "dur": 0.25,
+          "t": 1.0
+        },
+        {
+          "dur": 0.25,
+          "t": 3.0
+        }
+      ],
+      "track": 1
+    },
+    {
+      "length_beats": 4.0,
+      "notes": [
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 0.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 0.5
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 1.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 1.5
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 2.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 2.5
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 3.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 3.5
+        }
+      ],
+      "track": 2
+    },
+    {
+      "length_beats": 8.0,
+      "notes": [
+        {
+          "dur": 0.75,
+          "note": 45,
+          "t": 0.0
+        },
+        {
+          "dur": 0.5,
+          "note": 45,
+          "t": 1.0,
+          "vel": 0.8
+        },
+        {
+          "dur": 0.25,
+          "note": 41,
+          "t": 1.75
+        },
+        {
+          "dur": 0.75,
+          "note": 38,
+          "t": 2.25
+        },
+        {
+          "dur": 0.75,
+          "note": 38,
+          "t": 3.25,
+          "vel": 0.8
+        },
+        {
+          "dur": 0.75,
+          "note": 43,
+          "t": 4.0
+        },
+        {
+          "dur": 0.5,
+          "note": 43,
+          "t": 5.0,
+          "vel": 0.8
+        },
+        {
+          "dur": 0.25,
+          "note": 41,
+          "t": 5.75
+        },
+        {
+          "dur": 0.75,
+          "note": 40,
+          "t": 6.25
+        },
+        {
+          "dur": 0.5,
+          "note": 36,
+          "t": 7.25
+        }
+      ],
+      "track": 3
+    },
+    {
+      "length_beats": 4.0,
+      "notes": [
+        {
+          "dur": 0.25,
+          "note": 67,
+          "t": 0.75
+        },
+        {
+          "dur": 0.25,
+          "note": 67,
+          "t": 1.75
+        },
+        {
+          "dur": 0.25,
+          "note": 67,
+          "t": 2.75
+        },
+        {
+          "dur": 0.25,
+          "note": 67,
+          "t": 3.5
+        }
+      ],
+      "track": 4
+    },
+    {
+      "id": "hat16",
+      "length_beats": 4.0,
+      "notes": [
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 0.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 0.5
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 1.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 1.5
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 2.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 2.5
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 3.0
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 3.5
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 0.25
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 0.75
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 1.25
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 1.75
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 2.25
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 2.75
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 3.25
+        },
+        {
+          "dur": 0.25,
+          "note": 72,
+          "t": 3.75
+        }
+      ],
+      "track": 2
+    },
+    {
+      "id": "roll",
+      "length_beats": 4.0,
+      "notes": [
+        {
+          "dur": 0.25,
+          "t": 0.0,
+          "vel": 0.2
+        },
+        {
+          "dur": 0.25,
+          "t": 0.25,
+          "vel": 0.25
+        },
+        {
+          "dur": 0.25,
+          "t": 0.5,
+          "vel": 0.3
+        },
+        {
+          "dur": 0.25,
+          "t": 0.75,
+          "vel": 0.35
+        },
+        {
+          "dur": 0.25,
+          "t": 1.0,
+          "vel": 0.4
+        },
+        {
+          "dur": 0.25,
+          "t": 1.25,
+          "vel": 0.45
+        },
+        {
+          "dur": 0.25,
+          "t": 1.5,
+          "vel": 0.5
+        },
+        {
+          "dur": 0.25,
+          "t": 1.75,
+          "vel": 0.55
+        },
+        {
+          "dur": 0.25,
+          "t": 2.0,
+          "vel": 0.6
+        },
+        {
+          "dur": 0.25,
+          "t": 2.25,
+          "vel": 0.65
+        },
+        {
+          "dur": 0.25,
+          "t": 2.5,
+          "vel": 0.7
+        },
+        {
+          "dur": 0.25,
+          "t": 2.75,
+          "vel": 0.75
+        },
+        {
+          "dur": 0.25,
+          "t": 3.0,
+          "vel": 0.8
+        },
+        {
+          "dur": 0.25,
+          "t": 3.25,
+          "vel": 0.85
+        },
+        {
+          "dur": 0.25,
+          "t": 3.5,
+          "vel": 0.9
+        },
+        {
+          "dur": 0.25,
+          "t": 3.75,
+          "vel": 0.95
+        }
+      ],
+      "track": 1
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 42,
+  "tracks": [
+    {
+      "gain_db": -0.5,
+      "name": "Kick",
+      "pan": 0.0,
+      "voice": {
+        "kind": "sampler",
+        "path": "kits/kick.wav"
+      }
+    },
+    {
+      "gain_db": -3.0,
+      "name": "Snare",
+      "pan": -0.20000000298023224,
+      "voice": {
+        "end_s": 0.12,
+        "kind": "sampler",
+        "path": "kits/kick.wav"
+      }
+    },
+    {
+      "gain_db": -9.0,
+      "name": "Hat",
+      "pan": 0.25,
+      "voice": {
+        "end_s": 0.03,
+        "kind": "sampler",
+        "path": "kits/kick.wav",
+        "root_note": 60
+      }
+    },
+    {
+      "gain_db": -4.5,
+      "name": "Bass",
+      "pan": 0.0,
+      "voice": {
+        "adsr": {
+          "attack_s": 0.01,
+          "decay_s": 0.12,
+          "release_s": 0.25,
+          "sustain": 0.6
+        },
+        "attack_ms": 5.0,
+        "cutoff_hz": 900.0,
+        "kind": "synth",
+        "release_ms": 30.0,
+        "resonance": 0.8,
+        "waveform": "saw"
+      }
+    },
+    {
+      "gain_db": -6.0,
+      "mute": true,
+      "name": "Perc",
+      "pan": -0.3499999940395355,
+      "voice": {
+        "kind": "sampler",
+        "path": "kits/kick.wav",
+        "root_note": 60
+      }
+    }
+  ]
+}

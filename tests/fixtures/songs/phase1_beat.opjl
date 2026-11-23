@@ -1,0 +1,152 @@
+# WP-0197 - "Exit Beat": the Phase 1 exit-criterion song as an op journal (no hand-edited JSON).
+# Build it with exactly:
+#   opd new phase1_beat.opj --bpm 96 --bars 72 \
+#     --track Kick:sampler:kits/kick.wav --track Snare:sampler:kits/kick.wav \
+#     --track Hat:sampler:kits/kick.wav --track Bass:synth --track Perc:sampler:kits/kick.wav
+#   opd apply phase1_beat.opj phase1_beat.opjl
+# 96 BPM, 4/4, 72 bars = 180.000 s at 48 kHz. Sampler drums are the one committed kit hit
+# (kits/kick.wav) re-voiced by trim and repitch; Bass is the single synth_v1 line; Perc is an
+# alternate layer kept muted. Render with --limit-dbfs -1.0 for the master limiter.
+
+# ---- mixer -------------------------------------------------------------------
+{"op":"set_track_gain","index":0,"gain_db":-0.5}
+{"op":"set_track_gain","index":1,"gain_db":-3.0}
+{"op":"set_track_pan","index":1,"pan":-0.2}
+{"op":"set_track_gain","index":2,"gain_db":-9.0}
+{"op":"set_track_pan","index":2,"pan":0.25}
+{"op":"set_track_gain","index":3,"gain_db":-4.5}
+{"op":"set_track_gain","index":4,"gain_db":-6.0}
+{"op":"set_track_pan","index":4,"pan":-0.35}
+{"op":"set_track_mute","index":4,"mute":true}
+{"op":"set_master_gain","gain_db":1.0}
+
+# ---- voices ------------------------------------------------------------------
+{"op":"set_sampler_trim","index":1,"start_s":0.0,"end_s":0.12}
+{"op":"set_sampler_trim","index":2,"start_s":0.0,"end_s":0.03}
+{"op":"set_sampler_root","index":2,"root_note":60}
+{"op":"set_sampler_root","index":4,"root_note":60}
+{"op":"set_synth_params","index":3,"waveform":"saw","adsr":{"attack_s":0.01,"decay_s":0.12,"sustain":0.6,"release_s":0.25},"cutoff_hz":900.0,"resonance":0.8}
+
+# ---- patterns 0..4 (created empty by opd new, one per track) -------------------
+# pattern 0 - Kick: four on the floor
+{"op":"set_step","pattern":0,"step":0,"on":true}
+{"op":"set_step","pattern":0,"step":4,"on":true}
+{"op":"set_step","pattern":0,"step":8,"on":true}
+{"op":"set_step","pattern":0,"step":12,"on":true}
+# pattern 1 - Snare: backbeat
+{"op":"set_step","pattern":1,"step":4,"on":true}
+{"op":"set_step","pattern":1,"step":12,"on":true}
+# pattern 2 - Hat: eighths, pitched up an octave (+12 from root_note 60)
+{"op":"set_step","pattern":2,"step":0,"on":true,"pitch":72}
+{"op":"set_step","pattern":2,"step":2,"on":true,"pitch":72}
+{"op":"set_step","pattern":2,"step":4,"on":true,"pitch":72}
+{"op":"set_step","pattern":2,"step":6,"on":true,"pitch":72}
+{"op":"set_step","pattern":2,"step":8,"on":true,"pitch":72}
+{"op":"set_step","pattern":2,"step":10,"on":true,"pitch":72}
+{"op":"set_step","pattern":2,"step":12,"on":true,"pitch":72}
+{"op":"set_step","pattern":2,"step":14,"on":true,"pitch":72}
+# pattern 3 - Bass: two-bar riff (extent 8 beats), A minor
+{"op":"add_note","pattern":3,"note":{"t":0.0,"dur":0.75,"note":45}}
+{"op":"add_note","pattern":3,"note":{"t":1.0,"dur":0.5,"note":45,"vel":0.8}}
+{"op":"add_note","pattern":3,"note":{"t":1.75,"dur":0.25,"note":41}}
+{"op":"add_note","pattern":3,"note":{"t":2.25,"dur":0.75,"note":38}}
+{"op":"add_note","pattern":3,"note":{"t":3.25,"dur":0.75,"note":38,"vel":0.8}}
+{"op":"add_note","pattern":3,"note":{"t":4.0,"dur":0.75,"note":43}}
+{"op":"add_note","pattern":3,"note":{"t":5.0,"dur":0.5,"note":43,"vel":0.8}}
+{"op":"add_note","pattern":3,"note":{"t":5.75,"dur":0.25,"note":41}}
+{"op":"add_note","pattern":3,"note":{"t":6.25,"dur":0.75,"note":40}}
+{"op":"add_note","pattern":3,"note":{"t":7.25,"dur":0.5,"note":36}}
+# pattern 4 - Perc: offbeat shaker part (muted track, kept for later)
+{"op":"set_step","pattern":4,"step":3,"on":true,"pitch":67}
+{"op":"set_step","pattern":4,"step":7,"on":true,"pitch":67}
+{"op":"set_step","pattern":4,"step":11,"on":true,"pitch":67}
+{"op":"set_step","pattern":4,"step":14,"on":true,"pitch":67}
+
+# ---- patterns 5..6 --------------------------------------------------------------
+# pattern 5 - Hat16: sixteenths, from the eighths copy
+{"op":"duplicate_pattern","src":2,"new_id":"hat16"}
+{"op":"set_step","pattern":5,"step":1,"on":true,"pitch":72}
+{"op":"set_step","pattern":5,"step":3,"on":true,"pitch":72}
+{"op":"set_step","pattern":5,"step":5,"on":true,"pitch":72}
+{"op":"set_step","pattern":5,"step":7,"on":true,"pitch":72}
+{"op":"set_step","pattern":5,"step":9,"on":true,"pitch":72}
+{"op":"set_step","pattern":5,"step":11,"on":true,"pitch":72}
+{"op":"set_step","pattern":5,"step":13,"on":true,"pitch":72}
+{"op":"set_step","pattern":5,"step":15,"on":true,"pitch":72}
+# pattern 6 - Roll: sixteenth crescendo into the finale
+{"op":"add_pattern","pattern":{"track":1,"id":"roll","notes":[]}}
+{"op":"set_step","pattern":6,"step":0,"on":true,"velocity":0.2}
+{"op":"set_step","pattern":6,"step":1,"on":true,"velocity":0.25}
+{"op":"set_step","pattern":6,"step":2,"on":true,"velocity":0.3}
+{"op":"set_step","pattern":6,"step":3,"on":true,"velocity":0.35}
+{"op":"set_step","pattern":6,"step":4,"on":true,"velocity":0.4}
+{"op":"set_step","pattern":6,"step":5,"on":true,"velocity":0.45}
+{"op":"set_step","pattern":6,"step":6,"on":true,"velocity":0.5}
+{"op":"set_step","pattern":6,"step":7,"on":true,"velocity":0.55}
+{"op":"set_step","pattern":6,"step":8,"on":true,"velocity":0.6}
+{"op":"set_step","pattern":6,"step":9,"on":true,"velocity":0.65}
+{"op":"set_step","pattern":6,"step":10,"on":true,"velocity":0.7}
+{"op":"set_step","pattern":6,"step":11,"on":true,"velocity":0.75}
+{"op":"set_step","pattern":6,"step":12,"on":true,"velocity":0.8}
+{"op":"set_step","pattern":6,"step":13,"on":true,"velocity":0.85}
+{"op":"set_step","pattern":6,"step":14,"on":true,"velocity":0.9}
+{"op":"set_step","pattern":6,"step":15,"on":true,"velocity":0.95}
+# ---- pattern lengths -----------------------------------------------------------
+# Explicit loop periods: without them a pattern's extent is max(t + dur) of its notes (3.25 beats for
+# the kick, 3.75 for the eighths hat), so every repeat would slip against the bar grid.
+{"op":"set_pattern_length","pattern":0,"length_beats":4.0}
+{"op":"set_pattern_length","pattern":1,"length_beats":4.0}
+{"op":"set_pattern_length","pattern":2,"length_beats":4.0}
+{"op":"set_pattern_length","pattern":3,"length_beats":8.0}
+{"op":"set_pattern_length","pattern":4,"length_beats":4.0}
+{"op":"set_pattern_length","pattern":5,"length_beats":4.0}
+{"op":"set_pattern_length","pattern":6,"length_beats":4.0}
+# ---- arrangement: drop the five one-bar clips opd new wrote, then the song ------
+{"op":"remove_clip","index":4}
+{"op":"remove_clip","index":3}
+{"op":"remove_clip","index":2}
+{"op":"remove_clip","index":1}
+{"op":"remove_clip","index":0}
+# intro (bars 0-8): hats swell in
+{"op":"add_clip","clip":{"pattern":2,"start_bar":0.0,"repeats":8}}
+# beat A (bars 8-24)
+{"op":"add_clip","clip":{"pattern":0,"start_bar":8.0,"repeats":16}}
+{"op":"add_clip","clip":{"pattern":1,"start_bar":8.0,"repeats":16}}
+{"op":"add_clip","clip":{"pattern":2,"start_bar":8.0,"repeats":16}}
+{"op":"add_clip","clip":{"pattern":3,"start_bar":8.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":4,"start_bar":8.0,"repeats":16}}
+# break (bars 24-32): hats and the first half of the riff
+{"op":"add_clip","clip":{"pattern":2,"start_bar":24.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":3,"start_bar":24.0,"repeats":2}}
+# drop (bars 32-48): sixteenth hats
+{"op":"add_clip","clip":{"pattern":0,"start_bar":32.0,"repeats":16}}
+{"op":"add_clip","clip":{"pattern":1,"start_bar":32.0,"repeats":16}}
+{"op":"add_clip","clip":{"pattern":5,"start_bar":32.0,"repeats":16}}
+{"op":"add_clip","clip":{"pattern":3,"start_bar":32.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":4,"start_bar":32.0,"repeats":16}}
+# half-time (bars 48-56) with the roll building from bar 52
+{"op":"add_clip","clip":{"pattern":1,"start_bar":48.0,"repeats":4}}
+{"op":"add_clip","clip":{"pattern":2,"start_bar":48.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":3,"start_bar":48.0,"repeats":4}}
+{"op":"add_clip","clip":{"pattern":6,"start_bar":52.0,"repeats":2}}
+# finale (bars 56-64)
+{"op":"add_clip","clip":{"pattern":0,"start_bar":56.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":1,"start_bar":56.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":5,"start_bar":56.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":3,"start_bar":56.0,"repeats":4}}
+{"op":"add_clip","clip":{"pattern":4,"start_bar":56.0,"repeats":8}}
+# outro (bars 64-72): hats trimmed to end early and faded out under the last riff bar
+{"op":"add_clip","clip":{"pattern":2,"start_bar":64.0,"repeats":8}}
+{"op":"add_clip","clip":{"pattern":3,"start_bar":64.0,"repeats":2}}
+# fades: clip indices are the append order above (the five opd new clips were removed first)
+{"op":"set_clip_fades","index":0,"fade_in_beats":4.0,"fade_out_beats":0.0}
+{"op":"set_clip_fades","index":1,"fade_in_beats":0.0,"fade_out_beats":2.0}
+{"op":"set_clip_fades","index":2,"fade_in_beats":0.0,"fade_out_beats":2.0}
+{"op":"set_clip_fades","index":4,"fade_in_beats":2.0,"fade_out_beats":0.0}
+{"op":"set_clip_fades","index":6,"fade_in_beats":0.0,"fade_out_beats":2.0}
+{"op":"set_clip_fades","index":13,"fade_in_beats":2.0,"fade_out_beats":0.0}
+{"op":"set_clip_fades","index":15,"fade_in_beats":4.0,"fade_out_beats":0.0}
+{"op":"set_clip_fades","index":22,"fade_in_beats":0.0,"fade_out_beats":8.0}
+# clip trim: the outro hat clip plays source beats 2..28 of its 32-beat unrolled pattern
+{"op":"set_clip_trim","index":22,"offset_beats":2.0,"length_beats":26.0}
+

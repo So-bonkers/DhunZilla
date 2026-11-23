@@ -69,3 +69,37 @@ rejected with `PCM must be 16- or 24-bit`.
 
 Cross-format invariants (tested): for every sample x of an `f32` render, the `pcm24` render holds
 `float_to_pcm24(x)` and the `pcm16` render holds `float_to_pcm16(x)`, exactly.
+
+## The Phase 1 exit song — additive (WP-0197)
+
+Phase 1's exit criterion is "you can arrange a 3-min beat with samples + one bundled synth". WP-0197 turns
+that into an artifact instead of a claim: `tests/fixtures/songs/phase1_beat.opjl` is an **op journal** that,
+applied to the canonical `opd new` project, *is* the whole song ("Exit Beat": 96 BPM, 4/4, 72 bars =
+180.000 s at 48 kHz). No project JSON is hand-written; every edit is one documented operation
+(`docs/spec/operations.md`).
+
+```bash
+opd new phase1_beat.opj --bpm 96 --bars 72 \
+  --track Kick:sampler:kits/kick.wav --track Snare:sampler:kits/kick.wav \
+  --track Hat:sampler:kits/kick.wav --track Bass:synth --track Perc:sampler:kits/kick.wav
+opd apply phase1_beat.opj phase1_beat.opjl     # 114 operations, all-or-nothing
+```
+
+`harness/make_phase1_song.sh [--build|--check|--earcheck] [path/to/opd]` builds and verifies it:
+
+- `--build` regenerates `phase1_beat.opj` (from `opd new` + the journal) and `phase1_beat.wav` — the golden
+  mix, pcm16 rendered with `--seed 1337 --limit-dbfs -1.0`.
+- `--check` asserts: the committed `.opj` equals a fresh `opd new` + journal byte for byte; two renders of it
+  are bit-identical; the committed `.wav` equals a fresh render (a missing `.wav` is regenerated from the
+  journal rather than failing, so a text-only patch series still verifies); exactly five stems named
+  `0_kick.wav … 4_perc.wav`, with the muted `Perc` stem all-zero and every audible stem non-silent; the
+  limiter holds the mix under its ceiling while the un-limited render peaks over it; soloing Bass silences
+  every other stem; the intro fade-in and the trimmed outro clip are audible. Exit code = failure count.
+- `--earcheck` writes the owner's pack into `demos/earcheck/`: `07_exit_beat_mix.wav`, `phase1_exit_stems/`
+  and `08_exit_beat_bass_solo.wav`. `harness/make_earcheck.sh` calls it, so the standard pack includes it.
+
+**Why these fixtures live outside `tests/fixtures/goldens/`:** `run_goldens.sh` renders every fixture in that
+directory twice per CI run and requires a committed `.opj` + `.wav` pair; this mix is 34 MB. The determinism
+contract is identical (render-to-render bit-exact, golden equals a fresh render) but it is enforced here, so
+CI pays for the long render only in `make_phase1_song.sh --check`. Nothing else about the harness changes, and
+no existing golden changes.

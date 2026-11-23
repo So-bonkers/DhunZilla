@@ -11,6 +11,10 @@ G="$ROOT/tests/fixtures/goldens"
 "$ROOT/build/opd" render "$G/pitched.opj"   -o "$OUT/02_melody_synth.wav"
 "$ROOT/build/opd" render "$G/imported.opj"  -o "$OUT/03_midi_imported.wav"
 "$ROOT/build/opd" render "$G/panorama.opj"  -o "$OUT/04_panorama_mix.wav"
+# WP-0197: the Phase 1 exit-criterion song "Exit Beat" (3-minute beat, built from `opd new` + an op
+# journal in tests/fixtures/songs/). Writes 07_exit_beat_mix.wav (+ phase1_exit_stems/ and
+# 08_exit_beat_bass_solo.wav) into $OUT; the mix is byte-identical to tests/fixtures/songs/phase1_beat.wav.
+bash "$ROOT/harness/make_phase1_song.sh" --earcheck "$ROOT/build/opd" || echo "WARN: exit-song pack failed"
 
 if [ -n "${OP_TRANSCRIBE_PYTHON:-}" ]; then
     echo "AI round-trip (needs ~15s ONNX inference)..."
