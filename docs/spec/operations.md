@@ -617,3 +617,123 @@ fades 0.5/1.0 (120 bpm, 4/4, 48 kHz → spb 24000):
 
 `opd clips` adds no operation and changes no model field; it is a pure view (the future playlist panel
 and the copilot read this instead of parsing project JSON).
+
+## Channel rack / mixer track view — `opd tracks` — additive (WP-0227)
+
+```
+opd tracks <proj.opj>
+```
+
+Read-only, deterministic: loads the project and prints **one JSON entry per track in model order**
+(the order of the `tracks` array — never sorted by name or kind). It writes nothing, modifies no
+project, and creates no files. Exactly one positional argument, no options; errors print nothing on
+stdout: missing/extra argument or an option-looking token → exit 2 with detail
+`tracks needs exactly <project.opj>`; file missing → exit 3 (`not_found`, detail = the path); project
+fails to parse → exit 4 (`parse`, detail = the loader's message). A project whose `tracks` array is
+empty never reaches this view: the loader rejects it first (exit 4, `tracks must be a non-empty
+array`).
+
+Engine API (`engine/tracks.hpp`, namespace `op`): `std::string tracks_json(const Project& p);` — a
+pure function returning exactly the text `opd tracks` prints: a JSON array dumped with nlohmann
+`dump(2)` (two-space indent; object keys sort alphabetically) plus **exactly one trailing `\n`**. A
+`Project` built in memory with no tracks yields `[]\n`. Numbers are serialized by nlohmann exactly as
+stored — never hand-format them: `index`, `choke_group` and the integer voice fields are JSON
+integers; `gain_db`, `pan`, `attack_ms`, `release_ms` and `freq_hz` are float32 model values widened
+to double, so their printed decimal is the shortest round-trip of the stored float (a project file
+holding `"pan": 0.4` prints `0.4000000059604645` here — exactly what `op::project_bytes` writes for
+the same track); ADSR/filter values are doubles at shortest round-trip.
+
+Each entry has exactly these keys and no others:
+
+| key | value |
+|---|---|
+| `index` | the track's position in `tracks` (0-based integer) |
+| `name` | stored `track.name` (string, JSON-escaped by nlohmann) |
+| `kind` | the voice kind string the project file writes: `"sampler"`, `"synth"`, `"metronome"` or `"sine"` |
+| `gain_db` | stored `track.gain_db`; ALWAYS present (the default prints `0.0`) |
+| `pan` | stored `track.pan`; ALWAYS present (the default prints `0.0`) |
+| `mute` / `solo` | stored booleans; ALWAYS present — `false` prints as `false` (unlike the project file, which omits them at default) |
+| `audible` | the mixer audibility computed by `op::track_audible(p, i)` — the renderer's own rule (§mixer in project-model.md), never a re-implementation: with any track soloed only non-muted solo tracks are audible; mute always wins over solo |
+| `choke_group` | stored `track.choke_group`; ALWAYS present (`0` = none) |
+| `voice` | the voice object exactly as the canonical project serializer writes it for this track — see below |
+
+**The `voice` object (normative):** identical to `tracks[i]["voice"]` in the canonical serialization
+of the same project (`op::project_bytes`) — produced by the file format's own voice serializer, so
+**optional keys the model does not hold are ABSENT, never invented**:
+
+- sampler: always `kind`, `path`; `start_s` only when non-zero (WP-0156), `end_s` only when a slice
+  end is set, `root_note` only when a root note is set (WP-0167).
+- synth: always `kind`, `attack_ms`, `release_ms`; `waveform` (`"sine"`/`"saw"`/`"square"`) only when
+  the voice is not legacy; `adsr` — with ALL four inner keys `attack_s`, `decay_s`, `sustain`,
+  `release_s` (defaults `0.005`, `0.0`, `1.0`, `0.030`) — only when an ADSR was given; `cutoff_hz`
+  only when non-zero; `resonance` only when different from its default `0.7071` (WP-0161 canonical
+  save).
+- metronome: `kind`, `accent_every`. sine: `kind`, `freq_hz`.
+
+Example — three tracks (`"Zeta Kick"` soloed sampler with trim, root note and choke group 2;
+`"Alpha Lead"` muted synth v1 saw with ADSR and filter; `"Click"` metronome at defaults):
+
+```json
+[
+  {
+    "audible": true,
+    "choke_group": 2,
+    "gain_db": -3.5,
+    "index": 0,
+    "kind": "sampler",
+    "mute": false,
+    "name": "Zeta Kick",
+    "pan": 0.25,
+    "solo": true,
+    "voice": {
+      "end_s": 0.5,
+      "kind": "sampler",
+      "path": "kits/kick.wav",
+      "root_note": 60,
+      "start_s": 0.0625
+    }
+  },
+  {
+    "audible": false,
+    "choke_group": 0,
+    "gain_db": -6.0,
+    "index": 1,
+    "kind": "synth",
+    "mute": true,
+    "name": "Alpha Lead",
+    "pan": -0.5,
+    "solo": false,
+    "voice": {
+      "adsr": {
+        "attack_s": 0.01,
+        "decay_s": 0.25,
+        "release_s": 0.125,
+        "sustain": 0.5
+      },
+      "attack_ms": 5.0,
+      "cutoff_hz": 2500.0,
+      "kind": "synth",
+      "release_ms": 30.0,
+      "waveform": "saw"
+    }
+  },
+  {
+    "audible": false,
+    "choke_group": 0,
+    "gain_db": 0.0,
+    "index": 2,
+    "kind": "metronome",
+    "mute": false,
+    "name": "Click",
+    "pan": 0.0,
+    "solo": false,
+    "voice": {
+      "accent_every": 4,
+      "kind": "metronome"
+    }
+  }
+]
+```
+
+`opd tracks` adds no operation and changes no model field; it is a pure view (the future
+channel-rack / mixer panel and the copilot read this instead of parsing project JSON).
