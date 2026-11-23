@@ -285,8 +285,15 @@ static int cmd_render(int argc, char** argv) {
         fs::create_directories(stems_dir, ec);
         if (ec) return fail("write", "cannot create stems dir " + stems_dir);
         for (size_t i = 0; i < stems.size(); ++i) {
-            const std::string name = sanitize_track_name(p.tracks[i].name);
-            const std::string path = stems_dir + "/" + std::to_string(i) + "_" + (name.empty() ? "track" : name) + ".wav";
+            // WP-0206 (spec §stems): render_stems returns track stems then one stem per bus, in
+            // bus order. Bus stems continue the numeric prefix: <i>_bus_<sanitized>.wav; track
+            // stem file names are unchanged.
+            const bool is_bus = i >= p.tracks.size();
+            const std::string name =
+                sanitize_track_name(is_bus ? p.buses[i - p.tracks.size()].name : p.tracks[i].name);
+            const std::string path =
+                stems_dir + "/" + std::to_string(i) + (is_bus ? "_bus_" : "_") +
+                (name.empty() ? (is_bus ? "bus" : "track") : name) + ".wav";
             if (!op::wav::write_wav_stereo(path, stems[i], fmt, err)) return fail("write", err);
             std::printf("stem %zu -> %s\n", i, path.c_str());
         }

@@ -208,6 +208,44 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
         err = "master_gain_db out of range [-96, 24]"; return false;
     }
 
+    // Send buses (WP-0206, spec project-model.md §Send buses): parsed BEFORE the tracks array, so
+    // each track's `sends` length can be checked against the bus count. First failure wins, in the
+    // spec's order. A mistyped gain_db throws inside project_from_json (json::type_error) exactly
+    // like a mistyped track.gain_db — load_project / ops.cpp wrap it (WP-0122 contract).
+    p.buses.clear();
+    if (j.contains("buses")) {
+        const json& bjs = j.at("buses");
+        if (!bjs.is_array()) { err = "buses must be an array"; return false; }
+        if (bjs.size() > 16) { err = "buses must have at most 16 entries"; return false; }
+        for (const auto& bj : bjs) {
+            Bus b;
+            if (!bj.is_object()) { err = "bus must be an object"; return false; }
+            for (auto it = bj.begin(); it != bj.end(); ++it) {
+                if (it.key() != "name" && it.key() != "gain_db" && it.key() != "mute") {
+                    err = "bus has unknown key '" + it.key() + "'"; return false;
+                }
+            }
+            if (!bj.contains("name") || !bj.at("name").is_string() ||
+                bj.at("name").get<std::string>().empty()) {
+                err = "bus.name must be a non-empty string"; return false;
+            }
+            b.name = bj.at("name").get<std::string>();
+            for (const Bus& prev : p.buses)
+                if (prev.name == b.name) {
+                    err = "bus name '" + b.name + "' is already in use"; return false;
+                }
+            b.gain_db = bj.value("gain_db", 0.0f);  // default unity; mistyped value throws
+            if (!(b.gain_db >= -96.0f) || b.gain_db > 24.0f) {  // NaN-safe (WP-0136 pattern)
+                err = "bus.gain_db out of range [-96, 24]"; return false;
+            }
+            if (bj.contains("mute")) {
+                if (!bj.at("mute").is_boolean()) { err = "bus.mute must be a boolean"; return false; }
+                b.mute = bj.at("mute").get<bool>();
+            }
+            p.buses.push_back(std::move(b));
+        }
+    }
+
     if (!j.contains("tracks") || !j["tracks"].is_array() || j["tracks"].empty()) {
         err = "tracks must be a non-empty array"; return false;
     }
@@ -247,6 +285,25 @@ bool project_from_json(const json& j, Project& p, std::string& err) {
         // Checked after the voice parsed (spec §Sampler choke groups rule 2).
         if (t.choke_group != 0 && t.voice.kind != VoiceKind::Sampler) {
             err = "track.choke_group is only valid for sampler tracks"; return false;
+        }
+        // Track sends (WP-0206, spec project-model.md §Send buses): parsed LAST inside a track, so
+        // no existing error precedence moves. Sends are dB to bus i; an array shorter than the bus
+        // count is padded with 0.0 (a missing slot means 0.0 dB = routes nothing).
+        if (tj.contains("sends")) {
+            const json& sjs = tj.at("sends");
+            if (!sjs.is_array()) { err = "track.sends must be an array"; return false; }
+            if (sjs.size() > p.buses.size()) {
+                err = "track.sends has more entries than there are buses"; return false;
+            }
+            for (const auto& sv : sjs) {
+                if (!sv.is_number()) { err = "track.sends entries must be numbers"; return false; }
+                const double sd = sv.get<double>();
+                if (!(sd >= -96.0 && sd <= 24.0)) {  // NaN-safe negated compare
+                    err = "track.sends entries out of range [-96, 24]"; return false;
+                }
+                t.sends.push_back(static_cast<float>(sd));
+            }
+            t.sends.resize(p.buses.size(), 0.0f);
         }
         p.tracks.push_back(std::move(t));
     }
@@ -574,6 +631,20 @@ json project_to_json(const Project& p) {
     if (p.time_signature)
         j["time_signature"] = json{{"num", p.time_signature->num}, {"den", p.time_signature->den}};
     if (p.master_gain_db != 0.0f) j["master_gain_db"] = p.master_gain_db;  // omit at default (spec §mixer)
+    // WP-0206 canonical save (spec §Send buses): `buses` only when non-empty; inside a bus,
+    // gain_db only when not exactly 0.0 and mute only when true (like track.mute) — a bus-less
+    // project keeps its exact pre-WP-0206 bytes. Object keys sort alphabetically on dump.
+    if (!p.buses.empty()) {
+        json buses = json::array();
+        for (const Bus& b : p.buses) {
+            json bj;
+            bj["name"] = b.name;
+            if (b.gain_db != 0.0f) bj["gain_db"] = b.gain_db;
+            if (b.mute) bj["mute"] = true;
+            buses.push_back(std::move(bj));
+        }
+        j["buses"] = std::move(buses);
+    }
     json tracks = json::array();
     for (const auto& t : p.tracks) {
         json tj;
@@ -583,6 +654,19 @@ json project_to_json(const Project& p) {
         if (t.mute) tj["mute"] = true;  // omitted at default → legacy canonical bytes unchanged
         if (t.solo) tj["solo"] = true;
         if (t.choke_group != 0) tj["choke_group"] = t.choke_group;  // WP-0181: omitted when none → legacy bytes
+        // WP-0206: `sends` written only when the project has buses AND some entry is non-zero;
+        // then exactly one entry per bus, padded with 0.0 (spec §Canonical save).
+        if (!p.buses.empty()) {
+            bool any_nonzero = false;
+            for (float s : t.sends)
+                if (s != 0.0f) { any_nonzero = true; break; }
+            if (any_nonzero) {
+                json sj = json::array();
+                for (std::size_t bi = 0; bi < p.buses.size(); ++bi)
+                    sj.push_back(bi < t.sends.size() ? t.sends[bi] : 0.0f);
+                tj["sends"] = std::move(sj);
+            }
+        }
         tj["voice"] = voice_to_json(t.voice);
         tracks.push_back(std::move(tj));
     }

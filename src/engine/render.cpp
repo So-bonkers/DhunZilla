@@ -559,7 +559,7 @@ void slice_frames(const wav::StereoBuffer& buf, long long from_frame, long long 
 }
 
 bool render_subset(const Project& p, const std::string& base_dir, const std::vector<size_t>* subset,
-                   wav::StereoBuffer& out, std::string& err) {
+                   wav::StereoBuffer& out, std::string& err, int bus_index = -1) {
     const int sr = p.sample_rate;
     const long long total = total_samples_for(p);
     if (total <= 0) { err = "render_error: zero-length render"; return false; }
@@ -598,21 +598,12 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
     long long choke_fade_frames = static_cast<long long>(sr) * 5 / 1000;
     if (choke_fade_frames < 1) choke_fade_frames = 1;
 
-    const size_t iters = subset ? subset->size() : ntracks;
-    for (size_t k = 0; k < iters; ++k) {
-        const size_t ti = subset ? (*subset)[k] : k;
-        // Mixer (spec §mixer): inaudible tracks are skipped entirely, not rendered at gain 0.
-        // Stems path gets its all-zero full-length stem "for free" from the reset above.
-        if (!track_audible(p, ti)) continue;
+    // Renders every placement of audible track `ti` into the MixTarget `t` (WP-0206: the pre-
+    // WP-0206 dry-loop body moved verbatim so the dry path stays bit-identical; the mix target is
+    // now passed in, which is all bus routing needs — a MixTarget aimed at a bus buffer with the
+    // send gain folded into its gains).
+    auto render_track = [&](std::size_t ti, MixTarget& t) -> bool {
         const Track& tr = p.tracks[ti];
-        MixTarget t;
-        t.out = &out.interleaved;
-        t.total_frames = total;
-        const float g = dsp::db_to_lin(tr.gain_db);
-        float l, r;
-        dsp::equal_power_pan(tr.pan, l, r);
-        t.gain_l = g * l;
-        t.gain_r = g * r;
 
         // Placement (spec §arrangement) runs through for_each_placement below — the same code the
         // choke trigger pre-pass enumerates, so triggers and voices can never disagree.
@@ -685,12 +676,97 @@ bool render_subset(const Project& p, const std::string& base_dir, const std::vec
             return true;
         };
 
-        if (!for_each_placement(p, ti, tmap,
-                                [&](const Pattern& pat, double offset_beats, double clip_gain_db,
-                                    const ClipEnv* env, const ClipGate& gate) {
-                                    return render_pattern_at(pat, offset_beats, clip_gain_db, env, gate);
-                                }))
-            return false;
+        return for_each_placement(p, ti, tmap,
+                                  [&](const Pattern& pat, double offset_beats, double clip_gain_db,
+                                      const ClipEnv* env, const ClipGate& gate) {
+                                      return render_pattern_at(pat, offset_beats, clip_gain_db, env, gate);
+                                  });
+    };
+
+    // Post-fader send level of track `ti` to bus `j` (WP-0206): missing slot = 0.0 dB = routes
+    // nothing (spec §Send buses).
+    auto send_level = [&](std::size_t ti, std::size_t j) -> float {
+        const std::vector<float>& s = p.tracks[ti].sends;
+        return j < s.size() ? s[j] : 0.0f;
+    };
+
+    // Accumulates bus `j`'s INPUT into `buf` (already zeroed, full length): the audible tracks in
+    // track order, each through the same placement code as the dry path with the post-fader send
+    // gain folded into the mix target; a send of exactly 0.0 dB is skipped entirely. No bus gain
+    // here — the caller applies it (spec §Routing semantics).
+    auto render_bus_in = [&](std::size_t j, wav::StereoBuffer& buf) -> bool {
+        for (std::size_t ti = 0; ti < ntracks; ++ti) {
+            if (!track_audible(p, ti)) continue;
+            const float send_db = send_level(ti, j);
+            if (send_db == 0.0f) continue;  // routes nothing
+            const Track& tr = p.tracks[ti];
+            MixTarget bt;
+            bt.out = &buf.interleaved;
+            bt.total_frames = total;
+            const float g = dsp::db_to_lin(tr.gain_db);
+            float l, r;
+            dsp::equal_power_pan(tr.pan, l, r);
+            const float sg = dsp::db_to_lin(send_db);  // 0 dB → exactly 1.0f
+            bt.gain_l = g * l * sg;
+            bt.gain_r = g * r * sg;
+            if (!render_track(ti, bt)) return false;
+        }
+        return true;
+    };
+
+    if (bus_index < 0) {
+        // Dry path (unchanged order: subset order or track order, inaudible tracks skipped).
+        const size_t iters = subset ? subset->size() : ntracks;
+        for (size_t k = 0; k < iters; ++k) {
+            const size_t ti = subset ? (*subset)[k] : k;
+            // Mixer (spec §mixer): inaudible tracks are skipped entirely, not rendered at gain 0.
+            // Stems path gets its all-zero full-length stem "for free" from the reset above.
+            if (!track_audible(p, ti)) continue;
+            const Track& tr = p.tracks[ti];
+            MixTarget t;
+            t.out = &out.interleaved;
+            t.total_frames = total;
+            const float g = dsp::db_to_lin(tr.gain_db);
+            float l, r;
+            dsp::equal_power_pan(tr.pan, l, r);
+            t.gain_l = g * l;
+            t.gain_r = g * r;
+            if (!render_track(ti, t)) return false;
+        }
+
+        // Bus sum (WP-0206, spec §Routing semantics): only for the full mix — track stems stay
+        // bit-identical with and without buses. Muted buses contribute nothing (not even their
+        // input sum); buses are added in bus index order, before the single master-gain multiply.
+        // A bus no audible track feeds adds no arithmetic at all, so a project with buses but no
+        // sends renders exactly like the same project without buses.
+        if (!subset) {
+            for (std::size_t j = 0; j < p.buses.size(); ++j) {
+                if (p.buses[j].mute) continue;
+                bool fed = false;
+                for (std::size_t ti = 0; ti < ntracks && !fed; ++ti)
+                    if (track_audible(p, ti) && send_level(ti, j) != 0.0f) fed = true;
+                if (!fed) continue;
+                wav::StereoBuffer bus_buf;
+                bus_buf.sample_rate = sr;
+                bus_buf.interleaved.assign(static_cast<size_t>(total) * 2u, 0.0f);
+                if (!render_bus_in(j, bus_buf)) return false;
+                const float bg = dsp::db_to_lin(p.buses[j].gain_db);  // unity → exactly 1.0f
+                for (size_t i = 0; i < bus_buf.interleaved.size(); ++i)
+                    out.interleaved[i] += bus_buf.interleaved[i] * bg;
+            }
+        }
+    } else {
+        // Bus stem (WP-0206, spec §stems): `out` = exactly what bus `bus_index` adds to the
+        // master, before the master-gain multiply below — i.e. bus_in × 10^(bus gain_db/20) in
+        // one final pass. A muted bus leaves the zeroed buffer (all-zero full-length stem).
+        if (static_cast<std::size_t>(bus_index) < p.buses.size() &&
+            !p.buses[static_cast<std::size_t>(bus_index)].mute) {
+            const std::size_t j = static_cast<std::size_t>(bus_index);
+            if (!render_bus_in(j, out)) return false;
+            const float bg = dsp::db_to_lin(p.buses[j].gain_db);  // unity → exactly 1.0f
+            if (bg != 1.0f)
+                for (float& s : out.interleaved) s *= bg;
+        }
     }
 
     // Master gain (spec §mixer): one multiply per sample after all tracks are summed. Exactly 0.0
@@ -712,11 +788,18 @@ bool render_project(const Project& p, const std::string& base_dir, wav::StereoBu
 bool render_stems(const Project& p, const std::string& base_dir, std::vector<wav::StereoBuffer>& stems,
                   wav::StereoBuffer& mix, std::string& err) {
     if (!render_subset(p, base_dir, nullptr, mix, err)) return false;
+    // WP-0206 (spec §stems): tracks.size() + buses.size() buffers — the track stems in track
+    // order (unaffected by buses, byte-identical to pre-WP-0206), then one stem per bus in bus
+    // order: what that bus adds to the master, master gain included (a muted bus → all zeros).
     stems.clear();
-    stems.resize(p.tracks.size());
+    stems.resize(p.tracks.size() + p.buses.size());
     for (size_t i = 0; i < p.tracks.size(); ++i) {
         const std::vector<size_t> one{i};
         if (!render_subset(p, base_dir, &one, stems[i], err)) return false;
+    }
+    for (size_t j = 0; j < p.buses.size(); ++j) {
+        if (!render_subset(p, base_dir, nullptr, stems[p.tracks.size() + j], err, static_cast<int>(j)))
+            return false;
     }
     return true;
 }

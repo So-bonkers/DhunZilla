@@ -78,6 +78,15 @@ struct TempoPoint {
     double bpm = 120.0;
 };
 
+// Send bus (WP-0206, spec project-model.md §Send buses): a mixer sub-mix. Buses are addressed by
+// INDEX everywhere (ops, sends arrays, stems order); `name` is a label the engine never looks up.
+// Post-fader only: tracks route into it through track.sends; the bus applies one gain to its sum.
+struct Bus {
+    std::string name;            // non-empty, unique, validated at parse
+    float gain_db = 0.0f;        // [-96, 24], validated at parse; omitted at exactly 0.0 on save
+    bool mute = false;           // true: the bus contributes nothing to the mix; omitted at false
+};
+
 struct Track {
     std::string name;
     float gain_db = 0.0f;        // [-96, 24], validated at parse (WP-0136 closed a pre-existing gap)
@@ -85,6 +94,9 @@ struct Track {
     bool mute = false;           // mixer (spec §mixer): silent regardless of solo; omitted at default
     bool solo = false;           // mixer: when any track solos, only non-muted solo tracks are audible
     int choke_group = 0;         // sampler choke group 1..16 (WP-0181); 0 = none
+    std::vector<float> sends;    // WP-0206: send level in dB to bus i ([-96, 24], validated at
+                                 // parse). Padded to the bus count with 0.0 on load; a 0.0 dB send
+                                 // routes nothing; omitted on save when every entry is 0.0.
     Voice voice;
 };
 
@@ -123,6 +135,7 @@ struct Project {
     int beats_per_bar = 4;
     float master_gain_db = 0.0f;  // mixer master fader (spec §mixer): [-96, 24]; multiplies every
                                   // output sample after sum; exactly 0.0 skips → bit-identical legacy
+    std::vector<Bus> buses;  // WP-0206 send buses: empty when the key is absent (legacy byte-stable)
     std::vector<Track> tracks;
     std::vector<Pattern> patterns;
     std::vector<Clip> arrangement;  // empty = legacy semantics: every pattern once, at bar 0

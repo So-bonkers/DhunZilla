@@ -797,3 +797,62 @@ Exit **2** (usage) for: `opd recover` with no `<proj>`, any unknown argument, `-
 exist. Exit **4** when `<proj>` exists but does not parse. A failure to write `<out.opj>` is exit **5**;
 the project file and its autosave stay unchanged. `opd recover` never deletes, moves or truncates `<proj>`
 except in the explicit `-o <proj>` case above, and it never runs a timer, autosave or scheduler.
+
+## Send-bus operations — additive (WP-0206)
+
+Model keys, routing and stems: `docs/spec/project-model.md` §Send buses. All six operations below go through
+the ordinary `apply_op` path (edit a copy of the canonical JSON, re-parse it, re-validate with one more
+save→parse round-trip), so every range/name rule lives in the model parser alone and each op is undoable with
+`op::History` like any other. Argument checking uses the existing helpers verbatim: indices are strict JSON
+integers (`2.0` is rejected — `'index' must be an integer`) and out-of-range gives `'index' out of range`; a
+bus index against a project with **no** `buses` key is out of range (limit 0). Unknown keys are refused
+(`unknown argument '<key>'`). Errors are prefixed `"<op>: "` as everywhere.
+
+| operation | arguments | effect |
+| --- | --- | --- |
+| `add_bus` | `bus` (object, required) | appends the bus to `buses`, creating the array when absent; `name` missing/empty/duplicate and range errors are refused by the parse (`bus.name must be a non-empty string`, `bus name '<name>' is already in use`, `bus.gain_db out of range [-96, 24]`, `bus has unknown key '<key>'`) |
+| `rename_bus` | `index` (int), `name` (string) | sets `buses[index].name`; an empty name or one already used by another bus is refused by the parse |
+| `remove_bus` | `index` (int) | erases `buses[index]`, then for every track whose `sends` array is longer than `index` erases element `index` so the arrays stay bus-aligned. No "in use" rejection: a send is routing, not ownership |
+| `set_bus_gain` | `index` (int), `gain_db` (number) | sets `buses[index].gain_db`; range from the parse |
+| `set_bus_mute` | `index` (int), `mute` (boolean) | sets `buses[index].mute` (`false` is stored, and omitted by the canonical save) |
+| `set_track_send` | `index` (track int), `bus` (int), `gain_db` (number) | pads `tracks[index].sends` with `0.0` up to the current bus count, then sets element `bus`. Writing `0.0` is legal; if every entry ends up zero the canonical save omits the key |
+
+Examples (`opd apply song.opj edits.opjl -o out.opj`, one operation per line):
+
+```
+{"op":"add_bus","bus":{"name":"Fx"}}
+{"op":"add_bus","bus":{"name":"Delay","gain_db":-6.0,"mute":true}}
+{"op":"set_track_send","index":0,"bus":0,"gain_db":-3.0}
+{"op":"rename_bus","index":1,"name":"Slap"}
+{"op":"set_bus_mute","index":1,"mute":false}
+{"op":"remove_bus","index":0}
+```
+
+Bus order is positional state: `add_bus` only appends (existing indices never shift), and there is no
+bus-reordering operation. `opd tracks`, `opd lint` and MIDI I/O are unchanged by these operations.
+
+### `opd diff` and send buses (WP-0206 amendment)
+
+Bus differences are fully expressible, so nothing is added to the unsupported-difference list. Two insertions
+into the fixed emission order of §`opd diff`:
+
+**Step 4c — immediately after `set_master_gain` (and before the loop-set op of step 4b)**, comparing the
+canonical `buses` arrays with an absent key counting as the empty array:
+1. `remove_bus` for indices `size(a.buses)-1` down to `size(b.buses)` (descending);
+2. for bus `i = 0..` (`i < min` count), in this order, only where they differ: `rename_bus`
+   (`name` = b's value), `set_bus_gain` (`gain_db` = b's value, absent counts as `0.0`),
+   `set_bus_mute` (`mute` = b's value, absent counts as `false`);
+3. `add_bus` for b's extra buses, ascending (`bus` = b's canonical bus JSON).
+
+The block runs before any track operation so that a track added by step 6 already carries a `sends` array
+within the bus count that exists at that moment; every intermediate project stays valid.
+
+**Step 5 extension — after `set_choke_group`**, for each shared track: one `set_track_send` per bus slot
+`j = 0..` (`j < size(b.buses)`, ascending) whose level differs, with `bus` = `j` and `gain_db` = b's value. An
+absent `sends` array, or a missing/short entry, reads as `0.0`. So a send that only a has never emits
+anything for that slot beyond what is needed, and all-zero sends emit nothing at all.
+
+Consequences: projects without buses (and tracks that send nothing) produce **exactly the same journal bytes**
+as before WP-0206; `opd diff` never renumbers existing steps. Renaming two buses onto each other's names in
+one pair (a name swap) cannot be expressed in one pass — it fails the safety net and is reported as
+`unsupported difference: (journal does not reproduce target)`.

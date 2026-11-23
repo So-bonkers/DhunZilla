@@ -334,6 +334,47 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
                 !has_string(op_json, "name", err)) return false;
             j["tracks"][idx]["name"] = op_json.at("name");
+        } else if (name == "add_bus") {  // WP-0206 (spec §Send-bus operations); name/range rules from the parse
+            if (!check_keys(op_json, {"bus"}, err) || !has_object(op_json, "bus", err)) return false;
+            if (!j.contains("buses")) j["buses"] = json::array();
+            j["buses"].push_back(op_json.at("bus"));
+        } else if (name == "rename_bus") {  // empty / duplicate names are refused by the parse below
+            if (!check_keys(op_json, {"index", "name"}, err)) return false;
+            const std::size_t n_buses = j.contains("buses") ? j["buses"].size() : 0;
+            if (!arg_index(op_json, "index", n_buses, idx, err) ||
+                !has_string(op_json, "name", err)) return false;
+            j["buses"][idx]["name"] = op_json.at("name");
+        } else if (name == "remove_bus") {  // WP-0206: routing, not ownership — no "in use" rejection
+            if (!check_keys(op_json, {"index"}, err)) return false;
+            const std::size_t n_buses = j.contains("buses") ? j["buses"].size() : 0;
+            if (!arg_index(op_json, "index", n_buses, idx, err)) return false;
+            j["buses"].erase(idx);
+            // Keep every track's sends array bus-aligned: erase element `idx` wherever it exists.
+            for (auto& tj : j["tracks"])
+                if (tj.contains("sends") && tj["sends"].size() > idx) tj["sends"].erase(idx);
+        } else if (name == "set_bus_gain") {  // WP-0206; range comes from the parse below
+            if (!check_keys(op_json, {"index", "gain_db"}, err)) return false;
+            const std::size_t n_buses = j.contains("buses") ? j["buses"].size() : 0;
+            if (!arg_index(op_json, "index", n_buses, idx, err) ||
+                !has_number(op_json, "gain_db", err)) return false;
+            j["buses"][idx]["gain_db"] = op_json.at("gain_db");
+        } else if (name == "set_bus_mute") {  // WP-0206: false is stored; the canonical save omits it
+            if (!check_keys(op_json, {"index", "mute"}, err)) return false;
+            const std::size_t n_buses = j.contains("buses") ? j["buses"].size() : 0;
+            if (!arg_index(op_json, "index", n_buses, idx, err) ||
+                !has_bool(op_json, "mute", err)) return false;
+            j["buses"][idx]["mute"] = op_json.at("mute");
+        } else if (name == "set_track_send") {  // WP-0206; range comes from the parse below
+            if (!check_keys(op_json, {"index", "bus", "gain_db"}, err)) return false;
+            const std::size_t n_buses = j.contains("buses") ? j["buses"].size() : 0;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
+                !arg_index(op_json, "bus", n_buses, sub, err) ||
+                !has_number(op_json, "gain_db", err)) return false;
+            json& tr = j["tracks"][idx];
+            if (!tr.contains("sends")) tr["sends"] = json::array();  // canonical omits all-zero sends
+            json& sj = tr["sends"];
+            while (sj.size() < n_buses) sj.push_back(0.0);  // pad up to the current bus count
+            sj[sub] = op_json.at("gain_db");
         } else if (name == "add_pattern") {
             if (!check_keys(op_json, {"pattern"}, err) || !has_object(op_json, "pattern", err)) return false;
             j["patterns"].push_back(op_json.at("pattern"));
@@ -741,6 +782,27 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
     const json& mg_a = field_or(ja, "master_gain_db", kZeroDb);
     const json& mg_b = field_or(jb, "master_gain_db", kZeroDb);
     if (mg_a != mg_b) ops.push_back({{"op", "set_master_gain"}, {"gain_db", mg_b}});
+    // Step 4c (WP-0206, spec §opd diff and send buses): canonical `buses` arrays, absent key =
+    // empty array. Runs before any track operation so a track added later already carries a
+    // `sends` array within the bus count that exists at that moment (every intermediate valid).
+    const json& buses_a = field_or(ja, "buses", kEmptyArray);
+    const json& buses_b = field_or(jb, "buses", kEmptyArray);
+    for (std::size_t i = buses_a.size(); i-- > buses_b.size();)
+        ops.push_back({{"op", "remove_bus"}, {"index", i}});
+    for (std::size_t i = 0; i < std::min(buses_a.size(), buses_b.size()); ++i) {
+        const json& ba = buses_a[i];
+        const json& bb = buses_b[i];
+        if (ba.at("name") != bb.at("name"))
+            ops.push_back({{"op", "rename_bus"}, {"index", i}, {"name", bb.at("name")}});
+        const json& bg_b = field_or(bb, "gain_db", kZeroDb);  // canonical omits unity
+        if (field_or(ba, "gain_db", kZeroDb) != bg_b)
+            ops.push_back({{"op", "set_bus_gain"}, {"index", i}, {"gain_db", bg_b}});
+        const json& bm_b = field_or(bb, "mute", kFalse);  // canonical omits false
+        if (field_or(ba, "mute", kFalse) != bm_b)
+            ops.push_back({{"op", "set_bus_mute"}, {"index", i}, {"mute", bm_b}});
+    }
+    for (std::size_t i = buses_a.size(); i < buses_b.size(); ++i)
+        ops.push_back({{"op", "add_bus"}, {"bus", buses_b[i]}});
     // Step 4b: set the target loop after length changes (only when the loops differ).
     if (loop_differs && jb.contains("loop"))
         ops.push_back({{"op", "set_loop"},
@@ -767,6 +829,17 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
         const json& cg_b = field_or(tb, "choke_group", kNoGroup);
         if (field_or(ta, "choke_group", kNoGroup) != cg_b)
             ops.push_back({{"op", "set_choke_group"}, {"index", i}, {"group", cg_b}});
+        // Step 5 extension (WP-0206, spec §opd diff and send buses): after set_choke_group, one
+        // set_track_send per b bus slot whose level differs (ascending). Absent sends array or a
+        // missing/short entry reads as 0.0; all-zero sends emit nothing.
+        const json& sends_a = field_or(ta, "sends", kEmptyArray);
+        const json& sends_b = field_or(tb, "sends", kEmptyArray);
+        for (std::size_t j = 0; j < buses_b.size(); ++j) {
+            const json& sa = j < sends_a.size() ? sends_a[j] : kZeroDb;
+            const json& sb = j < sends_b.size() ? sends_b[j] : kZeroDb;
+            if (sa != sb)
+                ops.push_back({{"op", "set_track_send"}, {"index", i}, {"bus", j}, {"gain_db", sb}});
+        }
     }
     for (std::size_t i = tracks_a.size(); i < tracks_b.size(); ++i)
         ops.push_back({{"op", "add_track"}, {"track", tracks_b[i]}});

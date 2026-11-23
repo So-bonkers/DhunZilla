@@ -789,3 +789,118 @@ options; `<v>` is the argument as given):
 same as `--time-signature N/D` alone. Otherwise (checked after the whole option loop, before the output path is
 examined, so option-level errors win regardless of order): exit 2, `--time-signature '<v>' conflicts with
 --beats-per-bar <M> (beats_per_bar would be <N*4/D>)`.
+
+## Send buses and post-fader sends — additive (WP-0206)
+
+A **bus** is a mixer sub-mix: tracks route part of their signal into it through per-bus **sends**, the bus
+applies one gain to that sum, and its output is added to the master **before** `master_gain_db` and before
+the CLI limiter (`--limit-dbfs`, which stays mix-only). Gain routing only: buses have no effects/inserts, no
+pan, no mute-group interaction and no sends of their own (a bus never feeds another bus).
+
+### Project keys (both optional; a project without them is byte-identical to pre-WP-0206)
+
+```
+"buses": [ { "gain_db": -3.0, "mute": true, "name": "Fx" } ]        // top level, <= 16 entries
+"tracks": [ { "gain_db": 0.0, "name": "Kick", "pan": 0.0, "sends": [-6.0, 0.0], "voice": { ... } } ]
+```
+
+The canonical writer sorts object keys alphabetically as always, so `buses` lands between `bpm` and
+`format_version`, a bus object's keys are `gain_db`, `mute`, `name`, and a track's `sends` lands between
+`pan` and `voice`.
+
+**`buses`** — array of bus objects, checked in this order (first failure wins), before the `tracks` array is
+parsed:
+
+| rule | error (exact) |
+| --- | --- |
+| value is not an array | `buses must be an array` |
+| more than 16 entries | `buses must have at most 16 entries` |
+| an entry is not an object | `bus must be an object` |
+| an entry has a key other than `name`, `gain_db`, `mute` | `bus has unknown key '<key>'` |
+| `name` absent, not a string, or the empty string | `bus.name must be a non-empty string` |
+| `name` equals an earlier bus's name | `bus name '<name>' is already in use` |
+| `gain_db` present and out of `[-96, 24]` (NaN-safe negated compare) | `bus.gain_db out of range [-96, 24]` |
+| `mute` present and not a boolean | `bus.mute must be a boolean` |
+
+Defaults: `gain_db` 0.0 (unity), `mute` false. `name` is a label only — buses are addressed by **index**
+everywhere (operations, `sends` arrays, stems order); names are never looked up by the engine. A mistyped
+`gain_db` (string, object, …) throws inside `project_from_json` and fails exactly like a mistyped
+`track.gain_db` does today (`json: type must be number`, exit 4).
+
+**`track.sends`** — array of numbers, parsed **last** in a track (after the voice and the choke-group
+checks), checked in this order:
+
+| rule | error (exact) |
+| --- | --- |
+| value is not an array | `track.sends must be an array` |
+| more entries than the project has buses | `track.sends has more entries than there are buses` |
+| an entry is not a JSON number | `track.sends entries must be numbers` |
+| an entry out of `[-96, 24]` (NaN-safe negated compare) | `track.sends entries out of range [-96, 24]` |
+
+`sends[i]` is the send level in dB to bus `i`; **absent `sends`, or an array shorter than the bus count,
+means 0.0 dB for every missing slot** (the loader pads). A send of exactly `0.0` dB routes nothing.
+
+**Canonical save.** `buses` is written only when the list is non-empty; inside a bus, `gain_db` is omitted at
+exactly `0.0` and `mute` only when `true` (like `track.mute`). A track's `sends` array is written only when
+the project has at least one bus **and** some entry is non-zero; then exactly one entry per bus is written
+(shorter stored arrays are padded with `0.0` on save). So every project that had no buses before WP-0206, and
+every track that sends nothing, saves byte-for-byte unchanged — the existing goldens are the regression net.
+
+### Routing semantics (normative)
+
+Per frame, for each **audible** track `t` (`op::track_audible`, spec §mixer — inaudible tracks never reach a
+bus) with post-fader stereo gains `L_t = 10^(gain_db/20) · panL`, `R_t = 10^(gain_db/20) · panR` (exactly the
+gains the dry path uses, clip gain / velocity / fades / choke included):
+
+```
+bus_in_j          = Σ_t  voiceSample_t · L_t · 10^(sends[t][j]/20)        (same for R)
+bus_out_j         = bus_in_j · 10^(buses[j].gain_db/20)      if !buses[j].mute   else 0
+mix               = ( Σ_t voiceSample_t · L_t )  +  Σ_j bus_out_j
+out               = mix · 10^(master_gain_db/20)
+```
+
+Sends are **post-fader**: they scale the signal *after* the track's own `gain_db` and pan, so lowering a
+track's fader lowers everything it sends by the same factor. A send level of exactly `0.0` dB is skipped
+entirely (that track contributes nothing to that bus). A **muted** bus contributes nothing to the mix at all
+(its input sum is not even computed), and a project with no buses adds no arithmetic to the render: every
+pre-WP-0206 render stays bit-identical. `10^(0/20) == 1.0f` exactly, so a bus fed at unity is exact too.
+
+Buses are summed into the mix in **bus index order**, one full pass per bus, before the single master-gain
+multiply. The CLI limiter (`--limit-dbfs`) runs after master gain on the mix only — unchanged by this section.
+
+### Stems (spec §stems / `opd render --stems-dir`)
+
+`op::render_stems(p, base_dir, stems, mix, err)` keeps its signature and now returns
+`p.tracks.size() + p.buses.size()` buffers: the track stems in track order (unchanged), then **one stem per
+bus in bus order**. A bus stem is exactly what that bus adds to the master, with `master_gain_db` applied —
+the same convention as track stems (`bus_stem_j = bus_out_j · 10^(master_gain_db/20)`). A muted bus yields an
+all-zero full-length stem. Track stems are **not** affected by the presence of buses: they stay bit-identical
+with and without them, so with sends a stem set is deliberately *not* additive (a track's signal appears both
+in its own stem and in every bus stem it feeds).
+
+`opd render --stems-dir DIR` writes bus stems after the track stems, continuing the numeric prefix:
+`DIR/<i>_bus_<sanitized bus name>.wav`, where `<i>` is the index into the whole `stems` list (track count +
+bus index) and the name passes through the same `sanitize_track_name` as tracks (lower-case alphanumerics,
+spaces/`-`/`_` → `_`); an empty result becomes `bus`. Example with two tracks and two buses:
+
+```
+stem 0 -> stems/0_kick.wav
+stem 1 -> stems/1_pad.wav
+stem 2 -> stems/2_bus_fx.wav
+stem 3 -> stems/3_bus_delay.wav
+rendered mix 192000 frames @48000 Hz -> mix.wav (+4 stems, seed=42)
+```
+
+Track stem file names are unchanged. `opd meters` measures the track stems and the mix only — bus stems are
+ignored there (meters keeps its one entry per track).
+
+### Not affected by this section
+
+MIDI import/export (`opd opj2mid`), `opd lint`, `opd tracks`, `opd clips`, `opd click`, the player, and
+`opd info` treat buses as opaque: they neither read nor write them. Bundling (`.opd`) carries them because it
+carries the project JSON verbatim.
+
+### Determinism
+
+Buses add only `op::dsp::db_to_lin` multiplies and additions in a fixed order (track order, then bus index
+order); no clock, no randomness, no state between renders. Same project → bit-identical WAV.
