@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "engine/analyze.hpp"
+#include "engine/audition.hpp"
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
 #include "engine/lint.hpp"
@@ -61,6 +62,8 @@ static void usage() {
         "  opd clips <proj.opj>   (arrangement clips as canonical JSON — read-only, model order)\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
         "  opd timeline <project.opj> [--bars N]   (per-bar ruler: start beat, sample, seconds + tempo as JSON)\n"
+        "  opd audition <in.wav> -o <out.wav> [--note N --root R] [--start-s A --end-s B] [--seconds S]\n"
+        "             (one note through the sampler voice - resample/trim/repitch - no project needed)\n"
         "  opd samples <dir> [-o <index.json>]   (JSON index of the audio files under a directory)\n");
 }
 
@@ -1089,6 +1092,119 @@ static int cmd_timeline(int argc, char** argv) {
     return 0;
 }
 
+// opd audition <in.wav> -o <out.wav> [--note N --root R] [--start-s A --end-s B] [--seconds S] (WP-0209) —
+// render ONE note of a sample through the existing sampler voice (resample/trim/repitch), no project needed.
+// The output is bit-exact with `opd render` of the equivalent one-track project (op::audition::build_project).
+// Read-only: the input asset is never modified and nothing but the -o file is ever written; deterministic.
+// Checks run in this exact order, all before the input file is looked at. Exit codes: 2 usage (each message
+// below), 3 not-found, 5 render/write error (the sampler's own message, verbatim). Success prints exactly
+// one line to stdout: "auditioned <frames> frames @<rate> Hz -> <out_path>".
+static int cmd_audition(int argc, char** argv) {
+    std::string in_path, out_path;
+    bool has_in = false, has_out = false;
+    std::string note_arg, root_arg, start_arg, end_arg, sec_arg;  // raw strings for exact error messages
+    bool has_note = false, has_root = false, has_start = false, has_end = false, has_sec = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "-o") && i + 1 < argc) {
+            out_path = argv[++i];
+            has_out = true;
+        } else if (!std::strcmp(argv[i], "--note") && i + 1 < argc) {
+            note_arg = argv[++i];
+            has_note = true;
+        } else if (!std::strcmp(argv[i], "--root") && i + 1 < argc) {
+            root_arg = argv[++i];
+            has_root = true;
+        } else if (!std::strcmp(argv[i], "--start-s") && i + 1 < argc) {
+            start_arg = argv[++i];
+            has_start = true;
+        } else if (!std::strcmp(argv[i], "--end-s") && i + 1 < argc) {
+            end_arg = argv[++i];
+            has_end = true;
+        } else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) {
+            sec_arg = argv[++i];
+            has_sec = true;
+        } else if (argv[i][0] == '-' || has_in) {  // unknown option (incl. valueless flags) or second positional
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        } else {
+            in_path = argv[i];
+            has_in = true;
+        }
+    }
+
+    // 1-2: the two mandatory arguments.
+    if (!has_in) { usage(); return fail("usage", "audition needs <in.wav>"); }
+    if (!has_out || out_path.empty()) { usage(); return fail("usage", "missing -o <out.wav>"); }
+
+    // 3-4: --seconds syntax then range (0, kMaxSeconds].
+    double sec = 0.0;
+    if (has_sec) {
+        if (!parse_bar_value(sec_arg, sec))
+            { usage(); return fail("usage", "bad --seconds value '" + sec_arg + "'"); }
+        if (!(sec > 0.0) || !(sec <= op::audition::kMaxSeconds))
+            { usage(); return fail("usage", "--seconds must be in (0, 300]"); }
+    }
+
+    // 5-6: --start-s syntax then range [0, +inf).
+    double start_s = 0.0;
+    if (has_start) {
+        if (!parse_bar_value(start_arg, start_s))
+            { usage(); return fail("usage", "bad --start-s value '" + start_arg + "'"); }
+        if (!(start_s >= 0.0)) { usage(); return fail("usage", "--start-s must be >= 0"); }
+    }
+
+    // 7-8: --end-s syntax then end > start (start defaults to 0.0 when the flag is absent).
+    double end_s = 0.0;
+    if (has_end) {
+        if (!parse_bar_value(end_arg, end_s))
+            { usage(); return fail("usage", "bad --end-s value '" + end_arg + "'"); }
+        if (!(end_s > start_s))
+            { usage(); return fail("usage", "--end-s must be greater than --start-s"); }
+    }
+
+    // 9-10: --note / --root are decimal MIDI pitches in [0, 127].
+    long long note = -1, root = -1;
+    if (has_note && !parse_decimal(note_arg, 127, note))
+        { usage(); return fail("usage", "bad --note value '" + note_arg + "'"); }
+    if (has_root && !parse_decimal(root_arg, 127, root))
+        { usage(); return fail("usage", "bad --root value '" + root_arg + "'"); }
+
+    // 11: pitch only makes sense as a pair (no root -> the engine never repitches).
+    if (has_note != has_root) {
+        usage();
+        return fail("usage", "--note and --root must be given together");
+    }
+
+    // 12: the input file must exist; everything else about it is the sampler's verdict at render time.
+    if (!fs::exists(in_path)) return fail("not_found", in_path);
+
+    op::audition::Options o;
+    o.path = in_path;
+    o.note = has_note ? static_cast<int>(note) : -1;
+    o.root = has_root ? static_cast<int>(root) : -1;
+    o.start_s = start_s;
+    o.end_s = end_s;
+    o.has_end_s = has_end;
+    if (has_sec) {
+        o.frames = op::audition::to_frames(sec);  // explicit length wins over everything
+    } else if (has_end) {
+        o.frames = op::audition::to_frames(end_s) - op::audition::to_frames(start_s);  // the trimmed span
+    } else {
+        o.frames = op::audition::kDefaultFrames;  // 2 s
+    }
+
+    // Empty base_dir: a relative in_path resolves against the caller's working directory, an absolute
+    // one passes through. Errors are the sampler's own — never reworded here.
+    op::wav::StereoBuffer buf;
+    std::string err;
+    if (!op::audition::render(o, "", buf, err)) return fail("render", err);
+    if (!op::wav::write_wav_stereo(out_path, buf, op::wav::SampleFormat::Pcm16, err)) return fail("write", err);
+
+    const std::string line = "auditioned " + std::to_string(buf.frames()) + " frames @" +
+                             std::to_string(buf.sample_rate) + " Hz -> " + out_path + "\n";
+    std::fwrite(line.data(), 1, line.size(), stdout);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -1115,6 +1231,7 @@ int main(int argc, char** argv) {
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
     if (cmd == "timeline") return cmd_timeline(argc - 1, argv + 1);
+    if (cmd == "audition") return cmd_audition(argc - 1, argv + 1);
     usage();
     return 2;
 }

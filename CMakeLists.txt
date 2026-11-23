@@ -21,6 +21,7 @@ target_sources(opengine PRIVATE src/engine/lint.cpp)  # WP-0170
 target_sources(opengine PRIVATE src/engine/peaks.cpp)  # WP-0171
 target_sources(opengine PRIVATE src/engine/limiter.cpp)  # WP-0176
 target_sources(opengine PRIVATE src/engine/meters.cpp)  # WP-0194
+target_sources(opengine PRIVATE src/engine/audition.cpp)  # WP-0209
 
 # WP-0141: JUCE-free document layer (open/save/dirty, undo/redo, gestures) for the app + CLI.
 add_library(dzdoc STATIC src/doc/document.cpp)
@@ -111,6 +112,13 @@ add_executable(op_player_click_tests tests/test_player_click.cpp)
 target_link_libraries(op_player_click_tests PRIVATE opengine dzplayer)
 add_test(NAME player_click COMMAND op_player_click_tests)
 
+# WP-0209: opd audition — project-free one-note sampler preview. Runs the opd binary, so it needs OPD_BIN.
+add_executable(op_audition_tests tests/test_audition.cpp)
+target_link_libraries(op_audition_tests PRIVATE opengine)
+target_compile_definitions(op_audition_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>")
+add_dependencies(op_audition_tests opd)
+add_test(NAME audition COMMAND op_audition_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -129,6 +137,7 @@ list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
 list(APPEND DZ_OUR_TARGETS op_player_loop_tests)  # WP-0200
 list(APPEND DZ_OUR_TARGETS op_player_click_tests)  # WP-0201
+list(APPEND DZ_OUR_TARGETS op_audition_tests)  # WP-0209
 list(APPEND DZ_OUR_TARGETS op_clip_trim_midi_tests)  # WP-0193c
 
 if(DZ_WERROR)
