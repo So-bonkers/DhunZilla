@@ -21,6 +21,7 @@ target_sources(opengine PRIVATE src/engine/lint.cpp)  # WP-0170
 target_sources(opengine PRIVATE src/engine/peaks.cpp)  # WP-0171
 target_sources(opengine PRIVATE src/engine/limiter.cpp)  # WP-0176
 target_sources(opengine PRIVATE src/engine/meters.cpp)  # WP-0194
+target_sources(opengine PRIVATE src/engine/patterns.cpp)  # WP-0228
 target_sources(opengine PRIVATE src/engine/audition.cpp)  # WP-0209
 target_sources(opengine PRIVATE src/engine/tracks.cpp)  # WP-0227
 
@@ -103,6 +104,13 @@ target_compile_definitions(op_timeline_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>
 add_dependencies(op_timeline_tests opd)
 add_test(NAME timeline COMMAND op_timeline_tests)
 
+# WP-0228: opd patterns — pattern-bar listing. Runs the opd binary, so it needs OPD_BIN and depends on it.
+add_executable(op_patterns_tests tests/test_patterns.cpp)
+target_link_libraries(op_patterns_tests PRIVATE opengine)
+target_compile_definitions(op_patterns_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>")
+add_dependencies(op_patterns_tests opd)
+add_test(NAME patterns COMMAND op_patterns_tests)
+
 # WP-0200: dz::Player transport loop region (needs the JUCE-free dzplayer core).
 add_executable(op_player_loop_tests tests/test_player_loop.cpp)
 target_link_libraries(op_player_loop_tests PRIVATE opengine dzplayer)
@@ -155,6 +163,7 @@ list(APPEND DZ_OUR_TARGETS op_meters_tests)  # WP-0194
 list(APPEND DZ_OUR_TARGETS op_clip_trim_tests)  # WP-0193a
 list(APPEND DZ_OUR_TARGETS op_clip_trim_render_tests)  # WP-0193b
 list(APPEND DZ_OUR_TARGETS op_clips_tests)  # WP-0199
+list(APPEND DZ_OUR_TARGETS op_patterns_tests)  # WP-0228
 list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
 list(APPEND DZ_OUR_TARGETS op_player_loop_tests)  # WP-0200

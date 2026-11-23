@@ -25,6 +25,7 @@
 #include "engine/model.hpp"
 #include "engine/normalize.hpp"
 #include "engine/ops.hpp"
+#include "engine/patterns.hpp"  // WP-0228
 #include "engine/peaks.hpp"
 #include "engine/render.hpp"
 #include "engine/sample_index.hpp"
@@ -62,6 +63,7 @@ static void usage() {
         "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
         "  opd clips <proj.opj>   (arrangement clips as canonical JSON — read-only, model order)\n"
         "  opd tracks <proj.opj>   (channel rack / mixer track listing as canonical JSON — read-only, model order)\n"
+        "  opd patterns <proj.opj>   (pattern-bar listing as canonical JSON — read-only, model order)\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
         "  opd timeline <project.opj> [--bars N]   (per-bar ruler: start beat, sample, seconds + tempo as JSON)\n"
         "  opd audition <in.wav> -o <out.wav> [--note N --root R] [--start-s A --end-s B] [--seconds S]\n"
@@ -918,6 +920,25 @@ static int cmd_tracks(int argc, char** argv) {
     return 0;
 }
 
+// opd patterns <proj.opj> (WP-0228) — the pattern bar as canonical JSON: one entry per pattern in model
+// order, effective loop length from the renderer's own op::pattern_extent, swing, note counts and the
+// arrangement clip indices placing it. Read-only: writes nothing, modifies no project, creates no files;
+// two runs on the same file are byte-identical. Exactly one positional argument, no options. Errors print
+// nothing on stdout: exit 2 usage, 3 not-found (detail = the path), 4 parse (detail = loader message).
+static int cmd_patterns(int argc, char** argv) {
+    if (argc != 2 || argv[1][0] == '-') { usage(); return fail("usage", "patterns needs exactly <project.opj>"); }
+    const std::string path = argv[1];
+    if (!fs::exists(path)) return fail("not_found", path);
+
+    op::Project p;
+    std::string err;
+    if (!op::load_project(path, p, err)) return fail("parse", err);
+
+    const std::string json = op::patterns_json(p);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 // Parse a decimal argument that must be all digits and fit in [0, max]. Rejects "", "-1", "1.0",
 // "x" and anything that would overflow. Example: parse_decimal("16", 256, v) → true, v == 16.
 static bool parse_decimal(const std::string& s, long long max, long long& out) {
@@ -1267,6 +1288,7 @@ int main(int argc, char** argv) {
     if (cmd == "normalize") return cmd_normalize(argc - 1, argv + 1);
     if (cmd == "clips") return cmd_clips(argc - 1, argv + 1);
     if (cmd == "tracks") return cmd_tracks(argc - 1, argv + 1);
+    if (cmd == "patterns") return cmd_patterns(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
     if (cmd == "timeline") return cmd_timeline(argc - 1, argv + 1);
