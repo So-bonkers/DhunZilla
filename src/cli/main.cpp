@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "doc/document.hpp"
 #include "engine/analyze.hpp"
 #include "engine/audition.hpp"
 #include "engine/bundle.hpp"
@@ -68,6 +69,7 @@ static void usage() {
         "  opd timeline <project.opj> [--bars N]   (per-bar ruler: start beat, sample, seconds + tempo as JSON)\n"
         "  opd audition <in.wav> -o <out.wav> [--note N --root R] [--start-s A --end-s B] [--seconds S]\n"
         "             (one note through the sampler voice - resample/trim/repitch - no project needed)\n"
+        "  opd recover <proj.opj> [--list | --restore -o <out.opj>]   (crash-recovery report / restore)\n"
         "  opd samples <dir> [-o <index.json>]   (JSON index of the audio files under a directory)\n");
 }
 
@@ -1264,6 +1266,74 @@ static int cmd_audition(int argc, char** argv) {
     return 0;
 }
 
+// opd recover (docs/spec/operations.md §Crash-recovery inspection and restore): a GUI-free report of the
+// WP-0157 autosave state of <proj>, and a restore of that autosave into the file named by -o. Every recovery
+// rule is the document layer's: op::Document::recovery_state decides "recoverable", autosave_path names the
+// file, open_recovered loads it and save_as writes it (canonical op::save_project + its own autosave cleanup).
+// Nothing here re-decides a rule, compares bytes, reads <proj>.autosave.tmp or deletes anything.
+// Report mode (--list, or no flag) prints exactly one line and exits 0 in all four states.
+// Restore mode: exit 0 on success, 3 for missing/identical, 4 for a corrupt autosave.
+// Other exit codes: 2 usage, 3 missing <proj>, 4 unparsable <proj>, 5 write error. Deterministic.
+static int cmd_recover(int argc, char** argv) {
+    std::string proj, out;
+    bool has_proj = false, has_out = false, list = false, restore = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--list")) {
+            list = true;
+        } else if (!std::strcmp(argv[i], "--restore")) {
+            restore = true;
+        } else if (!std::strcmp(argv[i], "-o") && i + 1 < argc) {
+            out = argv[++i];
+            has_out = true;
+        } else if (argv[i][0] == '-' || has_proj) {  // unknown option (incl. a valueless -o) or 2nd positional
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        } else {
+            proj = argv[i];
+            has_proj = true;
+        }
+    }
+    if (!has_proj) { usage(); return fail("usage", "recover needs <proj.opj> [--list | --restore -o <out.opj>]"); }
+    if (list && restore) { usage(); return fail("usage", "--list and --restore are mutually exclusive"); }
+    if (restore && !has_out) { usage(); return fail("usage", "recover --restore needs -o <out.opj>"); }
+    if (has_out && !restore) { usage(); return fail("usage", "-o needs --restore"); }
+
+    // The project itself must exist and parse before any recovery state is reported (exit 3 / exit 4).
+    std::string err;
+    if (!fs::exists(proj)) return fail("not_found", proj);
+    op::Project saved;
+    if (!op::load_project(proj, saved, err)) return fail("parse", err);
+
+    const std::string autosave = op::Document::autosave_path(proj);
+    const bool recoverable = op::Document::recovery_state(proj) == op::RecoveryState::AutosaveNewer;
+    const bool autosave_exists = fs::exists(autosave);
+    bool autosave_loads = false;
+    if (!recoverable && autosave_exists) {
+        op::Project candidate;
+        std::string load_err;
+        autosave_loads = op::load_project(autosave, candidate, load_err);
+    }
+
+    if (!restore) {  // report: one line, exit 0 in all four states (nothing to recover is an answer)
+        if (recoverable) std::printf("recover: %s: autosave differs from the saved project (recoverable)\n", proj.c_str());
+        else if (!autosave_exists) std::printf("recover: %s: no autosave file\n", proj.c_str());
+        else if (!autosave_loads) std::printf("recover: %s: autosave unreadable (corrupt)\n", proj.c_str());
+        else std::printf("recover: %s: autosave matches the saved project\n", proj.c_str());
+        return 0;
+    }
+
+    if (!recoverable) {
+        if (autosave_exists && !autosave_loads) return fail("parse", "corrupt autosave '" + autosave + "'");
+        return fail("not_found", "no recoverable autosave for '" + proj + "'");
+    }
+
+    op::Document doc;
+    if (!op::Document::open_recovered(proj, doc, err)) return fail("not_found", err);
+    // save_as, never save(): `doc` is open at proj, so save() would overwrite the project file itself.
+    if (!doc.save_as(out, err)) return fail("write", err);
+    std::printf("recover: %s: restored %s -> %s\n", proj.c_str(), autosave.c_str(), out.c_str());
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -1293,6 +1363,7 @@ int main(int argc, char** argv) {
     if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
     if (cmd == "timeline") return cmd_timeline(argc - 1, argv + 1);
     if (cmd == "audition") return cmd_audition(argc - 1, argv + 1);
+    if (cmd == "recover") return cmd_recover(argc - 1, argv + 1);  // WP-0244
     usage();
     return 2;
 }

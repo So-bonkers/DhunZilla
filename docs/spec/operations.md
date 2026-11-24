@@ -737,3 +737,63 @@ Example — three tracks (`"Zeta Kick"` soloed sampler with trim, root note and 
 
 `opd tracks` adds no operation and changes no model field; it is a pure view (the future
 channel-rack / mixer panel and the copilot read this instead of parsing project JSON).
+
+## Crash-recovery inspection and restore — `opd recover` — additive (WP-0244)
+
+```
+opd recover <proj.opj> [--list | --restore -o <out.opj>]
+```
+
+`<proj>.autosave` (WP-0157, `op::Document::autosave_path`) holds the last autosaved work of a session that
+may have died. This command reports that state and restores it with no GUI. It adds no model field, no
+operation and changes no render: it only reads `<proj>` and `<proj>.autosave`, and writes the file named by
+`-o`. It is a thin front end over the document layer — `op::Document::recovery_state`,
+`op::Document::autosave_path`, `op::Document::open_recovered` and `Document::save_as` decide everything; no
+recovery rule is re-implemented and `src/doc/` is not modified.
+
+### States (decided in this order, exactly four)
+
+1. **recoverable** — `op::Document::recovery_state(proj) == op::RecoveryState::AutosaveNewer`: both files
+   load and their canonical `op::project_bytes` differ (newer content, i.e. work not in the saved file).
+2. **missing** — not recoverable and `<proj>.autosave` does not exist.
+3. **corrupt** — not recoverable, the file exists but `op::load_project` fails on it.
+4. **identical** — not recoverable, the file exists and loads, so its content equals the saved file's.
+
+`<proj>.autosave.tmp` (the temp file of an in-flight atomic autosave) is never considered: the document
+layer never reads it, so neither does this command.
+
+### Report — `--list`, and the default when neither flag is given
+
+Exactly one line on stdout, and exit **0 in all four states**: the report never fails over the recovery
+state, because "there is nothing to recover" is an answer, not an error.
+
+```
+recover: <proj>: autosave differs from the saved project (recoverable)
+recover: <proj>: no autosave file
+recover: <proj>: autosave matches the saved project
+recover: <proj>: autosave unreadable (corrupt)
+```
+
+### Restore — `--restore -o <out.opj>`
+
+The autosave is loaded with `op::Document::open_recovered` and written with `Document::save_as(out)`, which
+is the canonical serializer (`op::save_project`) — so the output is a plain canonical `.opj`, and the
+document layer's own save rules apply to it.
+
+- Success: exit **0**, one stdout line `recover: <proj>: restored <proj>.autosave -> <out.opj>`. The bytes
+  of `<out.opj>` equal the bytes of `<proj>.autosave`; `<proj>` and `<proj>.autosave` are left untouched.
+- **missing** or **identical**: exit **3**, `error: not_found: no recoverable autosave for '<proj>'`, and
+  nothing is written.
+- **corrupt**: exit **4**, `error: parse: corrupt autosave '<proj>.autosave'`, and nothing is written.
+- The project file itself is written **only** when `-o` names that very path: then `<proj>` gets the
+  autosave content and `save_as` clears that path's autosave file (a stale `<out>.autosave` of a different
+  output path is cleared the same way). That is the document layer's rule — the command must not delete any
+  autosave file of its own accord.
+
+### Errors (exit codes per §CLI: 2 usage, 3 not-found, 4 parse, 5 write error)
+
+Exit **2** (usage) for: `opd recover` with no `<proj>`, any unknown argument, `--list` given together with
+`--restore`, `--restore` without `-o`, and `-o` without `--restore`. Exit **3** when `<proj>` does not
+exist. Exit **4** when `<proj>` exists but does not parse. A failure to write `<out.opj>` is exit **5**;
+the project file and its autosave stay unchanged. `opd recover` never deletes, moves or truncates `<proj>`
+except in the explicit `-o <proj>` case above, and it never runs a timer, autosave or scheduler.
