@@ -1,4 +1,4 @@
-// src/app/main.cpp — dhunzilla entry point (WP-0143, WP-0152, WP-0153).
+// src/app/main.cpp — dhunzilla entry point (WP-0143, WP-0152, WP-0153, WP-0212).
 //
 // Modes, parsed from getCommandLineParameterArray() inside initialise(); options and the single
 // positional project path may appear in any order:
@@ -28,6 +28,9 @@
 //   drag gain <track> <db> | drag pan <track> <pan>        — a full gesture: ONE undo entry
 //   click mute <track>     | click solo <track>            — one toggle = one undo entry
 //   click step <pattern> <step>                            — scriptStep(): ONE set_step through the Document (WP-0195)
+//   new                                                    — File > New: switch to the default untitled project (WP-0212)
+//   open <path>                                            — File > Open with this path (no chooser); WP-0212
+//   discard yes|no                                         — the dirty-document guard's answer for new/open; default no (WP-0212)
 //   undo | redo | save                                     — doUndo/doRedo/doSave; false → exit 6
 //   key ctrl+z | key ctrl+shift+z | key ctrl+s             — handleKey(); never fails at runtime
 //   expect undo|redo|dirty <0|1>                           — Document flags must equal the value
@@ -42,6 +45,15 @@
 // (flags read AFTER the command), then the two WP-0143 snapshot lines if --snapshot, then
 // `saved: <path as given>` if --save-as. On any failure stdout is empty and no PNG / save-as file
 // is written; a valid but empty/comment-only script succeeds with no command lines.
+//
+// Document switches (WP-0212): `new` / `open <path>` go through App::switch_document (never a
+// direct model mutation). A successful one echoes undo=0 redo=0 dirty=0 and rebuilds the
+// component over the SAME Document; a switch cancelled by the dirty guard (the `discard` answer
+// was no) is NOT a failure — the echo shows the flags of the UNCHANGED document; a failed open is
+// a run-time command failure (exit 6, `err` = the loader error verbatim, document untouched).
+// A successful open records the opened path (absolute, most recent first, max 8) in
+// `<settings dir>/recent_projects.txt`; the settings dir is $DZ_APP_SETTINGS_DIR when set and
+// non-empty, else <userApplicationDataDirectory>/DhunZilla. `new` never records.
 //
 // Exit codes — on failure exactly one line "dhunzilla: <reason>" goes to stderr, stdout stays
 // empty (script failures are prefixed "script line <n>: "):
@@ -64,6 +76,7 @@
 #include <cstdlib>
 #include <climits>
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -148,6 +161,9 @@ enum class Cmd {
     expectGain, expectPan, expectMute, expectSolo,
     expectWidgetGain, expectWidgetPan, expectWidgetMute, expectWidgetSolo,
     clickStep, expectGrid, expectWidgetGrid,  // channel rack (WP-0195)
+    // Document switches (WP-0212). Appended at the END: the run-time index checks rely on
+    // expectGain..expectSolo and expectWidgetGain..expectWidgetSolo staying contiguous.
+    newDoc, openDoc, discardAnswer,
 };
 
 struct ScriptCommand {
@@ -156,10 +172,11 @@ struct ScriptCommand {
     Cmd cmd{};
     int track = 0;                   // <track> for drag/click/track-expects
     double value = 0.0;              // <db>/<pan>/<v> for numeric commands and expects
-    bool flag = false;               // <0|1> for boolean expects
+    bool flag = false;               // <0|1> for boolean expects; yes/no for `discard` (WP-0212)
     int pattern = 0;                 // <pattern> for click step / grid expects (WP-0195)
     int step = 0;                    // <step> for click step (WP-0195)
     std::string grid;                // the validated 16-char x/. string for grid expects (WP-0195)
+    std::string path;                // <path> for `open` (WP-0212)
 };
 
 // Split on spaces/tabs only (the script grammar's separators); empty tokens never appear.
@@ -282,6 +299,19 @@ int parseScript(const std::string& text, std::vector<ScriptCommand>& out, int& b
         } else if (c0 == "save") {
             if (toks.size() != 1) return fail(line_no, "'save' takes no arguments");
             sc.cmd = Cmd::save;
+        } else if (c0 == "new") {  // document switches (WP-0212)
+            if (toks.size() != 1) return fail(line_no, "'new' takes no arguments");
+            sc.cmd = Cmd::newDoc;
+        } else if (c0 == "open") {
+            if (toks.size() != 2) return fail(line_no, "'open' expects '<path>'");  // one path token, no spaces
+            sc.cmd = Cmd::openDoc;
+            sc.path = toks[1];
+        } else if (c0 == "discard") {
+            if (toks.size() != 2) return fail(line_no, "'discard' expects 'yes|no'");
+            if (toks[1] == "yes")     sc.flag = true;
+            else if (toks[1] == "no") sc.flag = false;
+            else return fail(line_no, "expected 'yes' or 'no', got '" + toks[1] + "'");
+            sc.cmd = Cmd::discardAnswer;
         } else if (c0 == "key") {
             if (toks.size() != 2) return fail(line_no, "'key' expects 'ctrl+z|ctrl+shift+z|ctrl+s'");
             if (toks[1] == "ctrl+z")           sc.cmd = Cmd::keyUndo;
@@ -369,22 +399,97 @@ std::string boolTxt(bool b) { return b ? "1" : "0"; }
 
 juce::String jstr(const std::string& s) { return juce::String::fromUTF8(s.c_str()); }
 
+// Open Recent settings file (WP-0212): `<settings dir>/recent_projects.txt` — plain text, one
+// absolute path per line, most recent first, at most 8 lines, each line ending with '\n'. No
+// headers, no escaping. Read: a missing/unreadable file is the empty list; blank lines are
+// skipped; only the first 8 non-blank lines are used. Record (a successful open): the path as
+// given, resolved to absolute, moves to the FRONT, any earlier copy is removed, the list is
+// truncated to 8 and the whole file is rewritten (the settings dir is created first). A write
+// failure (dir cannot be created, file cannot be opened, or write/flush fails) is exactly one
+// stderr line and changes no exit code.
+class RecentProjects {
+public:
+    static constexpr int kMaxEntries = 8;
+
+    void set_dir(const juce::File& settings_dir) {
+        dir_ = settings_dir;
+        file_ = dir_.getChildFile(juce::String::fromUTF8("recent_projects.txt"));
+    }
+    const juce::File& file() const { return file_; }
+
+    void load() {  // read the file into the in-memory list (see class comment)
+        paths_.clear();
+        auto stream = file_.createInputStream();
+        if (!stream) return;  // missing/unreadable: the empty list
+        juce::StringArray lines;
+        lines.addLines(stream->readEntireStreamAsString());
+        for (const auto& raw : lines) {
+            const auto line = raw.trim();
+            if (line.isEmpty()) continue;  // blank lines are skipped
+            paths_.push_back(line.toRawUTF8());
+            if (static_cast<int>(paths_.size()) >= kMaxEntries) break;  // only the first 8
+        }
+    }
+
+    void record(const juce::String& path_as_given) {
+        const juce::String full = juce::File(path_as_given).getFullPathName();  // relative → absolute
+        std::vector<std::string> next;
+        next.push_back(full.toRawUTF8());  // the path moves to the FRONT ...
+        for (const auto& p : paths_)
+            if (p != full.toRawUTF8()) next.push_back(p);  // ... any earlier copy is removed
+        if (next.size() > static_cast<std::size_t>(kMaxEntries))
+            next.resize(static_cast<std::size_t>(kMaxEntries));  // truncated to 8
+        paths_ = std::move(next);
+
+        (void)dir_.createDirectory();  // create the settings dir before the first write
+        bool ok = false;
+        {  // same flush-then-test-before-destroy pattern as Document::autosave (document.cpp)
+            std::ofstream f(file_.getFullPathName().toRawUTF8(), std::ios::binary | std::ios::trunc);
+            if (f) {
+                for (const auto& p : paths_) f << p << "\n";
+                f.flush();
+                f.close();
+                ok = !f.fail();
+            }
+        }
+        if (!ok)
+            printError(juce::String::fromUTF8("cannot write recent projects file ") + file_.getFullPathName());
+    }
+
+    const std::vector<std::string>& entries() const { return paths_; }
+
+private:
+    juce::File dir_, file_;
+    std::vector<std::string> paths_;
+};
+
 // Minimal top-level window: native title bar with a close button, File/Edit menu bar, content
 // owned here. The menu model is the window itself (it outlives the menu bar component).
 class MainWindow final : public juce::DocumentWindow, public juce::MenuBarModel {
 public:
-    enum MenuIds { saveItem = 1, undoItem, redoItem };
+    enum MenuIds { saveItem = 1, undoItem, redoItem,
+                   newItem = 20, openItem,        // File menu document switches (WP-0212)
+                   recentBase = 100 };            // Open Recent ids: recentBase + index
 
-    MainWindow(const juce::String& title, op::Document& doc, dz::PlaybackController* playback)
+    MainWindow(const juce::String& title, op::Document& doc, dz::PlaybackController* playback,
+               const RecentProjects* recents)
         : DocumentWindow(title, juce::Colour(0xff14151a), juce::DocumentWindow::closeButton),
-          doc_(doc) {
-        // `doc` and `playback` outlive us (App member order: window_ destroyed first).
-        auto content = std::make_unique<dz::MainComponent>(doc, playback);
+          doc_(doc), playback_(playback), recents_(recents) {
+        // `doc`, `playback` and `recents` outlive us (App member order: window_ destroyed first).
+        rebuildContent();
+        setMenuBar(this);
+        centreWithSize(getWidth(), getHeight());
+    }
+
+    // Destroy and rebuild the content component over the SAME Document (WP-0212): MainComponent
+    // builds its track rows and rack cells once per project, so a successful new/open replaces the
+    // component; the Document object itself is never re-allocated (the component holds a reference).
+    void rebuildContent() {
+        if (content_ != nullptr) content_->onDocumentChanged = nullptr;  // `this` goes away first
+        auto content = std::make_unique<dz::MainComponent>(doc_, playback_);
         content_ = content.get();
         setContentOwned(content.release(), true);
         content_->onDocumentChanged = [this] { menuItemsChanged(); };  // keep Undo/Redo enablement live
-        setMenuBar(this);
-        centreWithSize(getWidth(), getHeight());
     }
 
     ~MainWindow() override {
@@ -404,6 +509,25 @@ public:
     juce::PopupMenu getMenuForIndex(int index, const juce::String&) override {
         juce::PopupMenu menu;
         if (index == 0) {
+            // File menu order (WP-0212): New, Open... (ASCII dots), Open Recent submenu,
+            // separator, then the existing Save item.
+            juce::PopupMenu::Item new_item(juce::String::fromUTF8("New"));
+            new_item.itemID = newItem;
+            menu.addItem(new_item);
+
+            juce::PopupMenu::Item open_item(juce::String::fromUTF8("Open..."));
+            open_item.itemID = openItem;
+            menu.addItem(open_item);
+
+            juce::PopupMenu recent_menu;  // recent paths most-recent-first; empty list → empty submenu
+            const auto& recents = recents_->entries();
+            for (std::size_t i = 0; i < recents.size(); ++i)
+                recent_menu.addItem(recentBase + static_cast<int>(i),
+                                    juce::String::fromUTF8(recents[i].c_str()));
+            menu.addSubMenu(juce::String::fromUTF8("Open Recent"), recent_menu);
+
+            menu.addSeparator();
+
             juce::PopupMenu::Item save(juce::String::fromUTF8("Save"));
             save.itemID = saveItem;
             save.shortcutKeyDescription = juce::String::fromUTF8("Ctrl+S");
@@ -427,6 +551,8 @@ public:
     void menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/) override {
         if (content_ == nullptr) return;
         switch (menuItemID) {
+            case newItem: if (request_new != nullptr) request_new(); break;
+            case openItem: if (request_open_chooser != nullptr) request_open_chooser(); break;
             case saveItem: {
                 std::string err;
                 if (!content_->doSave(err))  // one warning line to stderr; the window stays open
@@ -435,12 +561,27 @@ public:
             }
             case undoItem: content_->doUndo(); break;
             case redoItem: content_->doRedo(); break;
-            default: break;
+            default:
+                // recentBase + index (WP-0212): open that recent path.
+                if (menuItemID >= recentBase &&
+                    menuItemID < recentBase + static_cast<int>(recents_->entries().size())) {
+                    if (request_open != nullptr)
+                        request_open(juce::String::fromUTF8(recents_->entries()[static_cast<std::size_t>(
+                            menuItemID - recentBase)].c_str()));
+                }
+                break;
         }
     }
 
+    // File menu document requests (WP-0212), wired by App right after construction (window mode).
+    std::function<void()> request_new;            // File > New
+    std::function<void()> request_open_chooser;   // File > Open... (juce::FileChooser)
+    std::function<void(const juce::String&)> request_open;  // File > Open Recent entry (absolute path)
+
 private:
     op::Document& doc_;               // for menu enablement (can_undo/can_redo)
+    dz::PlaybackController* playback_;  // passed on to rebuilt components (may be null; App owns it)
+    const RecentProjects* recents_;   // Open Recent list for the submenu (App owns it; WP-0212)
     dz::MainComponent* content_ = nullptr;  // owned by the DocumentWindow base
 };
 
@@ -453,6 +594,8 @@ public:
     void shutdown() override {
         // Spec order: window, then controller, then document (MainComponent holds references).
         window_.reset();
+        script_component_.reset();
+        chooser_.reset();
         playback_.reset();
         doc_.reset();
     }
@@ -462,9 +605,27 @@ private:
     // --play-seconds watcher: finish on target frames or song end, bail out after N + 40 s.
     void timerCallback() override;
 
+    // The ONE document switch (WP-0212; File > New / Open... / Open Recent and the script
+    // commands). Fixed order, no other effects: (1) dirty guard — with doc_->dirty() and
+    // !discard_ok return 1 WITHOUT touching document, component, playback or the recent list;
+    // (2) stop playback if a controller exists; (3) is_new: reset_to(op::new_project(...), "")
+    // — else Document::open, whose failure returns 2 with `err` = the loader error verbatim and
+    // the document/component/recent list untouched; (4) rebuild the component over the SAME
+    // Document; (5) for an open, record the path in the recent list. Return 0 when the document
+    // now holds the new project.
+    int switch_document(bool is_new, const std::string& path, bool discard_ok, std::string& err);
+
+    // Window-mode File menu helpers (WP-0212).
+    void confirm_switch(bool is_new, const juce::String& path);  // discard box only when dirty
+    void show_open_chooser();                                    // juce::FileChooser, async
+
     std::unique_ptr<op::Document> doc_;             // declared first → destroyed last
     std::unique_ptr<dz::PlaybackController> playback_;
+    std::unique_ptr<dz::MainComponent> script_component_;  // --script mode only; re-created on a
+                                                           // document switch (WP-0212)
     std::unique_ptr<MainWindow> window_;
+    std::unique_ptr<juce::FileChooser> chooser_;    // Open... kept alive until its callback runs
+    RecentProjects recents_;                        // Open Recent settings file (WP-0212)
 
     bool smoke_active_ = false;                     // --play-seconds in flight
     long long smoke_target_frames_ = 0;
@@ -615,6 +776,18 @@ void App::initialise(const juce::String&) {
         }
     }
 
+    // Open Recent settings (WP-0212): the settings dir is $DZ_APP_SETTINGS_DIR when that
+    // environment variable is set and non-empty, else <userApplicationDataDirectory>/DhunZilla.
+    // Deciding the dir touches nothing on disk; load()/write happen only in script/window modes.
+    {
+        const juce::String env_dir = juce::SystemStats::getEnvironmentVariable(
+            juce::String::fromUTF8("DZ_APP_SETTINGS_DIR"), juce::String());
+        recents_.set_dir(env_dir.isNotEmpty()
+            ? juce::File(env_dir)
+            : juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                  .getChildFile(juce::String::fromUTF8("DhunZilla")));
+    }
+
     // ---- headless snapshot mode (no --script): exactly the WP-0143 behaviour (never opens a device
     //      or creates a controller) ----
     if (!have_script && have_snapshot) {
@@ -660,7 +833,11 @@ void App::initialise(const juce::String&) {
             }
         }
 
-        dz::MainComponent component(*doc_);  // the real component, off-screen
+        recents_.load();  // Open Recent (WP-0212): successful opens merge onto what is on disk
+
+        // The real component, off-screen. A member unique_ptr (WP-0212): a successful document
+        // switch destroys it and re-creates it over the SAME Document.
+        script_component_ = std::make_unique<dz::MainComponent>(*doc_);
 
         auto stream = juce::File(script_path).createInputStream();
         if (!stream) {
@@ -688,8 +865,12 @@ void App::initialise(const juce::String&) {
             setApplicationReturnValue(code); quit();
         };
 
+        // `discard yes|no` answer for the dirty-document guard (WP-0212): a RUN-time setting,
+        // default no — the LAST `discard` executed before a `new`/`open` is the one that applies.
+        bool discard_answer = false;
+
         for (const auto& sc : commands) {
-            const int n = component.trackCount();
+            const int n = script_component_->trackCount();
 
             // --- run-time index checks for the track-based expects ---
             if ((sc.cmd >= Cmd::expectGain && sc.cmd <= Cmd::expectSolo) ||
@@ -702,7 +883,7 @@ void App::initialise(const juce::String&) {
 
             // --- run-time index checks for the grid-based expects (WP-0195) ---
             if (sc.cmd == Cmd::expectGrid || sc.cmd == Cmd::expectWidgetGrid) {
-                const int pc = component.patternCount();
+                const int pc = script_component_->patternCount();
                 if (sc.pattern < 0 || sc.pattern >= pc) {
                     fail(6, sc.line, jstr("pattern index " + std::to_string(sc.pattern) +
                                           " out of range (0.." + std::to_string(pc - 1) + ")"));
@@ -717,7 +898,7 @@ void App::initialise(const juce::String&) {
                 case Cmd::dragGain:
                 case Cmd::dragPan: {
                     std::string err;
-                    ok = component.scriptDrag(sc.cmd == Cmd::dragGain ? "gain" : "pan",
+                    ok = script_component_->scriptDrag(sc.cmd == Cmd::dragGain ? "gain" : "pan",
                                               sc.track, sc.value, err);
                     why = juce::String::fromUTF8(err.c_str());
                     fcode = 6;
@@ -726,7 +907,7 @@ void App::initialise(const juce::String&) {
                 case Cmd::clickMute:
                 case Cmd::clickSolo: {
                     std::string err;
-                    ok = component.scriptClick(sc.cmd == Cmd::clickMute ? "mute" : "solo",
+                    ok = script_component_->scriptClick(sc.cmd == Cmd::clickMute ? "mute" : "solo",
                                                sc.track, err);
                     why = juce::String::fromUTF8(err.c_str());
                     fcode = 6;
@@ -734,20 +915,20 @@ void App::initialise(const juce::String&) {
                 }
                 case Cmd::clickStep: {  // one set_step through the Document (WP-0195)
                     std::string err;
-                    ok = component.scriptStep(sc.pattern, sc.step, err);
+                    ok = script_component_->scriptStep(sc.pattern, sc.step, err);
                     why = juce::String::fromUTF8(err.c_str());
                     fcode = 6;
                     break;
                 }
                 case Cmd::undo:
-                    if ((ok = component.doUndo()) == false) { why = juce::String::fromUTF8("nothing to undo"); fcode = 6; }
+                    if ((ok = script_component_->doUndo()) == false) { why = juce::String::fromUTF8("nothing to undo"); fcode = 6; }
                     break;
                 case Cmd::redo:
-                    if ((ok = component.doRedo()) == false) { why = juce::String::fromUTF8("nothing to redo"); fcode = 6; }
+                    if ((ok = script_component_->doRedo()) == false) { why = juce::String::fromUTF8("nothing to redo"); fcode = 6; }
                     break;
                 case Cmd::save: {
                     std::string err;
-                    ok = component.doSave(err);
+                    ok = script_component_->doSave(err);
                     if (!ok) {
                         why = err.empty() ? juce::String::fromUTF8("save failed")
                                           : juce::String::fromUTF8("save failed: ") +
@@ -756,15 +937,29 @@ void App::initialise(const juce::String&) {
                     }
                     break;
                 }
+                case Cmd::newDoc:
+                case Cmd::openDoc: {  // document switches (WP-0212)
+                    std::string err;
+                    const int rc = switch_document(sc.cmd == Cmd::newDoc, sc.path, discard_answer, err);
+                    // rc == 2: failed open — a run-time command failure exactly like the existing
+                    // ones: exit 6, stderr gets the loader error VERBATIM, stdout stays empty.
+                    if (rc == 2) { fail(6, sc.line, jstr(err)); return; }
+                    // rc == 1: dirty guard answered no — NOT a failure: the echo below shows the
+                    // flags of the UNCHANGED document (the switch touched nothing).
+                    break;
+                }
+                case Cmd::discardAnswer:
+                    discard_answer = sc.flag;  // read by the next new/open (WP-0212)
+                    break;
                 case Cmd::keyUndo:
-                    component.handleKey(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0));
+                    script_component_->handleKey(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0));
                     break;
                 case Cmd::keyRedo:
-                    component.handleKey(juce::KeyPress('z',
+                    script_component_->handleKey(juce::KeyPress('z',
                         juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0));
                     break;
                 case Cmd::keySave:
-                    component.handleKey(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0));
+                    script_component_->handleKey(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0));
                     break;
 
                 case Cmd::expectUndo:
@@ -817,7 +1012,7 @@ void App::initialise(const juce::String&) {
                 }
                 case Cmd::expectWidgetGain:
                 case Cmd::expectWidgetPan: {
-                    const double got = component.widgetValue(sc.cmd == Cmd::expectWidgetGain ? "gain" : "pan", sc.track);
+                    const double got = script_component_->widgetValue(sc.cmd == Cmd::expectWidgetGain ? "gain" : "pan", sc.track);
                     if (!nearEq(got, sc.value)) {
                         ok = false;
                         why = jstr(std::string(sc.cmd == Cmd::expectWidgetGain ? "expected widget gain " : "expected widget pan ") +
@@ -827,7 +1022,7 @@ void App::initialise(const juce::String&) {
                 }
                 case Cmd::expectWidgetMute:
                 case Cmd::expectWidgetSolo: {
-                    const double got = component.widgetValue(sc.cmd == Cmd::expectWidgetMute ? "mute" : "solo", sc.track);
+                    const double got = script_component_->widgetValue(sc.cmd == Cmd::expectWidgetMute ? "mute" : "solo", sc.track);
                     if ((got >= 0.5) != sc.flag) {
                         ok = false;
                         why = jstr(std::string(sc.cmd == Cmd::expectWidgetMute ? "expected widget mute " : "expected widget solo ") +
@@ -846,7 +1041,7 @@ void App::initialise(const juce::String&) {
                     break;
                 }
                 case Cmd::expectWidgetGrid: {  // the WIDGETS' grid (WP-0195); index range-checked above
-                    const std::string got = component.gridText(sc.pattern);
+                    const std::string got = script_component_->gridText(sc.pattern);
                     if (got != sc.grid) {
                         ok = false;
                         why = jstr("expected widget grid " + sc.grid + ", got " + got);
@@ -871,7 +1066,7 @@ void App::initialise(const juce::String&) {
 
         // --- snapshot (if asked): the two WP-0143 lines, after all command lines ---
         if (have_snapshot) {
-            const auto image = component.createComponentSnapshot(component.getLocalBounds(), true, 1.0f);
+            const auto image = script_component_->createComponentSnapshot(script_component_->getLocalBounds(), true, 1.0f);
             juce::File out(snapshot_path);
             out.deleteFile();  // a failed write must not leave stale bytes behind
             bool written = false;
@@ -886,7 +1081,10 @@ void App::initialise(const juce::String&) {
                 setApplicationReturnValue(5); quit(); return;  // stdout buffer stays undelivered
             }
             out_buf += "title: ";
-            out_buf += dz::windowTitleFor(project_path.toRawUTF8()).toRawUTF8();
+            // The title follows the CURRENT document path (WP-0212): after a scripted new/open
+            // that is the switched-to project (untitled document → plain "DhunZilla").
+            out_buf += (doc_->path().empty() ? juce::String::fromUTF8("DhunZilla")
+                                             : dz::windowTitleFor(doc_->path())).toRawUTF8();
             out_buf += "\nsnapshot: ";
             out_buf += snapshot_path.toRawUTF8();
             out_buf += " " + std::to_string(image.getWidth()) + "x" + std::to_string(image.getHeight());
@@ -935,11 +1133,82 @@ void App::initialise(const juce::String&) {
         printError(juce::String::fromUTF8("audio: ") + juce::String::fromUTF8(aerr.c_str()));
     }
 
+    recents_.load();  // Open Recent submenu (WP-0212)
+
     const juce::String title = project_path.isEmpty()
         ? juce::String::fromUTF8("DhunZilla")
         : dz::windowTitleFor(project_path.toRawUTF8());
-    window_ = std::make_unique<MainWindow>(title, *doc_, playback_.get());
+    window_ = std::make_unique<MainWindow>(title, *doc_, playback_.get(), &recents_);
+    window_->request_new = [this] { confirm_switch(true, juce::String()); };
+    window_->request_open_chooser = [this] { show_open_chooser(); };
+    window_->request_open = [this](const juce::String& path) { confirm_switch(false, path); };
     window_->setVisible(true);
+}
+
+// ---- document switches (WP-0212): the ONE path every New/Open gesture takes ----
+int App::switch_document(bool is_new, const std::string& path, bool discard_ok, std::string& err) {
+    // 1. Guard: a dirty document without an explicit discard answer → change NOTHING.
+    if (doc_->dirty() && !discard_ok) return 1;
+    // 2. Stop playback (headless --script/--snapshot modes have no controller).
+    if (playback_ != nullptr) playback_->stop();
+    // 3./4. Swap the document: the untitled default holds EXACTLY what `opd new` writes (a
+    // default-constructed op::Project — no tracks, 0 bars — is NOT acceptable), or open the file.
+    if (is_new) {
+        doc_->reset_to(op::new_project(op::NewProjectSpec{}), "");
+    } else if (!op::Document::open(path, *doc_, err)) {
+        return 2;  // `err` = the loader error verbatim; document, component and recents untouched
+    }
+    // 5. Rebuild the component over the SAME Document; for an open, record the path in the
+    //    recent list (`new` never records). Cancelled/failed switches never get here.
+    if (window_ != nullptr) {
+        window_->rebuildContent();
+        window_->setName(doc_->path().empty() ? juce::String::fromUTF8("DhunZilla")
+                                              : dz::windowTitleFor(doc_->path()));
+        window_->menuItemsChanged();
+    } else if (script_component_ != nullptr) {
+        script_component_ = std::make_unique<dz::MainComponent>(*doc_);
+    }
+    if (!is_new) recents_.record(juce::String::fromUTF8(path.c_str()));
+    return 0;
+}
+
+// Window mode (WP-0212): a dirty document asks through an async box — JUCE 9 has no modal loops
+// here, so blocking OK/Cancel dialog APIs will NOT compile. Discard → 1, Keep → 0; anything but 1
+// (Keep, or the box dismissed) aborts the switch entirely. No box when the document is clean.
+void App::confirm_switch(bool is_new, const juce::String& path) {
+    if (doc_->dirty()) {
+        juce::AlertWindow::showAsync(
+            juce::MessageBoxOptions()
+                .withTitle(juce::String::fromUTF8("Unsaved changes"))
+                .withMessage(juce::String::fromUTF8("Discard the unsaved changes in the current project?"))
+                .withButton(juce::String::fromUTF8("Discard"), 1)
+                .withButton(juce::String::fromUTF8("Keep"), 0),
+            [this, is_new, path](int result) {
+                if (result != 1) return;  // Keep / dismissed: no switch at all
+                std::string err;
+                if (switch_document(is_new, path.toStdString(), true, err) == 2)
+                    printError(juce::String::fromUTF8(err.c_str()));  // window + document stay open
+            });
+        return;
+    }
+    std::string err;
+    if (switch_document(is_new, path.toStdString(), true, err) == 2)
+        printError(juce::String::fromUTF8(err.c_str()));
+}
+
+// Window mode (WP-0212): File > Open... with juce::FileChooser. The chooser must stay alive in an
+// App member until the callback runs; an empty result means cancelled → change nothing. An .opd
+// selection is not implemented: it fails through the loader (one dhunzilla: <error> line).
+void App::show_open_chooser() {
+    chooser_ = std::make_unique<juce::FileChooser>(juce::String::fromUTF8("Open Project"),
+                                                  juce::File(),
+                                                  juce::String::fromUTF8("*.opj;*.opd"));
+    const int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& chooser) {
+        const juce::File chosen = chooser.getResult();
+        if (chosen == juce::File()) return;  // cancelled: change nothing
+        confirm_switch(false, chosen.getFullPathName());
+    });
 }
 
 void App::timerCallback() {

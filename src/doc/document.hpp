@@ -87,6 +87,11 @@ public:
     bool save(std::string& err);                            // writes path() via op::save_project
     bool save_as(const std::string& path, std::string& err);  // on success path() becomes `path`
 
+    // Replace *this with a fresh document holding `p` at `path` ("" = untitled): clean baseline, no
+    // undo/redo history, revision 0, no active gesture. A document SWITCH, not an edit: nothing goes
+    // through History. Example: doc.reset_to(op::new_project(op::NewProjectSpec{}), "");  // File > New
+    void reset_to(const Project& p, const std::string& path);
+
     // Autosave (WP-0157). The autosave file of `path` is path + ".autosave". Writes
     // op::project_bytes(project()) atomically (temp file + rename) only when the document is dirty
     // and its revision() differs from the last successful autosave. Never touches path(), the

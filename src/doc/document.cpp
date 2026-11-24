@@ -143,6 +143,16 @@ bool Document::save_as(const std::string& path, std::string& err) {
     return true;
 }
 
+void Document::reset_to(const Project& p, const std::string& path) {
+    project_ = p;
+    path_ = path;
+    revision_ = 0;
+    history_ = History();
+    saved_bytes_ = project_bytes(project_);
+    gesture_active_ = false;
+    have_autosaved_ = false;
+}
+
 std::string Document::autosave_path(const std::string& path) { return path + ".autosave"; }
 
 bool Document::autosave(std::string& err) {
