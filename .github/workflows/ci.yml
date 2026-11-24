@@ -34,6 +34,8 @@ jobs:
       # match renders from every architecture. If libm drifts across platforms this fails loudly.
       - name: Golden renders (bit-exact vs committed fixtures)
         run: bash harness/run_goldens.sh
+      - name: Transport goldens (3/4, tempo change, opd click)
+        run: bash harness/test_transport_goldens.sh
       - name: CLI exit-code contracts
         run: bash harness/test_cli_errors.sh
       # The three glue scripts (stem/midi/prompt → editable project) have never been exercised in
