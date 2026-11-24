@@ -57,7 +57,7 @@ static void usage() {
         "  opd analyze <in.wav> [--json]   (objective audio features as JSON)\n"
         "  opd lint <proj.opj> [--json]   (read-only project sanity checks as JSON)\n"
         "  opd peaks <in.wav> [--bins N]   (min/max waveform peaks per bin as JSON)\n"
-        "  opd meters <project.opj>   (per-track and master peak/RMS dBFS + integrated LUFS as JSON)\n"
+        "  opd meters <project.opj> [--per-bar]   (per-track and master peak/RMS dBFS + integrated LUFS as JSON)\n"
         "  opd loudness <in.wav> [--json]   (true peak dBTP, momentary/short-term max LUFS, loudness range as JSON)\n"
         "  opd normalize <in.wav> -o <out.wav> --lufs <T> [--ceiling-db <C>] [--format pcm16|pcm24|f32]\n"
         "  opd clips <proj.opj>   (arrangement clips as canonical JSON — read-only, model order)\n"
@@ -717,13 +717,27 @@ static int cmd_analyze(int argc, char** argv) {
     return 0;
 }
 
-// opd meters <project.opj> (WP-0194) — per-track and master peak/RMS dBFS + integrated LUFS as canonical
-// JSON. Renders the stems and the mix IN MEMORY (op::meters over op::render_stems); writes nothing and
-// never modifies the project. Exactly one argument, no options. Errors print nothing on stdout: exit 2
-// usage, 3 not-found, 4 parse, 5 meters (sample rate outside 8000..192000) or render.
+// opd meters <project.opj> [--per-bar] (WP-0194; --per-bar WP-0243) — per-track and master peak/RMS
+// dBFS + integrated LUFS as canonical JSON; with --per-bar, per-bar peak/RMS arrays for every track and
+// the master using the renderer's own bar→sample mapping. Renders the stems and the mix IN MEMORY
+// (op::meters over op::render_stems); writes nothing and never modifies the project. --per-bar may come
+// before or after the path (identical bytes); without it the output is unchanged. Exactly one
+// positional. Errors print nothing on stdout: exit 2 usage, 3 not-found, 4 parse, 5 meters (sample rate
+// outside 8000..192000) or render.
 static int cmd_meters(int argc, char** argv) {
-    if (argc != 2 || argv[1][0] == '-') { usage(); return fail("usage", "meters needs exactly <project.opj>"); }
-    const std::string path = argv[1];
+    std::string path;
+    bool per_bar = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--per-bar")) {
+            if (per_bar) { usage(); return fail("usage", "--per-bar given twice"); }
+            per_bar = true;
+        } else if (argv[i][0] == '-' || !path.empty()) {  // unknown option or second positional
+            usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'");
+        } else {
+            path = argv[i];
+        }
+    }
+    if (path.empty()) { usage(); return fail("usage", "meters needs exactly <project.opj>"); }
     if (!fs::exists(path)) return fail("not_found", path);
 
     op::Project p;
@@ -734,7 +748,9 @@ static int cmd_meters(int argc, char** argv) {
 
     op::meters::Report r;
     const std::string base_dir = fs::path(path).parent_path().string();
-    if (!op::meters::measure_project(p, base_dir, r, err)) return fail("render", err);
+    const bool ok = per_bar ? op::meters::measure_project_per_bar(p, base_dir, r, err)
+                            : op::meters::measure_project(p, base_dir, r, err);
+    if (!ok) return fail("render", err);
     const std::string json = op::meters::to_json(r);
     std::fwrite(json.data(), 1, json.size(), stdout);
     return 0;

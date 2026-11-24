@@ -136,6 +136,11 @@ target_compile_definitions(op_player_blocksweep_tests PRIVATE OP_TEST_DATA="${CM
 add_dependencies(op_player_blocksweep_tests opd)
 add_test(NAME player_blocksweep COMMAND op_player_blocksweep_tests)
 
+# WP-0243: opd meters --per-bar — per-bar peak/RMS arrays per track and the master.
+add_executable(op_meters_bar_tests tests/test_meters_bar.cpp)
+target_link_libraries(op_meters_bar_tests PRIVATE opengine)
+add_test(NAME meters_bar COMMAND op_meters_bar_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -158,6 +163,7 @@ list(APPEND DZ_OUR_TARGETS op_audition_tests)  # WP-0209
 list(APPEND DZ_OUR_TARGETS op_clip_trim_midi_tests)  # WP-0193c
 list(APPEND DZ_OUR_TARGETS op_tracks_tests)  # WP-0227
 list(APPEND DZ_OUR_TARGETS op_player_blocksweep_tests)  # WP-0241
+list(APPEND DZ_OUR_TARGETS op_meters_bar_tests)  # WP-0243
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
