@@ -1,0 +1,68 @@
+{
+  "format_version": 0,
+  "generator": "tools/gen_bundled_kit.py",
+  "license": "CC0-1.0",
+  "note": "generated in-repo by tools/gen_bundled_kit.py; no third-party samples",
+  "presets": [
+    {
+      "args": {
+        "adsr": {
+          "attack_s": 0.004,
+          "decay_s": 0.14,
+          "release_s": 0.08,
+          "sustain": 0.65
+        },
+        "cutoff_hz": 620.0,
+        "resonance": 4.0,
+        "waveform": "saw"
+      },
+      "name": "bass",
+      "op": "set_synth_params"
+    },
+    {
+      "args": {
+        "adsr": {
+          "attack_s": 0.002,
+          "decay_s": 0.2,
+          "release_s": 0.25,
+          "sustain": 0.7
+        },
+        "cutoff_hz": 4200.0,
+        "resonance": 2.0,
+        "waveform": "square"
+      },
+      "name": "lead",
+      "op": "set_synth_params"
+    },
+    {
+      "args": {
+        "adsr": {
+          "attack_s": 0.6,
+          "decay_s": 0.8,
+          "release_s": 1.2,
+          "sustain": 0.8
+        },
+        "cutoff_hz": 1400.0,
+        "resonance": 0.9,
+        "waveform": "saw"
+      },
+      "name": "pad",
+      "op": "set_synth_params"
+    },
+    {
+      "args": {
+        "adsr": {
+          "attack_s": 0.001,
+          "decay_s": 0.12,
+          "release_s": 0.05,
+          "sustain": 0.0
+        },
+        "cutoff_hz": 2600.0,
+        "resonance": 1.2,
+        "waveform": "sine"
+      },
+      "name": "pluck",
+      "op": "set_synth_params"
+    }
+  ]
+}

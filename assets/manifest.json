@@ -1,0 +1,20 @@
+{
+  "files": {
+    "kits/clap.wav": "202dd759b9cd19f84dee894060aa27f845ecb37f87334f32cc3c8432f7e20dce",
+    "kits/hat_closed.wav": "bfd57090937ff6dd2d193472aae20487567fd5ec9f3d30d15617f9f426831ba9",
+    "kits/hat_open.wav": "0e48e070cbdf59e3aedc6c7bc91e27dbaceade9313fd55ab1cdcac4924bf438f",
+    "kits/kick.wav": "2a3ea6e91cbc65e451291a6332708e940af2fbe796eb04d327bda4d638882438",
+    "kits/perc_clave.wav": "202928e3320933802762ecdc1e8719b5d3340b24c160a26b46e70136fa3f7af0",
+    "kits/perc_cowbell.wav": "95c58aee8514b5ad7b17778ef884b5a34e477440666a9534fba4f7968e928734",
+    "kits/rim.wav": "283f7f1ee90aed355e388774a6ba30d66abfb84938d36bb3b4bfd80263375b92",
+    "kits/snare.wav": "a1092275fc35663973d9b17de3eea64006d83e4574d14fc95e356481f06fa8e1",
+    "kits/tom.wav": "a3a018ab65a68c2aab229fb15fc2f00146ed7ff45785fd789388833690c43d2b",
+    "presets/synth_presets.json": "b41ce3bb01ba6db3b073cf8f4392443107b1ded7d3f9be8a78b45f5c76797776"
+  },
+  "format_version": 0,
+  "generator": "tools/gen_bundled_kit.py",
+  "license": "CC0-1.0",
+  "note": "generated in-repo by tools/gen_bundled_kit.py; no third-party samples",
+  "sample_rate": 48000,
+  "seed": 20240517
+}

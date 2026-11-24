@@ -173,6 +173,12 @@ target_compile_definitions(op_feature_coverage_tests PRIVATE OPD_BIN="$<TARGET_F
 add_dependencies(op_feature_coverage_tests opd)
 add_test(NAME feature_coverage COMMAND op_feature_coverage_tests)
 
+# WP-0215: bundled generated content (assets/kits + assets/presets) — regenerates the tree and compares byte-for-byte.
+add_executable(op_bundled_tests tests/test_bundled_assets.cpp)
+target_link_libraries(op_bundled_tests PRIVATE opengine)
+target_compile_definitions(op_bundled_tests PRIVATE OP_TEST_DATA="${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME bundled COMMAND op_bundled_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -200,6 +206,7 @@ list(APPEND DZ_OUR_TARGETS op_meters_bar_tests)  # WP-0243
 list(APPEND DZ_OUR_TARGETS op_recover_tests)  # WP-0244
 list(APPEND DZ_OUR_TARGETS op_new_opts_tests)  # WP-0246
 list(APPEND DZ_OUR_TARGETS op_feature_coverage_tests)  # WP-0211
+list(APPEND DZ_OUR_TARGETS op_bundled_tests)  # WP-0215
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
