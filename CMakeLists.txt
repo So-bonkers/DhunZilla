@@ -158,6 +158,13 @@ target_compile_definitions(op_recover_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>"
 add_dependencies(op_recover_tests opd)
 add_test(NAME recover COMMAND op_recover_tests)
 
+# WP-0246: opd new --time-signature — byte-equality with the set_time_signature op. Runs the opd binary, so it needs OPD_BIN.
+add_executable(op_new_opts_tests tests/test_new_opts.cpp)
+target_link_libraries(op_new_opts_tests PRIVATE opengine)
+target_compile_definitions(op_new_opts_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>")
+add_dependencies(op_new_opts_tests opd)
+add_test(NAME new_opts COMMAND op_new_opts_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -183,6 +190,7 @@ list(APPEND DZ_OUR_TARGETS op_tracks_tests)  # WP-0227
 list(APPEND DZ_OUR_TARGETS op_player_blocksweep_tests)  # WP-0241
 list(APPEND DZ_OUR_TARGETS op_meters_bar_tests)  # WP-0243
 list(APPEND DZ_OUR_TARGETS op_recover_tests)  # WP-0244
+list(APPEND DZ_OUR_TARGETS op_new_opts_tests)  # WP-0246
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

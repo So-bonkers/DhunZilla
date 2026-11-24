@@ -490,12 +490,12 @@ empty would otherwise loop early and drift out of the bar.
 - `opd steps` default width and `opd diff` / operations: see `docs/spec/operations.md` §Pattern length operations.
 
 ## New project — additive (WP-0165)
-`opd new <out.opj> [--bpm X] [--bars N] [--beats-per-bar N] [--sample-rate SR] [--track NAME:KIND[:PATH]]... [--force]`
+`opd new <out.opj> [--bpm X] [--bars N] [--beats-per-bar N] [--time-signature N/D] [--sample-rate SR] [--track NAME:KIND[:PATH]]... [--force]`
 creates a fresh project file from the engine function `op::new_project(const NewProjectSpec&)`
 (`engine/model.hpp`; pure, Document-free, no I/O). The file is written with `op::save_project`, so its bytes are
 exactly `op::project_bytes` of the result.
 
-**Defaults:** `--bpm 120`, `--bars 4`, `--beats-per-bar 4`, `--sample-rate 48000`; no `--track` = the single track
+**Defaults:** `--bpm 120`, `--bars 4`, `--beats-per-bar 4` (with no `--time-signature`, i.e. effectively `4/4`), `--sample-rate 48000`; no `--track` = the single track
 `Synth` (kind `synth`). Options may appear in any order; `--track` repeats (declaration order = track order).
 
 **Content (normative, fixes the bytes):** `format_version` 0, `seed` 42, `length_bars` = bars (as a double), no master
@@ -511,6 +511,9 @@ output path is examined):
 - `--bpm`: whole argument parses as a finite number in (0, 1000] — else `bad --bpm value '<v>' (expected a number in (0, 1000])`.
 - `--bars`: decimal digits only, 1..4096 — else `bad --bars value '<v>' (expected an integer 1..4096)`.
 - `--beats-per-bar`: digits only, 1..32 — else `bad --beats-per-bar value '<v>' (expected an integer 1..32)`.
+- `--time-signature N/D`: the project's meter — the value is validated for shape/ranges here and then
+  applied as the `set_time_signature` operation, so the bytes are exactly `opd new` + that op. Rules, exact
+  errors and the byte-equality contract: §New project time signature — additive (WP-0246).
 - `--sample-rate`: digits only, 8000..192000 — else `bad --sample-rate value '<v>' (expected an integer 8000..192000)`.
 - `--track NAME:KIND[:PATH]`: split at the first `:` (NAME, non-empty) and the second `:` (KIND; PATH is everything
   after it and may itself contain `:`). Errors, each prefixed `bad --track '<v>': `: `expected NAME:KIND[:PATH]`
@@ -750,3 +753,39 @@ The renderer applies the window defined in §Clip trim (WP-0193a) above:
 - Only playing notes are choke triggers (the choke pre-pass uses the same enumeration).
 - A clip with neither `offset_beats` (or `0`) nor `length_beats` renders bit for bit as before.
 - Render length (`length_bars`) is unchanged: a trim only stops audio earlier inside the same buffer.
+
+## New project time signature — additive (WP-0246)
+`opd new --time-signature N/D` starts the new project in that meter. It is **defined** as the `set_time_signature`
+operation (§`docs/spec/operations.md`) applied to the project the same `opd new` invocation would otherwise write:
+`opd new a.opj --bpm B --time-signature N/D --bars K` writes byte-identical bytes to `opd new b.opj` followed by
+the journal `{"op":"set_bpm","bpm":B}`, `{"op":"set_time_signature","num":N,"den":D}`,
+`{"op":"set_length_bars","length_bars":K}` (that equality is the contract: the CLI owns no derivation). The CLI
+therefore checks only the value's shape and ranges — for the usage message — and then calls `op::apply_op`, so
+`project_from_json` stays the only place with the rules: `beats_per_bar = num * 4 / den` and the `time_signature`
+key is stored only when `den != 4` (WP-0191).
+
+**Accepted values (the same set a `time_signature` key accepts).** `<N>/<D>`: split at the first `/`, both sides
+decimal digits only (leading zeros allowed, `04/08` == `4/8`); `N` in `[1, 32]`; `D` one of `2`, `4`, `8`, `16`;
+`(N * 4) % D == 0`; `N * 4 / D <= 32`. So `3/4`, `6/8`, `12/16`, `2/2`, `1/2`, `32/4`, `4/4` are valid and `7/8`,
+`5/8`, `4/3`, `4/6`, `0/4`, `33/4`, `32/2`, `6/8/4` are not.
+
+**Bytes.** `beats_per_bar` is always the derived value: `6/8` → 3, `3/4` → 3, `12/16` → 3, `2/2` → 4, `32/4` → 32.
+The stored `"time_signature": { "den": D, "num": N }` object appears **iff `den != 4`**: `3/4` and `32/4` write no
+`time_signature` key (they normalize to `beats_per_bar` alone), `6/8`, `12/16` and `2/2` store it — `2/2` even
+though it derives 4. `--time-signature 4/4` writes byte-identical bytes to no flag at all. A repeated
+`--time-signature` keeps the last value; flags may appear in any order; the success line
+`new: <out.opj> tracks=<n> bars=<n> bpm=<%g>` is unchanged (the signature is not reported).
+
+**Errors** (exit 2, `error: usage: <msg>`, nothing written, checked in this order left to right like the other
+options; `<v>` is the argument as given):
+- value has no `/` → `bad --time-signature value '<v>': expected N/D (e.g. 6/8)`
+- `N` not digits in `[1, 32]` → `bad --time-signature value '<v>': num must be an integer in [1, 32]`
+- `D` not `2`, `4`, `8` or `16` → `bad --time-signature value '<v>': den must be 2, 4, 8 or 16`
+- `(N * 4) % D != 0` → `bad --time-signature value '<v>': bar must be a whole number of quarter-note beats`
+- `N * 4 / D > 32` → `bad --time-signature value '<v>': bar must be at most 32 quarter-note beats`
+- option given as the last argument → `missing value for --time-signature`
+
+**With `--beats-per-bar`.** The two may be combined only when `beats_per_bar == N * 4 / D`; then the bytes are the
+same as `--time-signature N/D` alone. Otherwise (checked after the whole option loop, before the output path is
+examined, so option-level errors win regardless of order): exit 2, `--time-signature '<v>' conflicts with
+--beats-per-bar <M> (beats_per_bar would be <N*4/D>)`.

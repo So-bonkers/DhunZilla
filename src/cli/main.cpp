@@ -46,6 +46,7 @@ static void usage() {
         "  opd click <project.opj> -o <out.wav>\n"
         "  opd new <out.opj> [--bpm X] [--bars N] [--beats-per-bar N] [--sample-rate SR]\n"
         "          [--track NAME:KIND[:PATH]]... [--force]   (KIND = sine|synth|sampler|metronome)\n"
+        "          [--time-signature N/D]   (num/den, exactly like the set_time_signature op)\n"
         "  opd gen-testproject <out.opj>     (also writes kits/kick.wav next to it)\n"
         "  opd midi2opj <in.mid> -o <out.opj>\n"
         "  opd import-midi <proj.opj> <in.mid> [-o out.opj]   (merge as new tracks)\n"
@@ -348,10 +349,42 @@ static bool parse_track_arg(const std::string& v, op::NewTrackSpec& t, std::stri
     return true;
 }
 
+// WP-0246 (docs/spec/project-model.md §New project time signature): shape + range validation of the
+// --time-signature value, for the usage message only — the derivation (beats_per_bar = N * 4 / D) and
+// the "store the key only when den != 4" rule live in the model, which cmd_new calls via apply_op.
+// Value grammar: <N>/<D>, split at the FIRST '/'; both sides decimal digits only (leading zeros ok).
+// Example: parse_time_signature_arg("6/8", n, d, msg) → true, n == 6, d == 8.
+static bool parse_time_signature_arg(const std::string& v, int& num, int& den, std::string& msg) {
+    const size_t slash = v.find('/');
+    if (slash == std::string::npos) { msg = "expected N/D (e.g. 6/8)"; return false; }
+    long long n = 0, d = 0;
+    if (!parse_decimal(v.substr(0, slash), 32, n) || n < 1) {
+        msg = "num must be an integer in [1, 32]"; return false;
+    }
+    if (!parse_decimal(v.substr(slash + 1), 16, d) ||
+        (d != 2 && d != 4 && d != 8 && d != 16)) {
+        msg = "den must be 2, 4, 8 or 16"; return false;
+    }
+    if ((n * 4) % d != 0) {
+        msg = "bar must be a whole number of quarter-note beats"; return false;
+    }
+    if (n * 4 / d > 32) {
+        msg = "bar must be at most 32 quarter-note beats"; return false;
+    }
+    num = static_cast<int>(n);
+    den = static_cast<int>(d);
+    return true;
+}
+
 static int cmd_new(int argc, char** argv) {
     op::NewProjectSpec spec;
     std::string out_path;
     bool force = false;
+    bool has_ts = false;                  // WP-0246: --time-signature given (a repeat keeps the last value)
+    std::string ts_arg;                   // raw value for error messages ("<v as given>")
+    int ts_num = 4, ts_den = 4;           // parsed N/D
+    bool has_bpb = false;                 // WP-0246: --beats-per-bar given (conflict check below)
+    int bpb_value = 4;                    // its parsed value, for the conflict message
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--force") { force = true; continue; }
@@ -385,6 +418,13 @@ static int cmd_new(int argc, char** argv) {
             if (!parse_decimal(v, 32, n) || n < 1)
                 { usage(); return fail("usage", "bad --beats-per-bar value '" + v + "' (expected an integer 1..32)"); }
             spec.beats_per_bar = static_cast<int>(n);
+            has_bpb = true; bpb_value = static_cast<int>(n);  // WP-0246: conflict check with --time-signature
+        } else if (opt == "--time-signature") {
+            if (!need_value(v)) return 2;
+            std::string msg;
+            if (!parse_time_signature_arg(v, ts_num, ts_den, msg))
+                { usage(); return fail("usage", "bad --time-signature value '" + v + "': " + msg); }
+            ts_arg = v; has_ts = true;
         } else if (opt == "--sample-rate") {
             if (!need_value(v)) return 2;
             long long n = 0;
@@ -404,13 +444,28 @@ static int cmd_new(int argc, char** argv) {
             usage(); return fail("usage", "unknown arg '" + a + "'");
         }
     }
+    // WP-0246 (spec §New project time signature): --beats-per-bar and --time-signature combine only
+    // when the explicit M equals N * 4 / D. Checked after the whole option loop and before the output
+    // path is examined, so an option-level error on either flag is reported first in any order.
+    if (has_ts && has_bpb && bpb_value != ts_num * 4 / ts_den) {
+        usage();
+        return fail("usage", "--time-signature '" + ts_arg + "' conflicts with --beats-per-bar " +
+                                 std::to_string(bpb_value) + " (beats_per_bar would be " +
+                                 std::to_string(ts_num * 4 / ts_den) + ")");
+    }
     if (out_path.empty()) { usage(); return fail("usage", "new needs <out.opj>"); }
 
     // Output path examined only after every option validated (spec §New project): overwrite is exit 5.
     if (!force && fs::exists(out_path))
         return fail("write", out_path + " already exists (use --force)");
-    const op::Project p = op::new_project(spec);
+    op::Project p = op::new_project(spec);
     std::string err;
+    // WP-0246: the flag IS the set_time_signature op applied through the existing machinery — the CLI
+    // owns no derivation and writes no JSON. The checks above make this rejection unreachable; if it
+    // ever happened, exit 2 with the usage error and nothing written.
+    if (has_ts && !op::apply_op(p, nlohmann::json{{"op", "set_time_signature"},
+                                                  {"num", ts_num}, {"den", ts_den}}, err))
+        return fail("usage", "bad --time-signature value '" + ts_arg + "'");
     if (!op::save_project(out_path, p, err)) return fail("write", err);
     std::printf("new: %s tracks=%zu bars=%d bpm=%g\n", out_path.c_str(), p.tracks.size(), spec.bars, spec.bpm);
     return 0;
