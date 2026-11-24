@@ -24,6 +24,7 @@ target_sources(opengine PRIVATE src/engine/meters.cpp)  # WP-0194
 target_sources(opengine PRIVATE src/engine/patterns.cpp)  # WP-0228
 target_sources(opengine PRIVATE src/engine/audition.cpp)  # WP-0209
 target_sources(opengine PRIVATE src/engine/tracks.cpp)  # WP-0227
+target_sources(opengine PRIVATE src/engine/feature_coverage.cpp)  # WP-0211
 
 # WP-0141: JUCE-free document layer (open/save/dirty, undo/redo, gestures) for the app + CLI.
 add_library(dzdoc STATIC src/doc/document.cpp)
@@ -165,6 +166,13 @@ target_compile_definitions(op_new_opts_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>
 add_dependencies(op_new_opts_tests opd)
 add_test(NAME new_opts COMMAND op_new_opts_tests)
 
+# WP-0211: opd golden-coverage — which features the goldens exercise. Runs the opd binary, so it needs OPD_BIN.
+add_executable(op_feature_coverage_tests tests/test_feature_coverage.cpp)
+target_link_libraries(op_feature_coverage_tests PRIVATE opengine)
+target_compile_definitions(op_feature_coverage_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>")
+add_dependencies(op_feature_coverage_tests opd)
+add_test(NAME feature_coverage COMMAND op_feature_coverage_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -191,6 +199,7 @@ list(APPEND DZ_OUR_TARGETS op_player_blocksweep_tests)  # WP-0241
 list(APPEND DZ_OUR_TARGETS op_meters_bar_tests)  # WP-0243
 list(APPEND DZ_OUR_TARGETS op_recover_tests)  # WP-0244
 list(APPEND DZ_OUR_TARGETS op_new_opts_tests)  # WP-0246
+list(APPEND DZ_OUR_TARGETS op_feature_coverage_tests)  # WP-0211
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})

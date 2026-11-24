@@ -18,6 +18,7 @@
 #include "engine/audition.hpp"
 #include "engine/bundle.hpp"
 #include "engine/dsp.hpp"
+#include "engine/feature_coverage.hpp"
 #include "engine/lint.hpp"
 #include "engine/limiter.hpp"
 #include "engine/loudness.hpp"
@@ -66,6 +67,7 @@ static void usage() {
         "  opd clips <proj.opj>   (arrangement clips as canonical JSON — read-only, model order)\n"
         "  opd tracks <proj.opj>   (channel rack / mixer track listing as canonical JSON — read-only, model order)\n"
         "  opd patterns <proj.opj>   (pattern-bar listing as canonical JSON — read-only, model order)\n"
+        "  opd golden-coverage <dir|file.opj>...   (which model features each golden .opj exercises, as canonical JSON)\n"
         "  opd steps <proj.opj> <pattern-index> [--steps N]   (print the 16th-step grid, x = on)\n"
         "  opd timeline <project.opj> [--bars N]   (per-bar ruler: start beat, sample, seconds + tempo as JSON)\n"
         "  opd audition <in.wav> -o <out.wav> [--note N --root R] [--start-s A --end-s B] [--seconds S]\n"
@@ -1396,6 +1398,64 @@ static int cmd_recover(int argc, char** argv) {
     return 0;
 }
 
+// opd golden-coverage <dir|file.opj>... (WP-0211, docs/spec/golden-coverage.md) — scan golden projects and
+// print, as canonical JSON, which model features each one exercises plus the features NO golden covers.
+// A report, not a gate: exit 0 even when features are uncovered. Read-only: no file is written, no project
+// is re-saved, no directory is created; two runs on the same tree are byte-identical. Every argument is
+// resolved (exists; a directory yields its regular *.opj files, name suffix exactly ".opj", non-recursive,
+// sorted by file name ascending) BEFORE any project is loaded. Report names are file stems (the file name
+// with the ".opj" suffix removed), so the report never depends on the current working directory. Repeated
+// arguments contribute repeated entries (no de-duplication). No options: any argument starting with '-' is
+// a usage error. Errors print nothing on stdout: exit 2 usage (no argument, an option, or a directory with
+// no .opj file), 3 not-found (detail = the path exactly as given), 4 parse (detail = the loader's own
+// message, first rejected file wins).
+static int cmd_golden_coverage(int argc, char** argv) {
+    if (argc < 2) { usage(); return fail("usage", "golden-coverage needs at least one <dir or .opj>"); }
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i][0] == '-') { usage(); return fail("usage", std::string("unknown arg '") + argv[i] + "'"); }
+    }
+    // Resolve pass: existence + directory scan for EVERY argument before ANY project is loaded.
+    std::vector<fs::path> files;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::error_code ec;
+        if (!fs::exists(arg, ec)) return fail("not_found", arg);
+        if (!fs::is_directory(arg, ec)) {
+            files.push_back(fs::path(arg));
+            continue;
+        }
+        std::vector<fs::path> found;
+        fs::directory_iterator it(arg, ec), end;
+        for (; !ec && it != end; it.increment(ec)) {
+            std::error_code sec;
+            if (!it->is_regular_file(sec)) continue;
+            const std::string name = it->path().filename().string();
+            if (name.size() >= 4 && name.compare(name.size() - 4, 4, ".opj") == 0) found.push_back(it->path());
+        }
+        if (ec) return fail("read", "cannot read directory " + arg);
+        if (found.empty()) return fail("usage", "no .opj files in " + arg);
+        std::stable_sort(found.begin(), found.end(), [](const fs::path& a, const fs::path& b) {
+            return a.filename().string() < b.filename().string();
+        });
+        files.insert(files.end(), found.begin(), found.end());
+    }
+    // Load pass, in order; the first file the loader rejects is the parse error (message verbatim).
+    std::vector<op::NamedProject> goldens;
+    std::string err;
+    for (const fs::path& f : files) {
+        op::NamedProject np;
+        const std::string name = f.filename().string();
+        np.name = (name.size() >= 4 && name.compare(name.size() - 4, 4, ".opj") == 0)
+                      ? name.substr(0, name.size() - 4)
+                      : name;  // stem = file name with the ".opj" suffix removed
+        if (!op::load_project(f.string(), np.project, err)) return fail("parse", err);
+        goldens.push_back(std::move(np));
+    }
+    const std::string json = op::feature_coverage_json(goldens);
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 2; }
     const std::string cmd = argv[1];
@@ -1421,6 +1481,7 @@ int main(int argc, char** argv) {
     if (cmd == "clips") return cmd_clips(argc - 1, argv + 1);
     if (cmd == "tracks") return cmd_tracks(argc - 1, argv + 1);
     if (cmd == "patterns") return cmd_patterns(argc - 1, argv + 1);
+    if (cmd == "golden-coverage") return cmd_golden_coverage(argc - 1, argv + 1);
     if (cmd == "steps") return cmd_steps(argc - 1, argv + 1);
     if (cmd == "samples") return cmd_samples(argc - 1, argv + 1);
     if (cmd == "timeline") return cmd_timeline(argc - 1, argv + 1);
