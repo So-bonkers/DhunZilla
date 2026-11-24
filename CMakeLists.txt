@@ -127,6 +127,15 @@ target_compile_definitions(op_tracks_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>")
 add_dependencies(op_tracks_tests opd)
 add_test(NAME tracks COMMAND op_tracks_tests)
 
+# WP-0241: live-vs-render transport sweep - dz::Player driven by fixed-seed 32..512-sample callbacks over
+# every golden project, byte-compared with `opd render`. Needs the dzplayer core, the fixtures and opd.
+add_executable(op_player_blocksweep_tests tests/test_player_blocksweep.cpp)
+target_link_libraries(op_player_blocksweep_tests PRIVATE opengine dzplayer)
+target_compile_definitions(op_player_blocksweep_tests PRIVATE OP_TEST_DATA="${CMAKE_SOURCE_DIR}/tests"
+    OPD_BIN="$<TARGET_FILE:opd>")
+add_dependencies(op_player_blocksweep_tests opd)
+add_test(NAME player_blocksweep COMMAND op_player_blocksweep_tests)
+
 # Our targets only — list explicitly so third_party/ can never trip these gates.
 set(DZ_OUR_TARGETS opengine dzdoc dzplayer opd op_tests)
 list(APPEND DZ_OUR_TARGETS op_loudness_tests)  # WP-0168
@@ -148,6 +157,7 @@ list(APPEND DZ_OUR_TARGETS op_player_click_tests)  # WP-0201
 list(APPEND DZ_OUR_TARGETS op_audition_tests)  # WP-0209
 list(APPEND DZ_OUR_TARGETS op_clip_trim_midi_tests)  # WP-0193c
 list(APPEND DZ_OUR_TARGETS op_tracks_tests)  # WP-0227
+list(APPEND DZ_OUR_TARGETS op_player_blocksweep_tests)  # WP-0241
 
 if(DZ_WERROR)
   foreach(tgt ${DZ_OUR_TARGETS})
