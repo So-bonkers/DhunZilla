@@ -56,8 +56,20 @@ void Player::process(float* left, float* right, int num_frames) noexcept {
     // WP-0200: snapshot the loop bounds once per block (a control-thread change lands no later than
     // the next call). end_eff keeps every read inside this buffer, so a window reaching past its end
     // behaves exactly like one ending on it; a start outside [0, end_eff) is unusable here.
-    const long long loop_start = loop_start_.load();
-    const long long end_eff = std::min(loop_end_.load(), frames);
+    // WP-0229: snapshot the pattern-mode flag and the window length plen at this same place, once per
+    // block. While the flag is on AND plen > 0, the window for this block is [0, min(plen, frames)):
+    // the pattern's own statement length, clamped to this buffer exactly like an out-of-range loop
+    // end, and the loop region is not consulted at all for these blocks. plen == 0 (no pattern ever
+    // prepared) keeps the WP-0200 window in charge, so the flag alone cannot enable a wrap.
+    const bool pat_mode = pattern_mode_.load();
+    const long long plen = pattern_len_.load();
+
+    long long loop_start = loop_start_.load();
+    long long end_eff = std::min(loop_end_.load(), frames);
+    if (pat_mode && plen > 0) {
+        loop_start = 0;
+        end_eff = std::min(plen, frames);
+    }
 
     if (loop_start >= 0 && loop_start < end_eff) {
         // Looping: every slot of the block comes from the buffer, switching mid-block. After frame

@@ -123,6 +123,11 @@ add_executable(op_player_click_tests tests/test_player_click.cpp)
 target_link_libraries(op_player_click_tests PRIVATE opengine dzplayer)
 add_test(NAME player_click COMMAND op_player_click_tests)
 
+# WP-0229: dz::Player pattern mode — one named pattern looped instead of the arrangement.
+add_executable(op_player_pattern_tests tests/test_player_pattern.cpp)
+target_link_libraries(op_player_pattern_tests PRIVATE opengine dzplayer)
+add_test(NAME player_pattern COMMAND op_player_pattern_tests)
+
 # WP-0209: opd audition — project-free one-note sampler preview. Runs the opd binary, so it needs OPD_BIN.
 add_executable(op_audition_tests tests/test_audition.cpp)
 target_link_libraries(op_audition_tests PRIVATE opengine)
@@ -203,6 +208,7 @@ list(APPEND DZ_OUR_TARGETS op_timeline_tests)  # WP-0210
 list(APPEND DZ_OUR_TARGETS op_lint_rules_tests)  # WP-0203
 list(APPEND DZ_OUR_TARGETS op_player_loop_tests)  # WP-0200
 list(APPEND DZ_OUR_TARGETS op_player_click_tests)  # WP-0201
+list(APPEND DZ_OUR_TARGETS op_player_pattern_tests)  # WP-0229
 list(APPEND DZ_OUR_TARGETS op_audition_tests)  # WP-0209
 list(APPEND DZ_OUR_TARGETS op_clip_trim_midi_tests)  # WP-0193c
 list(APPEND DZ_OUR_TARGETS op_tracks_tests)  # WP-0227
