@@ -151,6 +151,17 @@ bool parse_voice(const json& j, Voice& v, std::string& err) {
         if (!in_range) { err = "voice.root_note must be an integer 0..127"; return false; }
         v.root_note = static_cast<int>(rn.get<long long>());
     }
+    // Sampler reverse (WP-0231, task WP-0231 §Project JSON key): checked only when present.
+    // Rule order is normative: a key on a non-sampler voice reports the KEY itself even when
+    // the value is also wrong; only then is the sampler value's boolean-ness checked.
+    // An explicit false is valid and behaves exactly like an absent key (canonical save omits it).
+    if (j.contains("reverse")) {
+        if (v.kind != VoiceKind::Sampler) { err = "voice.reverse is only valid for sampler voices"; return false; }
+        const json& rv = j.at("reverse");
+        // null, numbers (1, 0, 1.0), strings, arrays, objects all share this one message.
+        if (!rv.is_boolean()) { err = "voice.reverse must be a boolean"; return false; }
+        v.reverse = rv.get<bool>();
+    }
     return true;
 }
 
@@ -489,6 +500,7 @@ json voice_to_json(const Voice& v) {
             if (v.start_s != 0.0) j["start_s"] = v.start_s;   // WP-0156: default keys omitted
             if (v.has_end_s) j["end_s"] = v.end_s;
             if (v.root_note >= 0) j["root_note"] = v.root_note;  // WP-0167: absent root omitted
+            if (v.reverse) j["reverse"] = true;  // WP-0231: only true is written; false omits the key
             break;
         case VoiceKind::Synth: {
             j["kind"] = "synth"; j["attack_ms"] = v.attack_ms; j["release_ms"] = v.release_ms;

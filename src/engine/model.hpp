@@ -22,6 +22,7 @@ struct Voice {
     double end_s = 0.0;          // sampler: slice end, seconds; valid only when has_end_s (WP-0156)
     bool has_end_s = false;      // sampler: false = play to end of asset (WP-0156)
     int root_note = -1;          // sampler: MIDI pitch the asset sounds at; -1 = absent (no repitch, WP-0167)
+    bool reverse = false;        // sampler: play the sliced buffer backwards (WP-0231); false = key omitted on save
     float attack_ms = 5.0f;      // synth: linear attack ramp (legacy envelope)
     float release_ms = 30.0f;    // synth: linear release ramp at note end (legacy envelope)
     // Synth voice v1 (WP-0161, spec §Synth voice v1). All defaults = "key absent" → legacy path.

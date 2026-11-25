@@ -303,6 +303,17 @@ static bool apply_named(Project& p, const nlohmann::json& op_json, const std::st
             if (voice.value("kind", std::string{}) != "sampler") { err = "track is not a sampler voice"; return false; }
             if (root_v.is_null()) voice.erase("root_note");  // null = no root: canonical save omits the key
             else voice["root_note"] = root_v;
+        } else if (name == "set_sampler_reverse") {  // WP-0231; the parse below re-validates the edited voice
+            if (!check_keys(op_json, {"index", "reverse"}, err)) return false;
+            if (!arg_index(op_json, "index", j["tracks"].size(), idx, err)) return false;
+            if (!op_json.contains("reverse")) { err = "missing argument 'reverse'"; return false; }
+            const json& rev_v = op_json.at("reverse");
+            // 1, 1.0, "true" and every other non-boolean/non-null share this one message.
+            if (!rev_v.is_boolean() && !rev_v.is_null()) { err = "'reverse' must be a boolean or null"; return false; }
+            json& voice = j["tracks"][idx]["voice"];
+            if (voice.value("kind", std::string{}) != "sampler") { err = "track is not a sampler voice"; return false; }  // also for null
+            if (rev_v.is_null()) voice.erase("reverse");  // null removes the key (WP-0167 root pattern)
+            else voice["reverse"] = rev_v;  // false is valid; the canonical save below omits it
         } else if (name == "set_track_mute") {  // mixer (spec §mixer); audibility rule lives in the model
             if (!check_keys(op_json, {"index", "mute"}, err)) return false;
             if (!arg_index(op_json, "index", j["tracks"].size(), idx, err) ||
@@ -718,9 +729,20 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
 
     const json& tracks_a = ja.at("tracks");
     const json& tracks_b = jb.at("tracks");
-    for (std::size_t i = 0; i < std::min(tracks_a.size(), tracks_b.size()); ++i)
-        if (tracks_a[i].at("voice") != tracks_b[i].at("voice"))
-            return unsupported("tracks[" + std::to_string(i) + "].voice");
+    // Voice differences are unsupported EXCEPT the WP-0231 `reverse` key (task §opd diff):
+    // compare canonical voices with the key removed on both sides — a pair differing only in
+    // `reverse` is expressible (set_sampler_reverse below); anything else (root_note, path, …)
+    // still reports tracks[<i>].voice, even when both sides are reversed.
+    for (std::size_t i = 0; i < std::min(tracks_a.size(), tracks_b.size()); ++i) {
+        const json& va = tracks_a[i].at("voice");
+        const json& vb = tracks_b[i].at("voice");
+        if (va != vb) {
+            json sa = va, sb = vb;
+            sa.erase("reverse");
+            sb.erase("reverse");
+            if (sa != sb) return unsupported("tracks[" + std::to_string(i) + "].voice");
+        }
+    }
 
     const json& patterns_a = ja.at("patterns");
     const json& patterns_b = jb.at("patterns");
@@ -829,6 +851,14 @@ bool diff_projects(const Project& a, const Project& b, std::vector<json>& ops, s
         const json& cg_b = field_or(tb, "choke_group", kNoGroup);
         if (field_or(ta, "choke_group", kNoGroup) != cg_b)
             ops.push_back({{"op", "set_choke_group"}, {"index", i}, {"group", cg_b}});
+        // Sampler reverse (WP-0231, task §opd diff): immediately after set_choke_group. Absent
+        // counts as false, and the canonical save only writes the key when true — so the flag is
+        // exactly "key present". One op carrying b's value: true when b has the key, false when
+        // b lacks it (never null; a `false` apply clears the flag and the save omits the key).
+        const bool rev_a = ta.at("voice").contains("reverse");
+        const bool rev_b = tb.at("voice").contains("reverse");
+        if (rev_a != rev_b)
+            ops.push_back({{"op", "set_sampler_reverse"}, {"index", i}, {"reverse", rev_b}});
         // Step 5 extension (WP-0206, spec §opd diff and send buses): after set_choke_group, one
         // set_track_send per b bus slot whose level differs (ascending). Absent sends array or a
         // missing/short entry reads as 0.0; all-zero sends emit nothing.

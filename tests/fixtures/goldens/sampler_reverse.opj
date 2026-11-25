@@ -1,0 +1,39 @@
+{
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "format_version": 0,
+  "length_bars": 1.0,
+  "patterns": [
+    {
+      "notes": [
+        {
+          "dur": 0.5,
+          "note": 67,
+          "t": 0.0
+        },
+        {
+          "dur": 0.5,
+          "t": 1.0
+        }
+      ],
+      "track": 0
+    }
+  ],
+  "sample_rate": 48000,
+  "seed": 7,
+  "tracks": [
+    {
+      "gain_db": 0.0,
+      "name": "ReverseRamp",
+      "pan": 0.0,
+      "voice": {
+        "end_s": 0.075,
+        "kind": "sampler",
+        "path": "kits/ramp48k.wav",
+        "reverse": true,
+        "root_note": 60,
+        "start_s": 0.025
+      }
+    }
+  ]
+}

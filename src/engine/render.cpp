@@ -299,6 +299,47 @@ bool render_sampler(MixTarget& t, long long start, const Note& note, const Voice
     }
     long long want = static_cast<long long>(std::llround(note.dur_beats * spb));
     long long slice = i1 - i0;
+    // Sampler reverse (WP-0231, task §Render semantics): the order is resample → trim →
+    // reverse → repitch. The reversed slice is R[k] = buffer[i1 - 1 - k] (per channel); every
+    // read in this branch indexes through it, so a reversed voice never touches forward frame
+    // pairs directly. Only taken when v.reverse is true — a voice without the key (or with an
+    // explicit false) runs the untouched forward code below, byte for byte.
+    if (v.reverse) {
+        if (v.root_note >= 0 && note.midi_note >= 0 && note.midi_note != v.root_note) {
+            // Repitch of the reversed slice: the same linear-interpolation rule as the forward
+            // path, reading R[k], R[k+1] (never forward neighbours).
+            const double ratio = sampler_ratio(note.midi_note - v.root_note);
+            for (long long n = 0; n < want; ++n) {
+                const double pos = static_cast<double>(n) * ratio;  // per-frame multiply, never a running sum
+                const long long k = static_cast<long long>(pos);    // pos >= 0 → truncation IS the floor
+                if (k + 1 >= slice) break;                          // needs R[k+1]: source ran out (L == 1: silence)
+                const double frac = pos - static_cast<double>(k);
+                float l, r;
+                const long long f = (i1 - 1 - k) * rr.channels;     // R[k] frame position in the interleaved buffer
+                if (rr.channels == 1) {
+                    const double a = rr.samples[f], b = rr.samples[f - 1];  // a = R[k], b = R[k+1]
+                    l = r = static_cast<float>(a + frac * (b - a));
+                } else {
+                    const double al = rr.samples[f], ar = rr.samples[f + 1];  // R[k] L/R
+                    l = static_cast<float>(al + frac * (rr.samples[f - 2] - al));  // R[k+1] L
+                    r = static_cast<float>(ar + frac * (rr.samples[f - 1] - ar));  // R[k+1] R
+                }
+                add_stereo(t, start + n, l, r);
+            }
+            return true;
+        }
+        // No repitch (absent root, absent note pitch or note == root): frame n plays R[n],
+        // n < min(slice, want) — a short note takes the slice's LAST frames first.
+        long long len = slice < want ? slice : want;
+        for (long long n = 0; n < len; ++n) {
+            float l, r;
+            const long long f = i1 - 1 - n;
+            if (rr.channels == 1) { l = r = rr.samples[f]; }
+            else { l = rr.samples[f * 2]; r = rr.samples[f * 2 + 1]; }
+            add_stereo(t, start + n, l, r);
+        }
+        return true;
+    }
     // Sampler repitch (WP-0167, docs/spec/project-model.md §Sampler repitch): applied to the sliced
     // project-rate buffer. Only a note whose pitch differs from the voice root takes this path —
     // absent root, absent note pitch or P == root fall through to the untouched loop below (bit-exact).

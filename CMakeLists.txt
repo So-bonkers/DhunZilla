@@ -137,6 +137,11 @@ target_compile_definitions(op_tracks_tests PRIVATE OPD_BIN="$<TARGET_FILE:opd>")
 add_dependencies(op_tracks_tests opd)
 add_test(NAME tracks COMMAND op_tracks_tests)
 
+# WP-0231: sampler reverse playback — `reverse` key, set_sampler_reverse op, opd diff support; own test binary.
+add_executable(op_sampler_reverse_tests tests/test_sampler_reverse.cpp)
+target_link_libraries(op_sampler_reverse_tests PRIVATE opengine)
+add_test(NAME sampler_reverse COMMAND op_sampler_reverse_tests)
+
 # WP-0241: live-vs-render transport sweep - dz::Player driven by fixed-seed 32..512-sample callbacks over
 # every golden project, byte-compared with `opd render`. Needs the dzplayer core, the fixtures and opd.
 add_executable(op_player_blocksweep_tests tests/test_player_blocksweep.cpp)
@@ -201,6 +206,7 @@ list(APPEND DZ_OUR_TARGETS op_player_click_tests)  # WP-0201
 list(APPEND DZ_OUR_TARGETS op_audition_tests)  # WP-0209
 list(APPEND DZ_OUR_TARGETS op_clip_trim_midi_tests)  # WP-0193c
 list(APPEND DZ_OUR_TARGETS op_tracks_tests)  # WP-0227
+list(APPEND DZ_OUR_TARGETS op_sampler_reverse_tests)  # WP-0231
 list(APPEND DZ_OUR_TARGETS op_player_blocksweep_tests)  # WP-0241
 list(APPEND DZ_OUR_TARGETS op_meters_bar_tests)  # WP-0243
 list(APPEND DZ_OUR_TARGETS op_recover_tests)  # WP-0244
