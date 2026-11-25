@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include "playback_controller.hpp"
 #include "render_playback.hpp"
+#include "playlist_view.hpp"  // WP-0196: read-only playlist geometry (GUI-free)
 
 namespace {
 
@@ -26,6 +27,10 @@ const Colour kStepOn{0xffe8742a};       // rack step lit: orange (WP-0195)
 const Colour kStepOffAlt{0xff2a2d38};   // rack step unlit, off-beat groups 4-7 / 12-15 (WP-0195)
 const Colour kRowShade{0x590d0e12};     // wash over an inaudible row (~35% near-black — dims the
                                         // row while keeping lit M/S colours recognisable through it)
+const Colour kLaneBg{0xff1a1c24};       // playlist lane background (WP-0196)
+const Colour kClipFill{0xff3d7ea6};     // playlist clip block fill (WP-0196)
+const Colour kClipRepeat{0xff2a5877};   // playlist repeat divider inside a block (WP-0196)
+const Colour kPlayhead{0xffffd23f};     // playlist playhead line (WP-0196)
 
 // ASCII-only lowercase for key-code comparison (getKeyCode() reports letters as uppercase ASCII).
 int lowerAscii(int c) { return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c; }
@@ -434,6 +439,8 @@ void dz::MainComponent::timerCallback() {
     const std::string& error = playback_->lastError();  // a failed render outranks the device line
     status_.setText(String::fromUTF8((error.empty() ? playback_->deviceDescription() : error).c_str()),
                     juce::dontSendNotification);
+
+    repaint();  // WP-0196: the playlist playhead is read inside paintPlaylist, so each tick repaints it
 }
 
 void dz::MainComponent::paint(juce::Graphics& g) {
@@ -459,6 +466,80 @@ void dz::MainComponent::paint(juce::Graphics& g) {
         g.drawFittedText(String::fromUTF8("Channel rack"), 16, rack_top_ - 20, 240, 18,
                          juce::Justification::centredLeft, 1);
     }
+
+    // LAST statement (WP-0196): the playlist panel paints over the background, below the rack.
+    paintPlaylist(g);
+}
+
+// Playlist panel (WP-0196, read-only). Every pixel comes from dz::playlist_view geometry; the
+// playhead position comes ONLY from the Player's sample counter (no clock, no stored position).
+// The panel never applies an operation and never mutates the Document.
+void dz::MainComponent::paintPlaylist(juce::Graphics& g) {
+    const auto tracks = doc_.track_rows();
+    if (tracks.empty()) return;  // nothing to paint without lanes
+
+    const long long frame = playback_ != nullptr ? playback_->player().position_frames() : 0;
+
+    g.setFont(juce::Font(juce::FontOptions(13.0f)));
+    g.setColour(kCaption);
+    g.drawFittedText(String::fromUTF8("Playlist"), 16, playlist_top_ - 20, 240, 18,
+                     juce::Justification::centredLeft, 1);
+
+    // One lane per track, in Document order. Lanes are NOT dimmed for inaudible tracks — a muted
+    // or un-soloed track's lane is drawn exactly like any other (read-only view, spec).
+    for (std::size_t t = 0; t < tracks.size(); ++t) {
+        const int y = playlist_top_ + static_cast<int>(t) * kPlaylistLaneHeight;
+        g.setFont(juce::Font(juce::FontOptions(13.0f)));
+        g.setColour(kText);
+        g.drawFittedText(String::fromUTF8(tracks[t].name.c_str()), 16, y, 240, kPlaylistLaneHeight,
+                         juce::Justification::centredLeft, 1);
+        g.setColour(kLaneBg);
+        g.fillRect(kPlaylistLeft, y, kPlaylistBars * kPlaylistBarWidth, kPlaylistLaneDrawnHeight);
+        g.setColour(kSeparator);
+        for (int b = 0; b < kPlaylistBars; ++b)
+            g.fillRect(kPlaylistLeft + b * kPlaylistBarWidth, y, 1, kPlaylistLaneDrawnHeight);
+    }
+
+    // Blocks in model order: a later clip paints over an earlier one.
+    for (const auto& block : dz::playlist_blocks(doc_.project())) {
+        if (!block.drawn) continue;
+        const int top = playlist_top_ + block.lane * kPlaylistLaneHeight + kPlaylistBlockTop;
+        const int height = kPlaylistBlockHeight;
+        g.setColour(kClipFill);
+        g.fillRect(block.x0, top, block.x1 - block.x0, height);
+        g.setColour(kClipRepeat);
+        for (const int xr : block.dividers) g.fillRect(xr, top, 1, height);
+        // Fade wedges (JUCE 9 has no fillTriangle): lane-coloured cutouts, full width at the TOP
+        // narrowing to the block's bottom corner.
+        if (block.fade_in_px > 0) {
+            juce::Path wedge;
+            wedge.startNewSubPath(static_cast<float>(block.x0), static_cast<float>(top));
+            wedge.lineTo(static_cast<float>(block.x0 + block.fade_in_px), static_cast<float>(top));
+            wedge.lineTo(static_cast<float>(block.x0), static_cast<float>(top + height));
+            wedge.closeSubPath();
+            g.setColour(kLaneBg);
+            g.fillPath(wedge);
+        }
+        if (block.fade_out_px > 0) {
+            juce::Path wedge;
+            wedge.startNewSubPath(static_cast<float>(block.x1), static_cast<float>(top));
+            wedge.lineTo(static_cast<float>(block.x1 - block.fade_out_px), static_cast<float>(top));
+            wedge.lineTo(static_cast<float>(block.x1), static_cast<float>(top + height));
+            wedge.closeSubPath();
+            g.setColour(kLaneBg);
+            g.fillPath(wedge);
+        }
+        g.setFont(juce::Font(juce::FontOptions(11.0f)));
+        g.setColour(kText);
+        g.drawFittedText(String::fromUTF8(block.label.c_str()), block.label_x, top, block.label_w,
+                         height, juce::Justification::centredLeft, 1);
+    }
+
+    // Playhead LAST, from the dzplayer sample counter through the renderer's own tempo map.
+    const int hx = dz::playlist_x(dz::bars_at_frame(doc_.project(), frame));
+    g.setColour(kPlayhead);
+    g.fillRect(hx, playlist_top_, kPlaylistPlayheadWidth,
+               static_cast<int>(tracks.size()) * kPlaylistLaneHeight - 1);
 }
 
 void dz::MainComponent::paintOverChildren(juce::Graphics& g) {
@@ -513,4 +594,7 @@ void dz::MainComponent::resized() {
             widgets.cells[s].setBounds(16 + 256 + s * kRackCellPitch, y + 4, 32, 24);
         }
     }
+
+    // LAST statement (WP-0196): the playlist panel's first lane sits below the channel rack.
+    playlist_top_ = rack_top_ + static_cast<int>(rack_.size()) * kRackRowHeight + 28;
 }

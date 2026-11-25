@@ -40,6 +40,7 @@ target_link_libraries(opd PRIVATE dzdoc)  # WP-0244: opd recover uses the op::Do
 add_library(dzplayer STATIC src/app/player.cpp src/app/player_rt.cpp src/app/render_playback.cpp)
 target_include_directories(dzplayer PUBLIC src/app)
 target_link_libraries(dzplayer PUBLIC opengine)
+target_sources(dzplayer PRIVATE src/app/playlist_view.cpp)  # WP-0196: playlist geometry (JUCE-free)
 
 enable_testing()
 add_executable(op_tests tests/test_main.cpp)
@@ -147,6 +148,11 @@ add_executable(op_sampler_reverse_tests tests/test_sampler_reverse.cpp)
 target_link_libraries(op_sampler_reverse_tests PRIVATE opengine)
 add_test(NAME sampler_reverse COMMAND op_sampler_reverse_tests)
 
+# WP-0196: read-only playlist geometry (dz::playlist_blocks in the JUCE-free dzplayer core).
+add_executable(op_playlist_view_tests tests/test_playlist_view.cpp)
+target_link_libraries(op_playlist_view_tests PRIVATE opengine dzplayer)
+add_test(NAME playlist_view COMMAND op_playlist_view_tests)
+
 # WP-0241: live-vs-render transport sweep - dz::Player driven by fixed-seed 32..512-sample callbacks over
 # every golden project, byte-compared with `opd render`. Needs the dzplayer core, the fixtures and opd.
 add_executable(op_player_blocksweep_tests tests/test_player_blocksweep.cpp)
@@ -213,6 +219,7 @@ list(APPEND DZ_OUR_TARGETS op_audition_tests)  # WP-0209
 list(APPEND DZ_OUR_TARGETS op_clip_trim_midi_tests)  # WP-0193c
 list(APPEND DZ_OUR_TARGETS op_tracks_tests)  # WP-0227
 list(APPEND DZ_OUR_TARGETS op_sampler_reverse_tests)  # WP-0231
+list(APPEND DZ_OUR_TARGETS op_playlist_view_tests)  # WP-0196
 list(APPEND DZ_OUR_TARGETS op_player_blocksweep_tests)  # WP-0241
 list(APPEND DZ_OUR_TARGETS op_meters_bar_tests)  # WP-0243
 list(APPEND DZ_OUR_TARGETS op_recover_tests)  # WP-0244

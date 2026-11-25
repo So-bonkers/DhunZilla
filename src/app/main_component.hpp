@@ -17,6 +17,13 @@
 // applies the set_step operation through Document::apply — one click = one undo entry; refresh()
 // re-reads every cell's lit state from the model, so the widgets hold no step state of their own.
 //
+// Playlist (WP-0196, read-only): below the channel rack, arrangement clips are drawn as blocks on
+// per-track lanes over a 16-bar grid — start bar, repeats as dividers, fades as wedges, trim
+// shortening the block — and the playhead position comes from the Player's sample counter. All
+// geometry lives in the GUI-free module dz::playlist_view (src/app/playlist_view.hpp), so the
+// exact painted numbers are unit-testable headless. The panel applies no operation and never
+// mutates the op::Document; editing comes in a later work package.
+//
 // Two flavours (WP-0153): with `playback == nullptr` (headless --snapshot) the transport buttons
 // stay disabled, no timer runs, the status line stays empty and the position reads "1.1". With a
 // controller: Play/Stop are wired, and a 30 Hz timer reclaims retired buffers, re-renders when the
@@ -122,6 +129,10 @@ private:
     // change while playing, refresh the bar.beat position and the device/error status line.
     void timerCallback() override;
 
+    // Playlist panel (WP-0196, read-only): paints lanes, clip blocks and the playhead from
+    // dz::playlist_view geometry plus the Player's sample counter; never touches the Document.
+    void paintPlaylist(juce::Graphics&);
+
     op::Document& doc_;
     PlaybackController* playback_ = nullptr;  // null in snapshot mode (see header note)
 
@@ -135,6 +146,9 @@ private:
     // rack row, computed in resized().
     std::vector<std::unique_ptr<RackRow>> rack_;
     int rack_top_ = 0;
+
+    // Playlist (WP-0196): y of the first lane, computed in resized() below the channel rack.
+    int playlist_top_ = 0;
 
     // Full-width row rectangles computed in resized(); paintOverChildren() washes the inaudible
     // ones. Sized to match rows_ (empty until the first resized()).
